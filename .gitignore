@@ -1,0 +1,4 @@
+node_modules/
+.midbrain-key
+.DS_Store
+*.log

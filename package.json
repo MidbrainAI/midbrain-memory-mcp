@@ -1,0 +1,17 @@
+{
+  "name": "midbrain-memory-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for MidBrain persistent AI memory",
+  "main": "server.js",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  }
+}
