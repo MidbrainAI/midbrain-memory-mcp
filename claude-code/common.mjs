@@ -1,39 +1,48 @@
 /**
  * Shared utilities for Claude Code episodic capture hooks.
  * Node 20 builtins only — no npm dependencies.
+ *
+ * Re-exports storeEpisodic, makeDebugLogger from the shared module.
+ * Wraps loadApiKey to pass Claude Code's config dir (~/.config/claude).
+ * Hook scripts import from this file — their imports don't change.
  */
 
-import { appendFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import {
+  loadApiKey as sharedLoadApiKey,
+  storeEpisodic,
+  makeDebugLogger,
+  KEY_ENV_VAR,
+  CONFIG_DIR_ENV_VAR,
+} from "../shared/midbrain-common.mjs";
 
-// --- Constants ---
-const API_BASE_URL = "https://memory.midbrain.ai";
-const EPISODIC_ENDPOINT = `${API_BASE_URL}/api/v1/memories/episodic`;
-const KEY_ENV_VAR = "MIDBRAIN_API_KEY";
-const DEBUG_LOG_PATH = join(homedir(), "midbrain-claude-code-debug.log");
+export { storeEpisodic, makeDebugLogger, KEY_ENV_VAR };
 
-/**
- * Appends a timestamped line to the debug log. Never throws.
- */
-export function debugLog(msg) {
-  try {
-    appendFileSync(DEBUG_LOG_PATH, `[${new Date().toISOString()}] ${msg}\n`);
-  } catch { /* ignore */ }
-}
+/** Claude Code config dir where .midbrain-key lives for this client. */
+const CLAUDE_CONFIG_DIR = join(homedir(), ".config", "claude");
 
 /**
- * Reads the API key from MIDBRAIN_API_KEY env var.
- * For Claude Code hooks, this is set via the command prefix in settings.json.
- * @returns {string|null}
+ * Loads API key with Claude Code's config dir pre-filled.
+ * Falls through to MIDBRAIN_CONFIG_DIR env, env var, then global fallback.
+ * @returns {{ key: string, source: string }}
  */
 export function loadApiKey() {
-  if (process.env[KEY_ENV_VAR]) return process.env[KEY_ENV_VAR].trim();
-  return null;
+  const configDir = process.env[CONFIG_DIR_ENV_VAR] || CLAUDE_CONFIG_DIR;
+  return sharedLoadApiKey(undefined, configDir);
 }
+
+/**
+ * Pre-built debug logger for Claude Code hooks. Appends timestamped lines
+ * to ~/midbrain-claude-code-debug.log. Never throws.
+ */
+export const debugLog = makeDebugLogger(
+  join(homedir(), "midbrain-claude-code-debug.log")
+);
 
 /**
  * Reads all of stdin as a string, parses JSON. Returns null on failure.
+ * Hook-specific — not part of the shared module.
  * @returns {Promise<object|null>}
  */
 export async function readStdinJSON() {
@@ -44,21 +53,4 @@ export async function readStdinJSON() {
   } catch {
     return null;
   }
-}
-
-/**
- * POSTs an episodic memory. Fire-and-forget — caller should not await.
- */
-export function storeEpisodic(apiKey, text, role) {
-  debugLog(`STORE role=${role} len=${text.length}`);
-  fetch(EPISODIC_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ text, role }),
-  })
-    .then((r) => debugLog(`STORED status=${r.status}`))
-    .catch((e) => debugLog(`STORE ERROR: ${e.message}`));
 }

@@ -13,8 +13,14 @@ try {
   const input = await readStdinJSON();
   if (!input?.prompt) process.exit(0);
 
-  const apiKey = loadApiKey();
-  if (!apiKey) { debugLog("NO KEY"); process.exit(0); }
+  let apiKey;
+  try {
+    const { key } = loadApiKey();
+    apiKey = key;
+  } catch {
+    debugLog("NO KEY");
+    process.exit(0);
+  }
 
-  storeEpisodic(apiKey, input.prompt, "user");
+  storeEpisodic(apiKey, input.prompt, "user", debugLog);
 } catch { /* fail silently */ }

@@ -7,11 +7,16 @@ API: https://memory.midbrain.ai
 
 ## Architecture
 - `server.js` — MCP server (Node 20, plain JS). Exposes 1 tool: `memory_search`
+- `shared/midbrain-common.mjs` — Shared utilities consumed by all components:
+  `loadApiKey`, `storeEpisodic`, `makeDebugLogger`, and all API constants.
 - `plugin/midbrain-memory.ts` — OpenCode plugin. Auto-stores every message as
   episodic memory via `chat.message` hook. Runs in Bun (OpenCode's runtime).
+  Imports from `./midbrain-common.mjs` (copied alongside it at install time).
 - `claude-code/` — Standalone Node 20 scripts for Claude Code's hook system.
   `capture-user.mjs` (UserPromptSubmit) and `capture-assistant.mjs` (Stop).
-  Shared logic in `common.mjs`. No npm dependencies.
+  `common.mjs` re-exports from `../shared/midbrain-common.mjs`. No npm deps.
+- `install.mjs` — Automated installer. Detects OpenCode/Claude Code, writes
+  configs, copies plugin + shared lib, sets up API key file (chmod 600).
 
 ## API Reference
 - Auth: `Authorization: Bearer <key>` header
@@ -22,11 +27,20 @@ API: https://memory.midbrain.ai
 - `GET /health` — no auth. Returns `{"status": "ok"}`
 
 ## API Key
-- Store in: ~/.config/opencode/.midbrain-key
-- Server reads key at runtime with priority:
-  1. MIDBRAIN_API_KEY env var
-  2. .midbrain-key in process.cwd() (project-specific)
-  3. ~/.config/opencode/.midbrain-key (global)
+- Keys in files with chmod 600. Env var is CI/debug fallback only.
+- Per-client key files support multi-embodiment (different keys per client).
+- loadApiKey(projectDir?, configDir?) priority chain:
+  1. .midbrain-key in projectDir (per-project file override)
+  2. .midbrain-key from MIDBRAIN_PROJECT_DIR env path (when no projectDir arg)
+  3. .midbrain-key in configDir (per-client config dir, e.g. ~/.config/opencode)
+  4. .midbrain-key from MIDBRAIN_CONFIG_DIR env path (when no configDir arg)
+  5. MIDBRAIN_API_KEY env var (CI / debug fallback only)
+  6. ~/.config/midbrain/.midbrain-key (global default)
+- Key file locations:
+  - Global default: ~/.config/midbrain/.midbrain-key
+  - OpenCode client: ~/.config/opencode/.midbrain-key
+  - Claude Code client: ~/.config/claude/.midbrain-key
+  - Project override: <projectDir>/.midbrain-key
 
 ## MCP Server Constraints
 - Plain JavaScript. Node 20. No build step. No TypeScript.
@@ -43,7 +57,7 @@ API: https://memory.midbrain.ai
 - Import { type Plugin } from "@opencode-ai/plugin"
 - Use chat.message hook to capture every message
 - POST to /api/v1/memories/episodic with role from message
-- Read API key same way as server (env var → local file → global file)
+- Read API key via loadApiKey(directory, "~/.config/opencode") — file-first
 - Fire-and-forget: don't block the chat on API response
 - Log errors to console.error, never crash
 
@@ -76,17 +90,21 @@ Using `path: { sessionID }` will silently fail (returns no data).
       "type": "local",
       "command": ["node", "/Users/carloses/MidBrain_Memory_MCP/server.js"],
       "environment": {
-        "MIDBRAIN_API_KEY": "<your-key>"
+        "MIDBRAIN_CONFIG_DIR": "~/.config/opencode"
       },
       "enabled": true
     }
   }
 }
-Note: Pass MIDBRAIN_API_KEY via environment block. process.cwd() is "/" when
-launched by OpenCode, so file-based key resolution from cwd is unreliable.
+Note: No API key in environment block — server reads from
+~/.config/opencode/.midbrain-key (file-first priority).
+MIDBRAIN_CONFIG_DIR tells the server which client's key file to use.
 
 ## Plugin Location
-Copy plugin/midbrain-memory.ts to ~/.config/opencode/plugins/midbrain-memory.ts
+Copy BOTH files to ~/.config/opencode/plugins/:
+  shared/midbrain-common.mjs  →  ~/.config/opencode/plugins/midbrain-common.mjs
+  plugin/midbrain-memory.ts   →  ~/.config/opencode/plugins/midbrain-memory.ts
+The plugin imports ./midbrain-common.mjs at runtime — both must be present.
 
 ## Rules for LLM (put in project AGENTS.md where MCP is used)
 - Use memory_search at session start to load relevant context

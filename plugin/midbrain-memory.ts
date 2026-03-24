@@ -16,83 +16,27 @@
  */
 
 import { type Plugin } from "@opencode-ai/plugin";
-import { readFileSync, appendFileSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
+// @ts-ignore — midbrain-common.mjs is copied alongside this file at install time
+import { loadApiKey, storeEpisodic, makeDebugLogger } from "./midbrain-common.mjs";
 
 // --- Constants ---
-const API_BASE_URL = "https://memory.midbrain.ai";
-const EPISODIC_ENDPOINT = `${API_BASE_URL}/api/v1/memories/episodic`;
-const KEY_ENV_VAR = "MIDBRAIN_API_KEY";
-const KEY_FILENAME = ".midbrain-key";
-const GLOBAL_KEY_PATH = join(homedir(), ".config", "opencode", KEY_FILENAME);
-const DEBUG_LOG_PATH = join(homedir(), "midbrain-plugin-debug.log");
-
-// --- Utilities ---
-
-function debugLog(msg: string): void {
-  const ts = new Date().toISOString();
-  try {
-    appendFileSync(DEBUG_LOG_PATH, `[${ts}] ${msg}\n`);
-  } catch {
-    // ignore
-  }
-}
-
-/**
- * Reads API key with priority:
- * 1. MIDBRAIN_API_KEY env var
- * 2. .midbrain-key in project directory (per-project agent)
- * 3. ~/.config/opencode/.midbrain-key (global fallback)
- */
-function loadApiKey(projectDir: string): { key: string | null; source: string } {
-  if (process.env[KEY_ENV_VAR]) {
-    return { key: process.env[KEY_ENV_VAR]!.trim(), source: "env" };
-  }
-  const projectKeyPath = join(projectDir, KEY_FILENAME);
-  try {
-    return { key: readFileSync(projectKeyPath, "utf8").trim(), source: `project:${projectKeyPath}` };
-  } catch {
-    // fall through
-  }
-  try {
-    return { key: readFileSync(GLOBAL_KEY_PATH, "utf8").trim(), source: `global:${GLOBAL_KEY_PATH}` };
-  } catch {
-    return { key: null, source: "none" };
-  }
-}
-
-/**
- * Fire-and-forget POST to the episodic endpoint. Logs result, never throws.
- */
-async function storeEpisodic(apiKey: string, text: string, role: "user" | "assistant"): Promise<void> {
-  debugLog(`STORE: role=${role} textLen=${text.length}`);
-  try {
-    const response = await fetch(EPISODIC_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({ text, role }),
-    });
-    debugLog(`RESPONSE: status=${response.status}`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    debugLog(`STORE ERROR: ${msg}`);
-  }
-}
+const OPENCODE_CONFIG_DIR = `${process.env.HOME ?? "/tmp"}/.config/opencode`;
 
 // --- Plugin ---
 
 export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
-  const { key: apiKey, source } = loadApiKey(directory);
-  debugLog(`INIT: dir=${directory} src=${source} key=${apiKey ? "..." + apiKey.slice(-4) : "null"}`);
+  const HOME = process.env.HOME ?? "/tmp";
+  const debugLog = makeDebugLogger(`${HOME}/midbrain-plugin-debug.log`);
 
-  if (!apiKey) {
-    console.error(
-      `[midbrain-memory] No API key. Set ${KEY_ENV_VAR}, or create .midbrain-key in project or ${GLOBAL_KEY_PATH}`
-    );
+  let apiKey: string;
+  try {
+    const { key, source } = loadApiKey(directory, OPENCODE_CONFIG_DIR);
+    apiKey = key;
+    debugLog(`INIT: dir=${directory} src=${source} key=...${key.slice(-4)}`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    debugLog(`INIT ERROR: ${msg}`);
+    console.error(`[midbrain-memory] ${msg}`);
     return {};
   }
 
@@ -115,7 +59,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
       debugLog(`USER: id=${messageID} len=${text.length}`);
       storedMessages.add(messageID);
-      storeEpisodic(apiKey, text, "user");
+      storeEpisodic(apiKey, text, "user", debugLog);
     },
 
     // --- Assistant messages: captured when message.updated shows completion ---
@@ -168,7 +112,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
         }
 
         debugLog(`ASSISTANT: storing id=${msgID} len=${text.length}`);
-        storeEpisodic(apiKey, text, "assistant");
+        storeEpisodic(apiKey, text, "assistant", debugLog);
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         debugLog(`ASSISTANT ERROR: ${errMsg}`);

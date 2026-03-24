@@ -16,8 +16,14 @@ try {
   if (input.stop_hook_active) process.exit(0);
   if (!input.last_assistant_message) process.exit(0);
 
-  const apiKey = loadApiKey();
-  if (!apiKey) { debugLog("NO KEY"); process.exit(0); }
+  let apiKey;
+  try {
+    const { key } = loadApiKey();
+    apiKey = key;
+  } catch {
+    debugLog("NO KEY");
+    process.exit(0);
+  }
 
-  storeEpisodic(apiKey, input.last_assistant_message, "assistant");
+  storeEpisodic(apiKey, input.last_assistant_message, "assistant", debugLog);
 } catch { /* fail silently */ }
