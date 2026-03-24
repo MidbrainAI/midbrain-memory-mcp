@@ -98,7 +98,6 @@ Replace every `<your-api-key>` and `/absolute/path/to` with your actual values:
 {
   "mcpServers": {
     "midbrain-memory": {
-      "type": "stdio",
       "command": "node",
       "args": ["/absolute/path/to/MidBrain_Memory_MCP/server.js"],
       "env": {
