@@ -238,6 +238,12 @@ async function installOpenCode(summary) {
     summary.push(`  + MCP server added to opencode.json`);
   }
 
+  // Remove invalid key that older OpenCode versions or other tools may have written
+  if (config.mcpServers) {
+    delete config.mcpServers;
+    summary.push(`  ~ Removed invalid "mcpServers" key from opencode.json (OpenCode requires "mcp")`);
+  }
+
   config.mcp = config.mcp || {};
   config.mcp[MCP_KEY] = {
     type: 'local',
