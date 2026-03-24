@@ -1,13 +1,17 @@
 # MidBrain Memory MCP
 
 ## What This Is
-MCP server + OpenCode plugin for persistent AI memory.
+MCP server + episodic capture hooks for persistent AI memory.
+Supports **OpenCode** (plugin) and **Claude Code** (hook scripts).
 API: https://memory.midbrain.ai
 
 ## Architecture
 - `server.js` — MCP server (Node 20, plain JS). Exposes 1 tool: `memory_search`
 - `plugin/midbrain-memory.ts` — OpenCode plugin. Auto-stores every message as
   episodic memory via `chat.message` hook. Runs in Bun (OpenCode's runtime).
+- `claude-code/` — Standalone Node 20 scripts for Claude Code's hook system.
+  `capture-user.mjs` (UserPromptSubmit) and `capture-assistant.mjs` (Stop).
+  Shared logic in `common.mjs`. No npm dependencies.
 
 ## API Reference
 - Auth: `Authorization: Bearer <key>` header
