@@ -18,7 +18,7 @@ try {
 
   let apiKey;
   try {
-    const { key } = loadApiKey();
+    const { key } = loadApiKey(input.cwd);
     apiKey = key;
   } catch {
     debugLog("NO KEY");

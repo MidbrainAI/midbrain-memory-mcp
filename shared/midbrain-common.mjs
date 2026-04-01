@@ -19,6 +19,7 @@ export const EPISODIC_ENDPOINT = `${API_BASE_URL}/api/v1/memories/episodic`;
 export const SEARCH_ENDPOINT = `${API_BASE_URL}/api/v1/memories/search`;
 export const KEY_ENV_VAR = "MIDBRAIN_API_KEY";
 export const KEY_FILENAME = ".midbrain-key";
+export const PROJECT_DIR_ENV_VAR = "MIDBRAIN_PROJECT_DIR";
 export const CONFIG_DIR_ENV_VAR = "MIDBRAIN_CONFIG_DIR";
 export const GLOBAL_KEY_PATH = join(homedir(), ".config", "midbrain", KEY_FILENAME);
 export const DEFAULT_SEARCH_LIMIT = 10;
@@ -27,30 +28,49 @@ export const DEFAULT_SEARCH_LIMIT = 10;
 
 /**
  * Resolves the MidBrain API key using a file-first priority chain:
- * 1. .midbrain-key in projectDir argument (per-project override)
- * 2. .midbrain-key from MIDBRAIN_PROJECT_DIR env (when projectDir arg is falsy)
- * 3. .midbrain-key in configDir argument (per-client config dir)
- * 4. .midbrain-key in MIDBRAIN_CONFIG_DIR env (when configDir arg is falsy)
- * 5. MIDBRAIN_API_KEY env var (CI / debug fallback only)
- * 6. ~/.config/midbrain/.midbrain-key (global default)
- * 7. Throws a human-readable error if none found.
+ * 1a. .midbrain-key in projectDir argument (per-project override)
+ * 1b. .midbrain/.midbrain-key in projectDir argument (subdirectory convention)
+ * 2a. .midbrain-key from MIDBRAIN_PROJECT_DIR env (when projectDir arg is falsy)
+ * 2b. .midbrain/.midbrain-key from MIDBRAIN_PROJECT_DIR env (subdirectory convention)
+ * 3.  .midbrain-key in configDir argument (per-client config dir)
+ * 4.  .midbrain-key in MIDBRAIN_CONFIG_DIR env (when configDir arg is falsy)
+ * 5.  MIDBRAIN_API_KEY env var (CI / debug fallback only)
+ * 6.  ~/.config/midbrain/.midbrain-key (global default)
+ * 7.  Throws a human-readable error if none found.
+ *
+ * EACCES on any key file is a hard error (throw). Empty key files are hard errors.
  *
  * @param {string|undefined} projectDir - Optional project directory to check first.
  * @param {string|undefined} configDir  - Optional client-specific config directory.
  * @returns {{ key: string, source: string }} The resolved key and a debug description of its source.
  */
 export function loadApiKey(projectDir, configDir) {
-  // 1. Explicit projectDir arg
+  // Normalize: empty/whitespace-only projectDir treated as undefined
+  projectDir = projectDir?.trim() || undefined;
+
+  const hadProjectDir = Boolean(projectDir);
+
+  // 1a. Explicit projectDir arg — flat file
   if (projectDir) {
     const result = tryReadKey(join(projectDir, KEY_FILENAME), `project-arg:${projectDir}`);
     if (result) return result;
   }
 
-  // 2. MIDBRAIN_PROJECT_DIR env (only when no explicit projectDir arg)
-  if (!projectDir && process.env.MIDBRAIN_PROJECT_DIR) {
-    const envDir = process.env.MIDBRAIN_PROJECT_DIR;
+  // 1b. Explicit projectDir arg — .midbrain/ subdirectory
+  if (projectDir) {
+    const result = tryReadKey(join(projectDir, ".midbrain", KEY_FILENAME), `project-arg:${projectDir}/.midbrain`);
+    if (result) return result;
+  }
+
+  // 2a. MIDBRAIN_PROJECT_DIR env — flat file (only when no explicit projectDir arg)
+  if (!projectDir && process.env[PROJECT_DIR_ENV_VAR]) {
+    const envDir = process.env[PROJECT_DIR_ENV_VAR];
     const result = tryReadKey(join(envDir, KEY_FILENAME), `project-env:${envDir}`);
     if (result) return result;
+
+    // 2b. MIDBRAIN_PROJECT_DIR env — .midbrain/ subdirectory
+    const resultSub = tryReadKey(join(envDir, ".midbrain", KEY_FILENAME), `project-env:${envDir}/.midbrain`);
+    if (resultSub) return resultSub;
   }
 
   // 3. Explicit configDir arg (per-client config directory)
@@ -75,29 +95,55 @@ export function loadApiKey(projectDir, configDir) {
   // 6. Global default ~/.config/midbrain/.midbrain-key
   {
     const result = tryReadKey(GLOBAL_KEY_PATH, `global:${GLOBAL_KEY_PATH}`);
-    if (result) return result;
+    if (result) {
+      // WARN: project-tier was specified but fell through to global
+      if (hadProjectDir) {
+        console.error(
+          `[midbrain] WARN: project dir "${projectDir}" has no .midbrain-key — ` +
+          `using global key from ${GLOBAL_KEY_PATH}. ` +
+          `To scope memory to this project, create .midbrain/.midbrain-key in the project root.`
+        );
+      }
+      return result;
+    }
   }
 
   throw new Error(
-    `API key not found. Create ${KEY_FILENAME} in your project or client config directory, ` +
+    `API key not found. Create ${KEY_FILENAME} or .midbrain/${KEY_FILENAME} in your project directory, ` +
+    `or ${KEY_FILENAME} in your client config directory, ` +
     `or in ${GLOBAL_KEY_PATH}, or set ${KEY_ENV_VAR} env var.`
   );
 }
 
 /**
  * Attempts to read a key from a file path. Returns { key, source } or null.
+ * Throws on EACCES (permission denied) or empty key file — these are broken
+ * configs, not "key not found". All other fs errors fall through silently.
  * @param {string} filePath
  * @param {string} source
  * @returns {{ key: string, source: string }|null}
  */
 function tryReadKey(filePath, source) {
   try {
-    const key = readFileSync(filePath, "utf8").trim();
-    if (key) return { key, source };
-  } catch {
-    // file not found or unreadable — fall through
+    const raw = readFileSync(filePath, "utf8");
+    const key = raw.trim();
+    if (!key) {
+      throw new Error(
+        `Key file is empty: ${filePath}. Remove it or add a valid API key.`
+      );
+    }
+    return { key, source };
+  } catch (err) {
+    if (err.code === "EACCES") {
+      throw new Error(
+        `Permission denied reading key file: ${filePath}. Check file permissions (expected chmod 600).`
+      );
+    }
+    // Empty-key error (no .code) — re-throw as-is
+    if (!err.code) throw err;
+    // ENOENT, ENOTDIR, and any other fs error — fall through
+    return null;
   }
-  return null;
 }
 
 // --- storeEpisodic ---
