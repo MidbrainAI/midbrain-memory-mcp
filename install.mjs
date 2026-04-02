@@ -247,7 +247,7 @@ async function installOpenCode(summary) {
   config.mcp = config.mcp || {};
   config.mcp[MCP_KEY] = {
     type: 'local',
-    command: ['node', path.join(REPO_ROOT, 'server.js')],
+    command: [process.execPath, path.join(REPO_ROOT, 'server.js')],
     environment: {
       MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'opencode'),
     },
@@ -269,7 +269,7 @@ async function installClaudeJson(summary) {
   data.mcpServers = data.mcpServers || {};
   data.mcpServers[MCP_KEY] = {
     type: 'stdio',
-    command: 'node',
+    command: process.execPath,
     args: [path.join(REPO_ROOT, 'server.js')],
     env: {
       MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'claude'),
@@ -289,11 +289,11 @@ async function installClaudeJson(summary) {
 // ---------------------------------------------------------------------------
 function buildHooks() {
   const configPrefix = `MIDBRAIN_CONFIG_DIR=${path.join(HOME, '.config', 'claude')}`;
-  const userCmd  = `${configPrefix} node ${path.join(REPO_ROOT, 'claude-code', 'capture-user.mjs')}`;
-  const assistCmd = `${configPrefix} node ${path.join(REPO_ROOT, 'claude-code', 'capture-assistant.mjs')}`;
+  const userCmd  = `${configPrefix} ${process.execPath} ${path.join(REPO_ROOT, 'claude-code', 'capture-user.mjs')}`;
+  const assistCmd = `${configPrefix} ${process.execPath} ${path.join(REPO_ROOT, 'claude-code', 'capture-assistant.mjs')}`;
   return {
-    UserPromptSubmit: [{ hooks: [{ type: 'command', command: userCmd }] }],
-    Stop:             [{ hooks: [{ type: 'command', command: assistCmd }] }],
+    UserPromptSubmit: [{ hooks: [{ type: 'command', command: userCmd, timeout: 10, async: true }] }],
+    Stop:             [{ hooks: [{ type: 'command', command: assistCmd, timeout: 10, async: true }] }],
   };
 }
 
