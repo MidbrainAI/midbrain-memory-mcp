@@ -4,6 +4,7 @@
  * Exposes a single tool: memory_search
  * Communicates with the MidBrain memory API over HTTPS.
  * Key priority: project file → client config file → env var → global ~/.config/midbrain/.midbrain-key
+ * Set MIDBRAIN_PROJECT_DIR in MCP config env to enable per-project key resolution for search.
  *
  * IMPORTANT: No console.log — corrupts stdio JSON-RPC pipe. Use console.error only.
  */
@@ -11,7 +12,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { loadApiKey, SEARCH_ENDPOINT, DEFAULT_SEARCH_LIMIT, CONFIG_DIR_ENV_VAR } from "./shared/midbrain-common.mjs";
+import { loadApiKey, SEARCH_ENDPOINT, DEFAULT_SEARCH_LIMIT, CONFIG_DIR_ENV_VAR, PROJECT_DIR_ENV_VAR } from "./shared/midbrain-common.mjs";
 
 /**
  * Searches memories via a single API call. Returns formatted text or error string.
@@ -21,7 +22,8 @@ async function searchMemories(query, limit) {
 
   try {
     const configDir = process.env[CONFIG_DIR_ENV_VAR];
-    const { key: apiKey, source } = loadApiKey(undefined, configDir);
+    const projectDir = process.env[PROJECT_DIR_ENV_VAR] || undefined;
+    const { key: apiKey, source } = loadApiKey(projectDir, configDir);
     console.error(`[SEARCH] key_source=${source}`);
     const response = await fetch(SEARCH_ENDPOINT, {
       method: "POST",

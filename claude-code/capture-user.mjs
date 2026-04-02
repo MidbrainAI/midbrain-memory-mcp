@@ -11,6 +11,7 @@ import { readStdinJSON, loadApiKey, storeEpisodic, debugLog } from "./common.mjs
 
 try {
   const input = await readStdinJSON();
+  // input.cwd is confirmed present in Claude Desktop's UserPromptSubmit payload
   if (!input?.prompt) process.exit(0);
 
   let apiKey;

@@ -58,6 +58,45 @@ To scope episodic memory to a project-specific agent:
 Both OpenCode and Claude Code will automatically detect the project key.
 No hook reconfiguration, no env vars, no .mcp.json changes needed for the write path.
 
+### Per-Project Search (MCP Server)
+The MCP server (memory_search tool) also needs project awareness for the read
+path. Set MIDBRAIN_PROJECT_DIR in the MCP server's environment config:
+
+OpenCode — project-level opencode.json in the project root:
+  {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
+      "midbrain-memory": {
+        "type": "local",
+        "command": ["<absolute-node-path>", "<path-to>/server.js"],
+        "environment": {
+          "MIDBRAIN_CONFIG_DIR": "~/.config/opencode",
+          "MIDBRAIN_PROJECT_DIR": "<project-root>"
+        },
+        "enabled": true
+      }
+    }
+  }
+
+Claude Code — project-level .mcp.json in the project root:
+  {
+    "mcpServers": {
+      "midbrain-memory": {
+        "command": "<absolute-node-path>",
+        "args": ["<path-to>/server.js"],
+        "env": {
+          "MIDBRAIN_CONFIG_DIR": "~/.config/claude",
+          "MIDBRAIN_PROJECT_DIR": "<project-root>"
+        }
+      }
+    }
+  }
+
+Without MIDBRAIN_PROJECT_DIR, the MCP server falls through to the client
+config dir key, which may be a different agent than the project key.
+IMPORTANT: Always use absolute node paths in MCP configs — bare `node` fails
+when the client's shell environment extraction doesn't include PATH.
+
 ## MCP Server Constraints
 - Plain JavaScript. Node 20. No build step. No TypeScript.
 - ZERO console.log — corrupts stdio JSON-RPC pipe. Use console.error only.
