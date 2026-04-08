@@ -1,10 +1,15 @@
 /**
  * install.mjs — MidBrain Memory MCP automated installer
  *
- * Run: node install.mjs
+ * Interactive: node install.mjs
+ * Project:     node install.mjs --project /absolute/path/to/project
  *
  * Detects OpenCode and/or Claude Code, asks for API key(s), writes per-client
  * key files (chmod 600), patches configs, copies plugin files. Idempotent.
+ *
+ * --project mode is non-interactive: resolves keys from existing files, creates
+ * .midbrain/.midbrain-key, writes project-level MCP configs, outputs JSON to
+ * stdout. All progress/debug goes to stderr only.
  *
  * Key strategy (Jesper-approved: files over env):
  * - Each client gets its own .midbrain-key file in its config dir
@@ -18,16 +23,24 @@ import { existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import readline from 'readline';
+import { fileURLToPath } from 'url';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SCRIPT_DIR = __dirname; // install.mjs lives at repo root
+
 const REPO_ROOT = process.cwd();
 const HOME = os.homedir();
 
 const KEY_FILENAME = '.midbrain-key';
 const MCP_KEY = 'midbrain-memory';
-const PERM_KEY = 'mcp__midbrain-memory__memory_search';
+const PERM_KEYS = [
+  'mcp__midbrain-memory__memory_search',
+  'mcp__midbrain-memory__memory_setup_project',
+];
 
 const PATHS = {
   globalKey:        path.join(HOME, '.config', 'midbrain', KEY_FILENAME),
@@ -326,11 +339,13 @@ async function installClaudeSettings(summary) {
   // Permissions
   data.permissions = data.permissions || {};
   data.permissions.allow = data.permissions.allow || [];
-  if (!data.permissions.allow.includes(PERM_KEY)) {
-    data.permissions.allow.push(PERM_KEY);
-    summary.push(`  + Permission added: ${PERM_KEY}`);
-  } else {
-    summary.push(`  - Permission: already present (skipped)`);
+  for (const perm of PERM_KEYS) {
+    if (!data.permissions.allow.includes(perm)) {
+      data.permissions.allow.push(perm);
+      summary.push(`  + Permission added: ${perm}`);
+    } else {
+      summary.push(`  - Permission: ${perm} already present (skipped)`);
+    }
   }
 
   await writeJson(PATHS.claudeSettings, data);
@@ -411,7 +426,206 @@ async function main() {
   printSummary(tools, keyLines, opencodeLines, claudeLines);
 }
 
-main().catch((err) => {
-  console.error('Fatal error:', err.message);
-  process.exit(1);
-});
+// ---------------------------------------------------------------------------
+// --project mode: non-interactive project setup
+// ---------------------------------------------------------------------------
+
+/** Returns last 4 chars of a key for safe logging. Never logs the full key. */
+function keyFingerprint(key) {
+  if (!key || key.length < 4) return '****';
+  return `...${key.slice(-4)}`;
+}
+
+/**
+ * Resolves an API key from existing files (no prompts).
+ * Checks: project .midbrain/.midbrain-key → OpenCode key → Claude key → global → env.
+ * Returns { key, source } or null.
+ */
+async function resolveProjectKey(projectDir) {
+  // Check project-level key (subdirectory convention)
+  const projectKeyPath = path.join(projectDir, '.midbrain', KEY_FILENAME);
+  const projKey = await readKeyFile(projectKeyPath);
+  if (projKey) return { key: projKey, source: projectKeyPath };
+
+  // Check project-level key (flat convention)
+  const flatKeyPath = path.join(projectDir, KEY_FILENAME);
+  const flatKey = await readKeyFile(flatKeyPath);
+  if (flatKey) return { key: flatKey, source: flatKeyPath };
+
+  // Check client key files
+  const ocKey = await readKeyFile(PATHS.opencodeKey);
+  if (ocKey) return { key: ocKey, source: PATHS.opencodeKey };
+
+  const ccKey = await readKeyFile(PATHS.claudeKey);
+  if (ccKey) return { key: ccKey, source: PATHS.claudeKey };
+
+  // Global fallback
+  const globalKey = await readKeyFile(PATHS.globalKey);
+  if (globalKey) return { key: globalKey, source: PATHS.globalKey };
+
+  // Env var fallback
+  if (process.env.MIDBRAIN_API_KEY) {
+    const key = process.env.MIDBRAIN_API_KEY.trim();
+    if (key) return { key, source: 'env:MIDBRAIN_API_KEY' };
+  }
+
+  return null;
+}
+
+/**
+ * Non-interactive project setup. Creates .midbrain/.midbrain-key and
+ * project-level MCP configs for each detected client.
+ * Outputs JSON result to stdout; all other output to stderr.
+ */
+async function projectSetup(rawPath) {
+  const warnings = [];
+  const configsWritten = [];
+
+  // --- Validate and resolve project path (C-12, C-13) ---
+  const resolved = path.resolve(rawPath);
+  let projectDir;
+  try {
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) {
+      console.error(`Error: "${resolved}" is not a directory.`);
+      process.exit(1);
+    }
+    // Resolve symlinks (C-11)
+    projectDir = await fs.realpath(resolved);
+    if (projectDir !== resolved) {
+      warnings.push(`Symlink resolved: "${resolved}" -> "${projectDir}"`);
+      console.error(`[project] WARN: symlink resolved: ${resolved} -> ${projectDir}`);
+    }
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.error(`Error: directory does not exist: "${resolved}"`);
+      process.exit(1);
+    }
+    console.error(`Error: cannot access "${resolved}": ${err.message}`);
+    process.exit(1);
+  }
+
+  console.error(`[project] dir=${projectDir}`);
+
+  // --- Resolve API key (no prompts) ---
+  const keyResult = await resolveProjectKey(projectDir);
+  if (!keyResult) {
+    console.error('Error: no API key found. Set up a key file first (run: node install.mjs)');
+    process.exit(1);
+  }
+  const { key: apiKey, source: keySource } = keyResult;
+  console.error(`[project] key_source=${keySource} fingerprint=${keyFingerprint(apiKey)}`);
+
+  // --- Create .midbrain/.midbrain-key (C-9: guard existing) ---
+  const keyFilePath = path.join(projectDir, '.midbrain', KEY_FILENAME);
+  let keyCreated = false;
+  const existingKey = await readKeyFile(keyFilePath);
+  if (existingKey) {
+    console.error(`[project] existing key preserved: ${keyFilePath}`);
+    warnings.push(`Existing key file preserved at ${keyFilePath}`);
+  } else {
+    await writeKeyFile(keyFilePath, apiKey);
+    keyCreated = true;
+    console.error(`[project] key written: ${keyFilePath} (chmod 600)`);
+  }
+
+  // --- Detect clients and write project-level configs ---
+  const tools = detectTools();
+  const serverPath = path.join(SCRIPT_DIR, 'server.js'); // C-7: import.meta.url
+  const nodePath = process.execPath; // C-3: absolute node path
+
+  if (tools.opencode) {
+    const configPath = path.join(projectDir, 'opencode.json');
+    const config = (await readJson(configPath)) || {};
+
+    // Ensure $schema is present
+    if (!config['$schema']) {
+      config['$schema'] = 'https://opencode.ai/config.json';
+    }
+
+    // Remove invalid mcpServers key (OpenCode uses "mcp")
+    if (config.mcpServers) {
+      delete config.mcpServers;
+      warnings.push('Removed invalid "mcpServers" key from opencode.json (OpenCode requires "mcp")');
+    }
+
+    config.mcp = config.mcp || {};
+    config.mcp[MCP_KEY] = {
+      type: 'local',
+      command: [nodePath, serverPath],
+      environment: {
+        MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'opencode'),
+        MIDBRAIN_PROJECT_DIR: projectDir,
+      },
+      enabled: true,
+    };
+    await writeJson(configPath, config);
+    configsWritten.push('opencode.json');
+    console.error(`[project] wrote: ${configPath}`);
+  }
+
+  if (tools.claudeCode) {
+    const configPath = path.join(projectDir, '.mcp.json');
+    const config = (await readJson(configPath)) || {};
+
+    config.mcpServers = config.mcpServers || {};
+    config.mcpServers[MCP_KEY] = {
+      command: nodePath,
+      args: [serverPath],
+      env: {
+        MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'claude'),
+        MIDBRAIN_PROJECT_DIR: projectDir,
+      },
+    };
+    await writeJson(configPath, config);
+    configsWritten.push('.mcp.json');
+    console.error(`[project] wrote: ${configPath}`);
+  }
+
+  if (!tools.opencode && !tools.claudeCode) {
+    warnings.push('No supported AI clients detected (OpenCode or Claude Code). No configs written.');
+    console.error('[project] WARN: no clients detected');
+  }
+
+  // --- Output JSON result to stdout (C-10: stdout isolation) ---
+  const result = {
+    success: true,
+    project_dir: projectDir,
+    key_file: keyFilePath,
+    key_created: keyCreated,
+    key_source: keySource,
+    configs_written: configsWritten,
+    restart_required: true,
+    warnings,
+  };
+  console.error('[project] Setup complete. Restart OpenCode / Claude Code for the new project memory to take effect.');
+  // eslint-disable-next-line no-console -- intentional: only JSON goes to stdout in --project mode
+  console.log(JSON.stringify(result, null, 2));
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch: --project mode vs interactive
+// ---------------------------------------------------------------------------
+const projectFlagIdx = process.argv.indexOf('--project');
+if (projectFlagIdx !== -1) {
+  // C-12: validate arg
+  const projectArg = process.argv[projectFlagIdx + 1];
+  if (!projectArg || projectArg.startsWith('-')) {
+    console.error('Error: --project requires a path argument.');
+    console.error('Usage: node install.mjs --project /absolute/path/to/project');
+    process.exit(1);
+  }
+  if (projectArg.trim() === '') {
+    console.error('Error: --project path cannot be empty.');
+    process.exit(1);
+  }
+  projectSetup(projectArg).catch((err) => {
+    console.error(`Fatal error: ${err.message}`);
+    process.exit(1);
+  });
+} else {
+  main().catch((err) => {
+    console.error('Fatal error:', err.message);
+    process.exit(1);
+  });
+}
