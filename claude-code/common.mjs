@@ -24,12 +24,15 @@ const CLAUDE_CONFIG_DIR = join(homedir(), ".config", "claude");
 
 /**
  * Loads API key with Claude Code's config dir pre-filled.
+ * Accepts optional cwd (from hook stdin payload) for project-scoped key resolution.
  * Falls through to MIDBRAIN_CONFIG_DIR env, env var, then global fallback.
+ * @param {string|undefined} cwd - The project working directory from the hook payload.
  * @returns {{ key: string, source: string }}
  */
-export function loadApiKey() {
+export function loadApiKey(cwd) {
   const configDir = process.env[CONFIG_DIR_ENV_VAR] || CLAUDE_CONFIG_DIR;
-  return sharedLoadApiKey(undefined, configDir);
+  const projectDir = cwd?.trim() || undefined;
+  return sharedLoadApiKey(projectDir, configDir);
 }
 
 /**

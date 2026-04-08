@@ -30,17 +30,72 @@ API: https://memory.midbrain.ai
 - Keys in files with chmod 600. Env var is CI/debug fallback only.
 - Per-client key files support multi-embodiment (different keys per client).
 - loadApiKey(projectDir?, configDir?) priority chain:
-  1. .midbrain-key in projectDir (per-project file override)
-  2. .midbrain-key from MIDBRAIN_PROJECT_DIR env path (when no projectDir arg)
+  1a. .midbrain-key in projectDir (per-project file override)
+  1b. .midbrain/.midbrain-key in projectDir (subdirectory convention, recommended)
+  2a. .midbrain-key from MIDBRAIN_PROJECT_DIR env path (when no projectDir arg)
+  2b. .midbrain/.midbrain-key from MIDBRAIN_PROJECT_DIR env path (subdirectory convention)
   3. .midbrain-key in configDir (per-client config dir, e.g. ~/.config/opencode)
   4. .midbrain-key from MIDBRAIN_CONFIG_DIR env path (when no configDir arg)
   5. MIDBRAIN_API_KEY env var (CI / debug fallback only)
   6. ~/.config/midbrain/.midbrain-key (global default)
+- EACCES on any key file is a hard error (throw, not silent fallthrough).
+- Empty key files are a hard error naming the file path.
+- When projectDir is provided but no project key found, a WARN is emitted to
+  stderr if resolution falls through to the global key (step 6).
 - Key file locations:
   - Global default: ~/.config/midbrain/.midbrain-key
   - OpenCode client: ~/.config/opencode/.midbrain-key
   - Claude Code client: ~/.config/claude/.midbrain-key
-  - Project override: <projectDir>/.midbrain-key
+  - Project override (flat): <projectDir>/.midbrain-key
+  - Project override (recommended): <projectDir>/.midbrain/.midbrain-key
+
+## Per-Project Memory Setup
+To scope episodic memory to a project-specific agent:
+  1. Create the directory: mkdir -p <project>/.midbrain
+  2. Place the API key: echo "your-key" > <project>/.midbrain/.midbrain-key
+  3. Set permissions: chmod 600 <project>/.midbrain/.midbrain-key
+  4. Add to .gitignore: .midbrain-key
+Both OpenCode and Claude Code will automatically detect the project key.
+No hook reconfiguration, no env vars, no .mcp.json changes needed for the write path.
+
+### Per-Project Search (MCP Server)
+The MCP server (memory_search tool) also needs project awareness for the read
+path. Set MIDBRAIN_PROJECT_DIR in the MCP server's environment config:
+
+OpenCode — project-level opencode.json in the project root:
+  {
+    "$schema": "https://opencode.ai/config.json",
+    "mcp": {
+      "midbrain-memory": {
+        "type": "local",
+        "command": ["<absolute-node-path>", "<path-to>/server.js"],
+        "environment": {
+          "MIDBRAIN_CONFIG_DIR": "~/.config/opencode",
+          "MIDBRAIN_PROJECT_DIR": "<project-root>"
+        },
+        "enabled": true
+      }
+    }
+  }
+
+Claude Code — project-level .mcp.json in the project root:
+  {
+    "mcpServers": {
+      "midbrain-memory": {
+        "command": "<absolute-node-path>",
+        "args": ["<path-to>/server.js"],
+        "env": {
+          "MIDBRAIN_CONFIG_DIR": "~/.config/claude",
+          "MIDBRAIN_PROJECT_DIR": "<project-root>"
+        }
+      }
+    }
+  }
+
+Without MIDBRAIN_PROJECT_DIR, the MCP server falls through to the client
+config dir key, which may be a different agent than the project key.
+IMPORTANT: Always use absolute node paths in MCP configs — bare `node` fails
+when the client's shell environment extraction doesn't include PATH.
 
 ## MCP Server Constraints
 - Plain JavaScript. Node 20. No build step. No TypeScript.
