@@ -1,7 +1,14 @@
 {
   "name": "midbrain-memory-mcp",
   "version": "1.0.0",
-  "description": "MCP server for MidBrain persistent AI memory",
+  "description": "MCP server for MidBrain persistent AI memory — search and episodic capture for OpenCode and Claude Code",
+  "author": "MidBrain AI",
+  "license": "MIT",
+  "homepage": "https://memory.midbrain.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MidbrainAI/MidBrain_Memory_MCP.git"
+  },
   "main": "server.js",
   "type": "module",
   "engines": {
