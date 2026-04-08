@@ -6,7 +6,8 @@ Supports **OpenCode** (plugin) and **Claude Code** (hook scripts).
 API: https://memory.midbrain.ai
 
 ## Architecture
-- `server.js` — MCP server (Node 20, plain JS). Exposes 1 tool: `memory_search`
+- `server.js` — MCP server (Node 20, plain JS). Exposes 2 tools: `memory_search`,
+  `memory_setup_project`
 - `shared/midbrain-common.mjs` — Shared utilities consumed by all components:
   `loadApiKey`, `storeEpisodic`, `makeDebugLogger`, and all API constants.
 - `plugin/midbrain-memory.ts` — OpenCode plugin. Auto-stores every message as
@@ -97,6 +98,25 @@ config dir key, which may be a different agent than the project key.
 IMPORTANT: Always use absolute node paths in MCP configs — bare `node` fails
 when the client's shell environment extraction doesn't include PATH.
 
+### Automated Project Setup
+The `memory_setup_project` MCP tool and `node install.mjs --project` CLI
+automate per-project memory configuration:
+  - Creates .midbrain/.midbrain-key with chmod 600
+  - Writes project-level MCP config (opencode.json / .mcp.json)
+  - Merges into existing configs without data loss
+  - Uses process.execPath for reliable node path resolution
+  - Guards existing key files (never overwrites)
+
+MCP tool: memory_setup_project(project_dir, api_key?)
+  - project_dir: absolute path to the project root (required)
+  - api_key: MidBrain API key (optional, falls back to server's resolved key)
+  - Returns human-readable summary of actions taken
+
+CLI: node install.mjs --project /absolute/path/to/project
+  - Non-interactive, outputs JSON to stdout
+  - All progress/debug to stderr
+  - Resolves key from existing files (no prompts)
+
 ## MCP Server Constraints
 - Plain JavaScript. Node 20. No build step. No TypeScript.
 - ZERO console.log — corrupts stdio JSON-RPC pipe. Use console.error only.
@@ -165,7 +185,12 @@ The plugin imports ./midbrain-common.mjs at runtime — both must be present.
 - Use memory_search at session start to load relevant context
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
-- The only memory tool available is search. Use it proactively.
+- The only memory tools available are search and setup. Use them proactively.
+- When the user asks to set up, configure, or initialize MidBrain memory for a
+  project, ALWAYS use the memory_setup_project tool. NEVER manually create
+  .midbrain-key files, .mcp.json, or opencode.json with shell commands.
+  The tool handles permissions, config merging, and path resolution correctly.
+  Manual setup will break.
 
 ## Coding Standards
 1. No magic strings — constants at top of file
