@@ -4,6 +4,8 @@
 MCP server + episodic capture hooks for persistent AI memory.
 Supports **OpenCode** (plugin) and **Claude Code** (hook scripts).
 API: https://memory.midbrain.ai
+Published on npm as `midbrain-memory-mcp` (v0.1.0+).
+Install: `npm install -g midbrain-memory-mcp` or use `npx -y midbrain-memory-mcp`.
 
 ## Architecture
 - `server.js` — MCP server (Node 20, plain JS). Exposes 2 tools: `memory_search`,

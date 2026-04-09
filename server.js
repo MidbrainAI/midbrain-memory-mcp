@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * MidBrain Memory MCP Server
  *
@@ -17,6 +18,10 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+const { version: PKG_VERSION } = require("./package.json");
 
 // Script-relative path resolution (C-7: import.meta.url for repo root)
 const __filename = fileURLToPath(import.meta.url);
@@ -73,7 +78,7 @@ async function searchMemories(query, limit) {
 // --- MCP Server Setup ---
 const server = new McpServer({
   name: "midbrain-memory",
-  version: "1.0.0",
+  version: PKG_VERSION,
 });
 
 server.tool(
