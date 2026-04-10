@@ -212,3 +212,12 @@ The plugin imports ./midbrain-common.mjs at runtime — both must be present.
 - Conventional commits (feat:, fix:, docs:, refactor:)
 - Never commit API keys or .midbrain-key files
 - Never push without Carlos approving
+
+## Backlog Reconciliation
+
+BACKLOG.md is the single source of truth for deferred work. It is gitignored.
+After merging a PR or completing implementation work:
+1. Read the PR's context.md Known Issues / Deferred Items (if applicable)
+2. Add any items missing from BACKLOG.md (with priority, source, description)
+3. Mark items resolved by the work as completed (move to Completed section)
+4. Update the "Last updated" timestamp
