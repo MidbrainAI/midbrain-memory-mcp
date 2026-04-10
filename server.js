@@ -29,6 +29,13 @@ const __dirname = path.dirname(__filename);
 
 const MCP_KEY = "midbrain-memory";
 
+// --- Update check constants (PRD-005) ---
+const NPM_REGISTRY_URL = "https://registry.npmjs.org/midbrain-memory-mcp/latest";
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const UPDATE_CACHE_FILENAME = ".midbrain-update-check.json";
+const UPDATE_FETCH_TIMEOUT_MS = 5000;
+const NPX_CACHE_MARKER = "/_npx/";
+
 /**
  * Searches memories via a single API call. Returns formatted text or error string.
  */
@@ -120,21 +127,6 @@ async function readJson(filePath) {
 async function writeJson(filePath, data) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(data, null, 2) + "\n", "utf8");
-}
-
-/**
- * Reads existing JSON config at filePath, sets a nested key, writes back.
- * keyPath is an array like ["mcp", "midbrain-memory"]. Merge-safe (C-5).
- */
-async function mergeConfig(filePath, keyPath, entry) {
-  const config = (await readJson(filePath)) || {};
-  let target = config;
-  for (let i = 0; i < keyPath.length - 1; i++) {
-    target[keyPath[i]] = target[keyPath[i]] || {};
-    target = target[keyPath[i]];
-  }
-  target[keyPath[keyPath.length - 1]] = entry;
-  await writeJson(filePath, config);
 }
 
 /**
@@ -273,7 +265,86 @@ server.tool(
   }
 );
 
+// ---------------------------------------------------------------------------
+// Update check (PRD-005): fire-and-forget npm registry check with 24h cache
+// ---------------------------------------------------------------------------
+
+/**
+ * Compares two semver-ish version strings (M.m.p format).
+ * Returns true if `latest` is strictly greater than `current`.
+ * @param {string} current - e.g. "0.1.0"
+ * @param {string} latest  - e.g. "0.2.0"
+ * @returns {boolean}
+ */
+function isNewerVersion(current, latest) {
+  if (!current || !latest) return false;
+  const c = current.split(".").map((s) => parseInt(s, 10));
+  const l = latest.split(".").map((s) => parseInt(s, 10));
+  for (let i = 0; i < 3; i++) {
+    const cv = c[i] || 0;
+    const lv = l[i] || 0;
+    if (lv > cv) return true;
+    if (lv < cv) return false;
+  }
+  return false;
+}
+
+/**
+ * Returns true if the update-check cache is still fresh (within 24h interval).
+ * Returns false on any read/parse error (cache missing or corrupt).
+ * @param {string} cachePath
+ * @returns {Promise<boolean>}
+ */
+async function isUpdateCacheFresh(cachePath) {
+  try {
+    const raw = await fs.readFile(cachePath, "utf8");
+    const cache = JSON.parse(raw);
+    return (Date.now() - cache.lastCheck) < UPDATE_CHECK_INTERVAL_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks the npm registry for a newer version. Writes a 24h cache file to
+ * os.tmpdir() to avoid hammering the registry. Skips entirely for npx installs.
+ * Fire-and-forget — never throws, never blocks, never crashes.
+ */
+async function checkForUpdate() {
+  try {
+    if (__dirname.includes(NPX_CACHE_MARKER)) return;
+
+    const cachePath = path.join(os.tmpdir(), UPDATE_CACHE_FILENAME);
+    if (await isUpdateCacheFresh(cachePath)) return;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(NPM_REGISTRY_URL, { signal: controller.signal });
+      if (!response.ok) return;
+
+      const data = await response.json();
+      const latestVersion = data.version;
+
+      const cacheData = JSON.stringify({ lastCheck: Date.now(), latestVersion });
+      await fs.writeFile(cachePath, cacheData, "utf8").catch(() => {});
+
+      if (isNewerVersion(PKG_VERSION, latestVersion)) {
+        console.error(
+          `[midbrain] Update available: ${PKG_VERSION} -> ${latestVersion}. ` +
+          `Run: npm update -g midbrain-memory-mcp`
+        );
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    // Silently swallow all errors — never crash, never block
+  }
+}
+
 // --- Start ---
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error("MCP server running");
+checkForUpdate(); // fire-and-forget — no await (PRD-005)
