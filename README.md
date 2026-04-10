@@ -19,6 +19,81 @@ API: https://memory.midbrain.ai
 
 ## Quick Start
 
+### Install
+
+```bash
+# Option 1: npm (recommended)
+npm install -g midbrain-memory-mcp
+
+# Option 2: npx (no install, always latest)
+npx -y midbrain-memory-mcp
+```
+
+### Get Your API Key
+
+1. Sign up at [memory.midbrain.ai](https://memory.midbrain.ai)
+2. Create an agent in the dashboard
+3. Generate an API key for the agent
+
+### Configure MCP
+
+**OpenCode** (`opencode.json` or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "midbrain-memory": {
+      "type": "local",
+      "command": ["npx", "-y", "midbrain-memory-mcp"],
+      "environment": {
+        "MIDBRAIN_CONFIG_DIR": "~/.config/opencode",
+        "MIDBRAIN_PROJECT_DIR": "/path/to/project"
+      },
+      "enabled": true
+    }
+  }
+}
+```
+
+**Claude Code** (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "midbrain-memory": {
+      "command": "npx",
+      "args": ["-y", "midbrain-memory-mcp"],
+      "env": {
+        "MIDBRAIN_CONFIG_DIR": "~/.config/claude",
+        "MIDBRAIN_PROJECT_DIR": "/path/to/project"
+      }
+    }
+  }
+}
+```
+
+### Run Setup
+
+```bash
+# Interactive setup (detects clients, prompts for API key, patches configs)
+npx midbrain-memory-setup
+```
+
+### Verify
+
+```sh
+# 1. Health check
+curl https://memory.midbrain.ai/health
+# Expected: {"status":"ok"}
+
+# 2. Start a session in OpenCode or Claude Code
+# 3. The memory_search tool should be available
+# 4. Send a few messages, then search — your messages should appear
+```
+
+### Alternative: Install from Source
+
 ```sh
 git clone https://github.com/MidbrainAI/MidBrain_Memory_MCP.git
 cd MidBrain_Memory_MCP
@@ -31,18 +106,6 @@ key(s), writes per-client key files (`chmod 600`), copies the plugin and shared
 lib, patches all config files, and sets MCP tool permissions. Running it again
 is safe (idempotent).
 
-**Verify it works:**
-
-```sh
-# 1. Health check
-curl https://memory.midbrain.ai/health
-# Expected: {"status":"ok"}
-
-# 2. Start a session in OpenCode or Claude Code
-# 3. The memory_search tool should be available
-# 4. Send a few messages, then search — your messages should appear
-```
-
 ---
 
 ## Per-Project Setup
@@ -51,33 +114,14 @@ By default, all memory goes to a single agent (your global key). Per-project
 setup scopes memory to a project-specific agent, so each project has its own
 isolated memory space.
 
-### Option A: MCP Tool (Recommended)
-
-Inside your coding session, tell the AI assistant to use the setup tool.
-
-**OpenCode:**
-
-```
-Set up midbrain memory for this project with API key sk-your-key-here
-```
-
-**Claude Code** (you must name the tool explicitly due to lazy tool loading):
-
-```
-Use the memory_setup_project tool to configure this project with API key sk-your-key-here
-```
-
-The tool creates:
-- `.midbrain/.midbrain-key` (chmod 600) — project-scoped API key
-- `opencode.json` or `.mcp.json` — project-level MCP config with `MIDBRAIN_PROJECT_DIR`
-
-**After setup, restart the application** for the project memory to take effect.
-The current session continues using the previous key until restart.
-
-### Option B: CLI
+### Option A: CLI (Recommended)
 
 ```sh
-node install.mjs --project /absolute/path/to/your/project
+# 1. Place your API key
+mkdir -p .midbrain && echo "sk-your-key-here" > .midbrain/.midbrain-key && chmod 600 .midbrain/.midbrain-key
+
+# 2. Run project setup
+npx midbrain-memory-setup --project /absolute/path/to/your/project
 ```
 
 Non-interactive. Resolves the API key from existing key files (no prompts),
@@ -97,6 +141,35 @@ to stdout. All progress goes to stderr.
   "warnings": []
 }
 ```
+
+### Option B: MCP Tool
+
+> **Warning:** Never include your API key in a chat prompt. API keys in prompts
+> are sent to the model provider (Anthropic, OpenAI, etc.) and may be logged,
+> stored in conversation history, or leaked. Always place the key in a file
+> first (step 1 below), then call the tool without the key.
+
+1. First, place your API key in the project:
+   ```bash
+   mkdir -p .midbrain && echo "sk-your-key-here" > .midbrain/.midbrain-key && chmod 600 .midbrain/.midbrain-key
+   ```
+
+2. Then tell the AI assistant to configure the project:
+
+   **OpenCode:**
+   ```
+   Set up midbrain memory for this project
+   ```
+
+   **Claude Code** (name the tool explicitly due to lazy tool loading):
+   ```
+   Use the memory_setup_project tool to configure this project
+   ```
+
+The tool creates:
+- `opencode.json` or `.mcp.json` — project-level MCP config with `MIDBRAIN_PROJECT_DIR`
+
+After setup, restart the application for the project memory to take effect.
 
 ### Option C: Manual
 
@@ -307,7 +380,7 @@ node /path/to/MidBrain_Memory_MCP/server.js
 
 **Fix:** Name the tool explicitly:
 ```
-Use the memory_setup_project tool to configure this project with API key sk-your-key
+Use the memory_setup_project tool to configure this project
 ```
 
 ### Permission denied on key file

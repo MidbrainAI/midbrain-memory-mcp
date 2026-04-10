@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * install.mjs — MidBrain Memory MCP automated installer
  *
@@ -32,7 +33,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SCRIPT_DIR = __dirname; // install.mjs lives at repo root
 
-const REPO_ROOT = process.cwd();
 const HOME = os.homedir();
 
 const KEY_FILENAME = '.midbrain-key';
@@ -234,9 +234,9 @@ async function installOpenCode(summary) {
 
   const pluginDst = path.join(PATHS.opencodePlugins, 'midbrain-memory.ts');
   const sharedDst = path.join(PATHS.opencodePlugins, 'midbrain-common.mjs');
-  await fs.copyFile(path.join(REPO_ROOT, 'plugin', 'midbrain-memory.ts'), pluginDst);
+  await fs.copyFile(path.join(SCRIPT_DIR, 'plugin', 'midbrain-memory.ts'), pluginDst);
   summary.push(`  + Plugin copied: ~/.config/opencode/plugins/midbrain-memory.ts`);
-  await fs.copyFile(path.join(REPO_ROOT, 'shared', 'midbrain-common.mjs'), sharedDst);
+  await fs.copyFile(path.join(SCRIPT_DIR, 'shared', 'midbrain-common.mjs'), sharedDst);
   summary.push(`  + Shared lib copied: ~/.config/opencode/plugins/midbrain-common.mjs`);
 
   // Patch opencode.json
@@ -260,7 +260,7 @@ async function installOpenCode(summary) {
   config.mcp = config.mcp || {};
   config.mcp[MCP_KEY] = {
     type: 'local',
-    command: [process.execPath, path.join(REPO_ROOT, 'server.js')],
+    command: [process.execPath, path.join(SCRIPT_DIR, 'server.js')],
     environment: {
       MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'opencode'),
     },
@@ -283,7 +283,7 @@ async function installClaudeJson(summary) {
   data.mcpServers[MCP_KEY] = {
     type: 'stdio',
     command: process.execPath,
-    args: [path.join(REPO_ROOT, 'server.js')],
+    args: [path.join(SCRIPT_DIR, 'server.js')],
     env: {
       MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'claude'),
     },
@@ -302,8 +302,8 @@ async function installClaudeJson(summary) {
 // ---------------------------------------------------------------------------
 function buildHooks() {
   const configPrefix = `MIDBRAIN_CONFIG_DIR=${path.join(HOME, '.config', 'claude')}`;
-  const userCmd  = `${configPrefix} ${process.execPath} ${path.join(REPO_ROOT, 'claude-code', 'capture-user.mjs')}`;
-  const assistCmd = `${configPrefix} ${process.execPath} ${path.join(REPO_ROOT, 'claude-code', 'capture-assistant.mjs')}`;
+  const userCmd  = `${configPrefix} ${process.execPath} ${path.join(SCRIPT_DIR, 'claude-code', 'capture-user.mjs')}`;
+  const assistCmd = `${configPrefix} ${process.execPath} ${path.join(SCRIPT_DIR, 'claude-code', 'capture-assistant.mjs')}`;
   return {
     UserPromptSubmit: [{ hooks: [{ type: 'command', command: userCmd, timeout: 10, async: true }] }],
     Stop:             [{ hooks: [{ type: 'command', command: assistCmd, timeout: 10, async: true }] }],
