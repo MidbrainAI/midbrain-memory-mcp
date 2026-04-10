@@ -8,8 +8,9 @@ Published on npm as `midbrain-memory-mcp` (v0.1.0+).
 Install: `npm install -g midbrain-memory-mcp` or use `npx -y midbrain-memory-mcp`.
 
 ## Architecture
-- `server.js` — MCP server (Node 20, plain JS). Exposes 2 tools: `memory_search`,
-  `memory_setup_project`
+- `server.js` — MCP server (Node 20, plain JS). Exposes 6 tools:
+  `search_memories`, `grep`, `get_episodic_memories_by_date`, `list_files`,
+  `read_file`, `memory_setup_project`
 - `shared/midbrain-common.mjs` — Shared utilities consumed by all components:
   `loadApiKey`, `storeEpisodic`, `makeDebugLogger`, and all API constants.
 - `plugin/midbrain-memory.ts` — OpenCode plugin. Auto-stores every message as
@@ -23,8 +24,16 @@ Install: `npm install -g midbrain-memory-mcp` or use `npx -y midbrain-memory-mcp
 
 ## API Reference
 - Auth: `Authorization: Bearer <key>` header
-- `POST /api/v1/memories/search` — body: `{"text": "query", "limit": 10}`
-  Returns: `[{role, text, memory_metadata, score}]`
+- `GET /api/v1/memories/search/semantic?query=...&limit=10`
+  Returns: `[{id, role, text, memory_metadata, score, occurred_at}]`
+- `GET /api/v1/memories/search/lexical?pattern=...&source=...&limit=50`
+  Returns: `[{source, line_number, text}]`
+- `GET /api/v1/memories/episodic?page=1&limit=100&start_date=...&end_date=...`
+  Returns: `{items: [{role, text, occurred_at, ...}], total, page, limit}`
+- `GET /api/v1/memories/semantic/files`
+  Returns: `[{source, chunk_count}]`
+- `GET /api/v1/memories/semantic/files/{file_path}?start_line=1&num_lines=200`
+  Returns: `{path, start_line, content, chunks_used}`
 - `POST /api/v1/memories/episodic` — body: `{"text": "...", "role": "user"|"assistant"}`
   Append-only. Returns created memory.
 - `GET /health` — no auth. Returns `{"status": "ok"}`
@@ -62,7 +71,7 @@ Both OpenCode and Claude Code will automatically detect the project key.
 No hook reconfiguration, no env vars, no .mcp.json changes needed for the write path.
 
 ### Per-Project Search (MCP Server)
-The MCP server (memory_search tool) also needs project awareness for the read
+The MCP server (search_memories tool) also needs project awareness for the read
 path. Set MIDBRAIN_PROJECT_DIR in the MCP server's environment config:
 
 OpenCode — project-level opencode.json in the project root:
@@ -184,7 +193,10 @@ Copy BOTH files to ~/.config/opencode/plugins/:
 The plugin imports ./midbrain-common.mjs at runtime — both must be present.
 
 ## Rules for LLM (put in project AGENTS.md where MCP is used)
-- Use memory_search at session start to load relevant context
+- Use search_memories at session start to load relevant context
+- Use grep for exact pattern matches (names, IDs, code, URLs)
+- Use list_files and read_file to browse semantic memory documents
+- Use get_episodic_memories_by_date for conversation history by date
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
 - The only memory tools available are search and setup. Use them proactively.
@@ -194,18 +206,70 @@ The plugin imports ./midbrain-common.mjs at runtime — both must be present.
   The tool handles permissions, config merging, and path resolution correctly.
   Manual setup will break.
 
-## Coding Standards
-1. No magic strings — constants at top of file
-2. Max function length: 40 lines
-3. Error messages must be human-readable (LLM reads them)
-4. Google-style JSDoc comments where non-obvious
-5. Test every tool with curl before declaring done
+## Dev Practices
 
-## Test Plan
-1. node server.js — should not crash, should print "MCP server running" to stderr
-2. curl https://memory.midbrain.ai/health — should return {"status": "ok"}
-3. In fresh OpenCode session: memory_search should be available as a tool
-4. Send a message — plugin should auto-store it as episodic
+**TDD** -- strict red/green/refactor. Write failing tests first, minimal
+implementation, then refactor. Never ship code without tests.
+
+**Style:**
+- Dense, terse code. Minimal comments (only for non-obvious decisions).
+- No emojis.
+- No magic strings -- constants at top of file.
+- Max function length: 40 lines.
+- Error messages must be human-readable (LLM reads them).
+- Google-style JSDoc comments where non-obvious.
+
+**Tooling** -- all via `npm run`:
+- `npm run bootstrap` -- first-time setup: installs deps + git hooks
+- `npm test` -- run full test suite (vitest, non-interactive)
+- `npm run test:watch` -- run tests in watch mode during development
+- `npm run lint` -- run ESLint across all .js/.mjs files
+- `npm run lint:fix` -- auto-fix ESLint issues
+- `npm run check` -- lint + test in one command (CI equivalent)
+
+**Pre-commit hook** -- husky + lint-staged runs automatically on `git commit`:
+1. `lint-staged` -- ESLint on staged .js/.mjs files (zero warnings allowed)
+2. `npm test` -- full test suite
+
+Install hooks after clone: `npm run bootstrap`.
+
+**Always** finish all tasks by running `npm run check` and fixing any failures.
+
+## Test Architecture
+
+Tests live in `tests/`, using vitest (ESM). Two categories:
+
+1. **Unit tests** (`tests/midbrain-common.test.mjs`)
+   - Pure function tests: `loadApiKey`, `isNewerVersion`, `storeEpisodic`, constants
+   - Uses temp directories for key file tests (cleaned up in afterEach)
+   - Mocks `globalThis.fetch` with `vi.spyOn` for network calls
+   - No external dependencies beyond vitest
+
+2. **Integration tests** (`tests/server-integration.test.mjs`)
+   - Self-contained, in-process: no child process, no stdio, no mock HTTP server
+   - Imports `createServer()` from `server.js` directly
+   - Uses MCP SDK `InMemoryTransport.createLinkedPair()` to connect Client <-> Server
+   - Mocks `globalThis.fetch` with `vi.spyOn` to intercept all API calls
+   - Routes mock responses by URL path in a `mockFetch()` function
+   - Temp API key file + env vars set in `beforeAll`, restored in `afterAll`
+
+**Writing new tool tests:**
+1. Add mock response data to `MOCK_DATA` in the integration test
+2. Add a URL route in `mockFetch()` to return the mock data
+3. Write tests that call the tool via `client.callTool()` and assert on
+   `result.content[0].text`
+4. Test both success and error paths (4xx responses, invalid inputs)
+
+**Writing new unit tests:**
+1. Import the function from `shared/midbrain-common.mjs`
+2. Create temp dirs in `beforeEach`, clean up in `afterEach`
+3. Mock `fetch` with `vi.spyOn(globalThis, "fetch")` if needed
+
+## Test Plan (manual smoke tests)
+1. node server.js -- should not crash, should print "MCP server running" to stderr
+2. curl https://memory.midbrain.ai/health -- should return {"status": "ok"}
+3. In fresh OpenCode session: search_memories should be available as a tool
+4. Send a message -- plugin should auto-store it as episodic
 5. Verify: curl /api/v1/memories/episodic?limit=1 shows the stored message
 
 ## Git Rules
