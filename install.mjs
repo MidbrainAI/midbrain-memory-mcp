@@ -39,6 +39,10 @@ const KEY_FILENAME = '.midbrain-key';
 const MCP_KEY = 'midbrain-memory';
 const PERM_KEYS = [
   'mcp__midbrain-memory__memory_search',
+  'mcp__midbrain-memory__grep',
+  'mcp__midbrain-memory__get_episodic_memories_by_date',
+  'mcp__midbrain-memory__list_files',
+  'mcp__midbrain-memory__read_file',
   'mcp__midbrain-memory__memory_setup_project',
 ];
 
@@ -63,7 +67,7 @@ async function readJson(filePath) {
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === 'ENOENT') return null;
-    throw new Error(`Failed to parse ${filePath}: ${err.message}`);
+    throw new Error(`Failed to parse ${filePath}: ${err.message}`, { cause: err });
   }
 }
 
@@ -599,7 +603,6 @@ async function projectSetup(rawPath) {
     warnings,
   };
   console.error('[project] Setup complete. Restart OpenCode / Claude Code for the new project memory to take effect.');
-  // eslint-disable-next-line no-console -- intentional: only JSON goes to stdout in --project mode
   console.log(JSON.stringify(result, null, 2));
 }
 

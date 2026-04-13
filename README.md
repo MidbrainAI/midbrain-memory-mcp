@@ -1,9 +1,10 @@
 # MidBrain Memory MCP
 
-Persistent AI memory for coding agents. An MCP server exposes `memory_search`
-and `memory_setup_project` for context retrieval and project configuration;
-companion hooks auto-capture every message as episodic memory. Works with
-**OpenCode** and **Claude Code**.
+Persistent AI memory for coding agents. An MCP server exposes
+`memory_search`, `grep`, `get_episodic_memories_by_date`, `list_files`,
+`read_file`, and `memory_setup_project` for context retrieval and project
+configuration; companion hooks auto-capture every message as episodic memory.
+Works with **OpenCode** and **Claude Code**.
 
 API: https://memory.midbrain.ai
 
@@ -97,7 +98,7 @@ curl https://memory.midbrain.ai/health
 ```sh
 git clone https://github.com/MidbrainAI/MidBrain_Memory_MCP.git
 cd MidBrain_Memory_MCP
-npm install
+npm run bootstrap
 node install.mjs
 ```
 
@@ -209,9 +210,9 @@ Claude Code session
   |                    capture-assistant.mjs      memory.midbrain.ai
 ```
 
-- **server.js** -- MCP server (Node 20, stdio transport). Exposes two tools:
-  `memory_search` (query past memories) and `memory_setup_project` (configure
-  per-project memory). Plain JavaScript, no build step.
+- **server.js** -- MCP server (Node 20, stdio transport). Exposes six tools:
+  `memory_search`, `grep`, `get_episodic_memories_by_date`, `list_files`,
+  `read_file`, and `memory_setup_project`. Plain JavaScript, no build step.
 - **plugin/midbrain-memory.ts** -- OpenCode plugin (Bun/TS). Hooks into
   `chat.message` and `message.updated` events. POSTs every message to the
   episodic endpoint. Fire-and-forget, never blocks.
@@ -225,7 +226,7 @@ Claude Code session
 
 ## How It Works
 
-1. **Search** -- The LLM invokes `memory_search` via MCP. The server POSTs to
+1. **Search** -- The LLM invokes `memory_search` via MCP. The server queries
    the search API and returns scored results as formatted text.
 2. **Capture (OpenCode)** -- The plugin hooks into OpenCode's message lifecycle.
    User messages are captured from `chat.message`; assistant messages from
@@ -333,6 +334,9 @@ so the AI assistant uses memory correctly:
 ```markdown
 ## MidBrain Memory Rules
 - Use memory_search at session start to load relevant context
+- Use grep for exact pattern matches (names, IDs, code, URLs)
+- Use list_files and read_file to browse semantic memory documents
+- Use get_episodic_memories_by_date for conversation history by date
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
 - The only memory tools available are search and setup. Use them proactively.
@@ -406,9 +410,13 @@ Base URL: `https://memory.midbrain.ai`
 
 All endpoints use `Authorization: Bearer <key>` (except `/health`).
 
-| Method | Endpoint | Body | Returns |
+| Method | Endpoint | Body / Params | Returns |
 |---|---|---|---|
-| POST | `/api/v1/memories/search` | `{"text": "query", "limit": 10}` | `[{role, text, memory_metadata, score}]` |
+| GET | `/api/v1/memories/search/semantic` | `?query=...&limit=10` | `[{role, text, memory_metadata, score, occurred_at}]` |
+| GET | `/api/v1/memories/search/lexical` | `?pattern=...&source=...&limit=50` | `[{source, line_number, text}]` |
+| GET | `/api/v1/memories/episodic` | `?page=1&limit=100&start_date=...&end_date=...` | `{items, total, page, limit}` |
+| GET | `/api/v1/memories/semantic/files` | -- | `[{source, chunk_count}]` |
+| GET | `/api/v1/memories/semantic/files/{path}` | `?start_line=1&num_lines=200` | `{path, start_line, content}` |
 | POST | `/api/v1/memories/episodic` | `{"text": "...", "role": "user\|assistant"}` | Created memory object |
 | GET | `/health` | -- | `{"status": "ok"}` |
 
@@ -524,6 +532,10 @@ Entries in `settings.json` are silently ignored for MCP server registration.
   "permissions": {
     "allow": [
       "mcp__midbrain-memory__memory_search",
+      "mcp__midbrain-memory__grep",
+      "mcp__midbrain-memory__get_episodic_memories_by_date",
+      "mcp__midbrain-memory__list_files",
+      "mcp__midbrain-memory__read_file",
       "mcp__midbrain-memory__memory_setup_project"
     ]
   }
@@ -536,7 +548,7 @@ Entries in `settings.json` are silently ignored for MCP server registration.
 
 ```
 MidBrain_Memory_MCP/
-  server.js                  MCP server (Node 20, plain JS, 2 tools)
+  server.js                  MCP server (Node 20, plain JS, 6 tools)
   install.mjs                Automated installer + --project CLI mode
   shared/
     midbrain-common.mjs      Shared utilities: key loading, store, logging
@@ -546,7 +558,71 @@ MidBrain_Memory_MCP/
     common.mjs               Re-exports shared utils + readStdinJSON
     capture-user.mjs         UserPromptSubmit hook
     capture-assistant.mjs    Stop hook
+  tests/
+    midbrain-common.test.mjs Unit tests for shared utilities
+    server-integration.test.mjs  Integration tests for MCP tools
+  eslint.config.js           ESLint flat config (ESM)
   package.json
   AGENTS.md                  LLM project instructions
   README.md
 ```
+
+---
+
+## Development
+
+### Getting Started
+
+```sh
+git clone https://github.com/MidbrainAI/MidBrain_Memory_MCP.git
+cd MidBrain_Memory_MCP
+npm run bootstrap   # installs deps + sets up git hooks
+```
+
+`npm run bootstrap` is a one-time command. It runs `npm install` to fetch
+dependencies, then `husky` to install pre-commit hooks.
+
+### Commands
+
+| Command | Purpose |
+|---|---|
+| `npm run bootstrap` | First-time setup: install deps + git hooks |
+| `npm test` | Run full test suite (vitest) |
+| `npm run test:watch` | Run tests in watch mode |
+| `npm run lint` | Run ESLint |
+| `npm run lint:fix` | Auto-fix ESLint issues |
+| `npm run check` | Lint + test in one command |
+
+### Pre-commit Hook
+
+Every `git commit` automatically runs:
+
+1. **lint-staged** -- ESLint on staged `.js`/`.mjs` files (zero warnings)
+2. **npm test** -- full test suite (52 tests)
+
+If either step fails, the commit is rejected. Fix the issues and commit again.
+
+### Test Architecture
+
+Tests use vitest (ESM) and live in `tests/`:
+
+- **Unit tests** (`midbrain-common.test.mjs`) -- pure function tests for
+  `loadApiKey`, `isNewerVersion`, `storeEpisodic`, and constants. Uses temp
+  directories and `vi.spyOn(globalThis, "fetch")` for mocking.
+
+- **Integration tests** (`server-integration.test.mjs`) -- self-contained,
+  in-process. Imports `createServer()` directly, connects via MCP SDK
+  `InMemoryTransport.createLinkedPair()`, and mocks `globalThis.fetch` to
+  simulate API responses. No child process, no stdio, no network.
+
+### Dependencies
+
+Production dependencies are kept minimal (only what ships to users):
+
+| Package | Purpose |
+|---|---|
+| `@modelcontextprotocol/sdk` | MCP protocol |
+| `zod` | Schema validation |
+
+Everything else (eslint, vitest, husky, lint-staged) is in `devDependencies`
+and is not installed by end users.

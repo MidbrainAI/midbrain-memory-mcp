@@ -15,14 +15,44 @@ import { join } from "path";
 // --- Constants ---
 
 export const API_BASE_URL = "https://memory.midbrain.ai";
-export const EPISODIC_ENDPOINT = `${API_BASE_URL}/api/v1/memories/episodic`;
-export const SEARCH_ENDPOINT = `${API_BASE_URL}/api/v1/memories/search`;
+export const API_V1 = `${API_BASE_URL}/api/v1`;
+
+// Write-path: POST (capture hooks). Read-path: GET (MCP server tools).
+export const EPISODIC_ENDPOINT = `${API_V1}/memories/episodic`;
+
+// Read-path endpoints (used by MCP server tools)
+export const SEARCH_SEMANTIC_ENDPOINT = `${API_V1}/memories/search/semantic`;
+export const SEARCH_LEXICAL_ENDPOINT = `${API_V1}/memories/search/lexical`;
+export const SEMANTIC_FILES_ENDPOINT = `${API_V1}/memories/semantic/files`;
+
 export const KEY_ENV_VAR = "MIDBRAIN_API_KEY";
 export const KEY_FILENAME = ".midbrain-key";
 export const PROJECT_DIR_ENV_VAR = "MIDBRAIN_PROJECT_DIR";
 export const CONFIG_DIR_ENV_VAR = "MIDBRAIN_CONFIG_DIR";
 export const GLOBAL_KEY_PATH = join(homedir(), ".config", "midbrain", KEY_FILENAME);
 export const DEFAULT_SEARCH_LIMIT = 10;
+
+// --- isNewerVersion ---
+
+/**
+ * Compares two semver-ish version strings (M.m.p format).
+ * Returns true if `latest` is strictly greater than `current`.
+ * @param {string} current - e.g. "0.1.0"
+ * @param {string} latest  - e.g. "0.2.0"
+ * @returns {boolean}
+ */
+export function isNewerVersion(current, latest) {
+  if (!current || !latest) return false;
+  const c = current.split(".").map((s) => parseInt(s, 10));
+  const l = latest.split(".").map((s) => parseInt(s, 10));
+  for (let i = 0; i < 3; i++) {
+    const cv = c[i] || 0;
+    const lv = l[i] || 0;
+    if (lv > cv) return true;
+    if (lv < cv) return false;
+  }
+  return false;
+}
 
 // --- loadApiKey ---
 
@@ -136,7 +166,8 @@ function tryReadKey(filePath, source) {
   } catch (err) {
     if (err.code === "EACCES") {
       throw new Error(
-        `Permission denied reading key file: ${filePath}. Check file permissions (expected chmod 600).`
+        `Permission denied reading key file: ${filePath}. Check file permissions (expected chmod 600).`,
+        { cause: err }
       );
     }
     // Empty-key error (no .code) — re-throw as-is
