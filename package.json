@@ -42,10 +42,26 @@
   "scripts": {
     "start": "node server.js",
     "setup": "node install.mjs",
+    "bootstrap": "npm install && husky",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "eslint . && vitest run",
     "prepublishOnly": "node -e \"JSON.parse(require('fs').readFileSync('package.json','utf8'))\""
+  },
+  "lint-staged": {
+    "*.{js,mjs}": "eslint --max-warnings 0"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.2.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "vitest": "^4.1.4"
   }
 }
