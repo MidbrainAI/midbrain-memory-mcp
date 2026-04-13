@@ -24,6 +24,7 @@
     "shared/",
     "plugin/",
     "claude-code/",
+    "commands/",
     "README.md"
   ],
   "keywords": [

@@ -12,6 +12,7 @@ import path from "path";
 
 import {
   loadApiKey,
+  loadAccountKey,
   isNewerVersion,
   storeEpisodic,
   API_BASE_URL,
@@ -23,6 +24,10 @@ import {
   KEY_FILENAME,
   DEFAULT_SEARCH_LIMIT,
   GLOBAL_KEY_PATH,
+  ACCOUNT_KEY_FILENAME,
+  ACCOUNT_KEY_ENV_VAR,
+  AGENTS_ENDPOINT,
+  KEYS_ENDPOINT,
 } from "../shared/midbrain-common.mjs";
 
 // ---------------------------------------------------------------------------
@@ -298,5 +303,134 @@ describe("storeEpisodic", () => {
     storeEpisodic("test-key", "msg", "user", log);
 
     await vi.waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR")));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Account key constants
+// ---------------------------------------------------------------------------
+
+describe("account key constants", () => {
+  it("ACCOUNT_KEY_FILENAME is .midbrain-account-key", () => {
+    expect(ACCOUNT_KEY_FILENAME).toBe(".midbrain-account-key");
+  });
+
+  it("ACCOUNT_KEY_ENV_VAR is MIDBRAIN_ACCOUNT_KEY", () => {
+    expect(ACCOUNT_KEY_ENV_VAR).toBe("MIDBRAIN_ACCOUNT_KEY");
+  });
+
+  it("AGENTS_ENDPOINT starts with API_V1", () => {
+    expect(AGENTS_ENDPOINT).toBe(`${API_V1}/account/agents`);
+  });
+
+  it("KEYS_ENDPOINT starts with API_V1", () => {
+    expect(KEYS_ENDPOINT).toBe(`${API_V1}/account/keys`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadAccountKey
+// ---------------------------------------------------------------------------
+
+describe("loadAccountKey", () => {
+  let tmpDir;
+  const savedEnv = {};
+  let globalAccountKeyBackedUp = false;
+  const globalAccountKeyPath = path.join(os.homedir(), ".config", "midbrain", ACCOUNT_KEY_FILENAME);
+  const globalAccountKeyBak = globalAccountKeyPath + ".test-bak";
+  let globalKeyBackedUp = false;
+  const globalKeyBak = GLOBAL_KEY_PATH + ".test-bak";
+
+  function writeKey(filePath, content = "test-account-key") {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content + "\n", "utf8");
+    fs.chmodSync(filePath, 0o600);
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-acct-test-"));
+    for (const k of ["MIDBRAIN_ACCOUNT_KEY", "MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR", "MIDBRAIN_CONFIG_DIR"]) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+    if (fs.existsSync(globalAccountKeyPath)) {
+      fs.renameSync(globalAccountKeyPath, globalAccountKeyBak);
+      globalAccountKeyBackedUp = true;
+    }
+    if (fs.existsSync(GLOBAL_KEY_PATH)) {
+      fs.renameSync(GLOBAL_KEY_PATH, globalKeyBak);
+      globalKeyBackedUp = true;
+    }
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (globalAccountKeyBackedUp) {
+      fs.renameSync(globalAccountKeyBak, globalAccountKeyPath);
+      globalAccountKeyBackedUp = false;
+    }
+    if (globalKeyBackedUp) {
+      fs.renameSync(globalKeyBak, GLOBAL_KEY_PATH);
+      globalKeyBackedUp = false;
+    }
+  });
+
+  it("step 1: reads from ~/.config/midbrain/.midbrain-account-key", () => {
+    writeKey(globalAccountKeyPath, "global-account-key");
+
+    const { key, source } = loadAccountKey(undefined, undefined);
+    expect(key).toBe("global-account-key");
+    expect(source).toContain("account-global");
+  });
+
+  it("step 2: reads from configDir/.midbrain-account-key", () => {
+    const cfgDir = path.join(tmpDir, "config");
+    fs.mkdirSync(cfgDir);
+    writeKey(path.join(cfgDir, ACCOUNT_KEY_FILENAME), "config-account-key");
+
+    const { key, source } = loadAccountKey(undefined, cfgDir);
+    expect(key).toBe("config-account-key");
+    expect(source).toContain("account-config");
+  });
+
+  it("step 3: reads from MIDBRAIN_ACCOUNT_KEY env var", () => {
+    process.env.MIDBRAIN_ACCOUNT_KEY = "env-account-key";
+
+    const { key, source } = loadAccountKey(undefined, undefined);
+    expect(key).toBe("env-account-key");
+    expect(source).toContain("env:");
+  });
+
+  it("step 4: falls back to loadApiKey (agent key fallback)", () => {
+    const projDir = path.join(tmpDir, "proj");
+    fs.mkdirSync(projDir);
+    writeKey(path.join(projDir, ".midbrain", ".midbrain-key"), "agent-key-fallback");
+
+    const { key, source } = loadAccountKey(projDir, undefined);
+    expect(key).toBe("agent-key-fallback");
+    expect(source).toContain("agent-fallback");
+  });
+
+  it("global account key takes priority over env var", () => {
+    writeKey(globalAccountKeyPath, "global-account-key");
+    process.env.MIDBRAIN_ACCOUNT_KEY = "env-account-key";
+
+    const { key } = loadAccountKey(undefined, undefined);
+    expect(key).toBe("global-account-key");
+  });
+
+  it("throws when no key found anywhere with absolute path in error", () => {
+    expect(() => loadAccountKey(undefined, undefined)).toThrow(/account key/i);
+    // Error must contain absolute path (no tildes)
+    try {
+      loadAccountKey(undefined, undefined);
+    } catch (err) {
+      expect(err.message).not.toContain("~");
+      expect(err.message).toContain(os.homedir());
+    }
   });
 });

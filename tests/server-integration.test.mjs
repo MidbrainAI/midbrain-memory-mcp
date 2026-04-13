@@ -69,6 +69,15 @@ const MOCK_DATA = {
     content: "1: # Setup Guide\n2: Install with npm.",
     chunks_used: 1,
   },
+  agentsList: [
+    { agent_id: "a1", name: "TestAgent", description: "A test agent", created_at: "2026-04-01T00:00:00Z" },
+    { agent_id: "a2", name: "ProdAgent", description: null, created_at: "2026-04-02T00:00:00Z" },
+  ],
+  keysList: [
+    { token: "mb_...x4Qf", key_alias: "TestAgent-opencode-20260401", agent_id: "a1", spend: 0.42, max_budget: 10.0 },
+  ],
+  createdAgent: { agent_id: "a3", name: "NewAgent", description: "Fresh agent", created_at: "2026-04-13T00:00:00Z" },
+  createdKey: { key: "mb_full_secret_key_value_abc123", token: "mb_...c123", key_alias: "NewAgent-mcp-20260413", agent_id: "a3" },
 };
 
 /** Build a fake Response object matching the fetch() API. */
@@ -82,9 +91,10 @@ function jsonResponse(body, status = 200) {
 }
 
 /** Route fetch calls by URL path, return mock responses. */
-function mockFetch(url, _opts) {
+function mockFetch(url, opts) {
   const parsed = new URL(url);
   const p = parsed.pathname;
+  const method = opts?.method || "GET";
 
   if (p === "/api/v1/memories/search/semantic") {
     const query = parsed.searchParams.get("query");
@@ -115,6 +125,15 @@ function mockFetch(url, _opts) {
       return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
     }
     return Promise.resolve(jsonResponse(MOCK_DATA.readFile));
+  }
+  // Account API routes
+  if (p === "/api/v1/account/agents") {
+    if (method === "POST") return Promise.resolve(jsonResponse(MOCK_DATA.createdAgent, 201));
+    return Promise.resolve(jsonResponse(MOCK_DATA.agentsList));
+  }
+  if (p === "/api/v1/account/keys") {
+    if (method === "POST") return Promise.resolve(jsonResponse(MOCK_DATA.createdKey, 201));
+    return Promise.resolve(jsonResponse(MOCK_DATA.keysList));
   }
   return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
 }
@@ -174,9 +193,9 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP server tool listing", () => {
-  it("exposes exactly 6 tools", async () => {
+  it("exposes exactly 7 tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(6);
+    expect(tools).toHaveLength(7);
   });
 
   it("exposes the expected tool names", async () => {
@@ -186,6 +205,7 @@ describe("MCP server tool listing", () => {
       "get_episodic_memories_by_date",
       "grep",
       "list_files",
+      "memory_manage_agents",
       "memory_search",
       "memory_setup_project",
       "read_file",
@@ -392,5 +412,95 @@ describe("memory_setup_project tool", () => {
     });
     const text = result.content[0].text;
     expect(text).toContain("does not exist");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// memory_manage_agents tests
+// ---------------------------------------------------------------------------
+
+describe("memory_manage_agents tool", () => {
+  it("has required schema fields", async () => {
+    const { tools } = await client.listTools();
+    const tool = tools.find((t) => t.name === "memory_manage_agents");
+    expect(tool).toBeDefined();
+    expect(tool.inputSchema.properties).toHaveProperty("action");
+    expect(tool.inputSchema.properties).toHaveProperty("agent_name");
+    expect(tool.inputSchema.properties).toHaveProperty("agent_description");
+  });
+
+  it("list action returns formatted agent list", async () => {
+    const result = await client.callTool({
+      name: "memory_manage_agents",
+      arguments: { action: "list" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("TestAgent");
+    expect(text).toContain("ProdAgent");
+    expect(text).toContain("id: a1");
+  });
+
+  it("list_keys action returns formatted key list", async () => {
+    const result = await client.callTool({
+      name: "memory_manage_agents",
+      arguments: { action: "list_keys" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("TestAgent-opencode-20260401");
+    expect(text).toContain("TestAgent");
+    expect(text).toContain("mb_...x4Qf");
+    expect(text).toContain("$0.42");
+  });
+
+  it("select without agent_name returns error", async () => {
+    const result = await client.callTool({
+      name: "memory_manage_agents",
+      arguments: { action: "select" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("agent_name is required");
+  });
+
+  it("create without agent_name returns error", async () => {
+    const result = await client.callTool({
+      name: "memory_manage_agents",
+      arguments: { action: "create" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("agent_name is required");
+  });
+
+  it("create action creates agent and returns confirmation", async () => {
+    const result = await client.callTool({
+      name: "memory_manage_agents",
+      arguments: { action: "create", agent_name: "NewAgent" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("Agent created: NewAgent");
+    expect(text).toContain("id: a3");
+    // Must show fingerprint (last 4 chars), never the full key
+    expect(text).toContain("...c123");
+    expect(text).not.toContain("mb_full_secret_key_value_abc123");
+  });
+
+  it("select action selects agent and returns confirmation", async () => {
+    const result = await client.callTool({
+      name: "memory_manage_agents",
+      arguments: { action: "select", agent_name: "TestAgent" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("Agent selected: TestAgent");
+    // Must show fingerprint, never full key
+    expect(text).not.toContain("mb_full_secret_key_value_abc123");
+  });
+
+  it("select with non-matching name returns error with available agents", async () => {
+    const result = await client.callTool({
+      name: "memory_manage_agents",
+      arguments: { action: "select", agent_name: "NonexistentAgent" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("not found");
+    expect(text).toContain("TestAgent");
   });
 });

@@ -32,6 +32,12 @@ export const CONFIG_DIR_ENV_VAR = "MIDBRAIN_CONFIG_DIR";
 export const GLOBAL_KEY_PATH = join(homedir(), ".config", "midbrain", KEY_FILENAME);
 export const DEFAULT_SEARCH_LIMIT = 10;
 
+// Account-level endpoints (agent & key management)
+export const ACCOUNT_KEY_FILENAME = ".midbrain-account-key";
+export const ACCOUNT_KEY_ENV_VAR = "MIDBRAIN_ACCOUNT_KEY";
+export const AGENTS_ENDPOINT = `${API_V1}/account/agents`;
+export const KEYS_ENDPOINT = `${API_V1}/account/keys`;
+
 // --- isNewerVersion ---
 
 /**
@@ -175,6 +181,62 @@ function tryReadKey(filePath, source) {
     // ENOENT, ENOTDIR, and any other fs error — fall through
     return null;
   }
+}
+
+// --- loadAccountKey ---
+
+/**
+ * Resolves a MidBrain account-level API key (for /api/v1/account/* endpoints).
+ * Resolution chain (global-first, unlike loadApiKey which is project-first):
+ * 1. ~/.config/midbrain/.midbrain-account-key (canonical global)
+ * 2. ${configDir}/.midbrain-account-key (client config dir fallback)
+ * 3. MIDBRAIN_ACCOUNT_KEY env var (CI / debug fallback)
+ * 4. Fall back to loadApiKey(projectDir, configDir) — agent key may have account scope
+ *
+ * @param {string|undefined} projectDir
+ * @param {string|undefined} configDir
+ * @returns {{ key: string, source: string }}
+ */
+export function loadAccountKey(projectDir, configDir) {
+  const globalPath = join(homedir(), ".config", "midbrain", ACCOUNT_KEY_FILENAME);
+
+  // 1. Canonical global account key
+  const globalResult = tryReadKey(globalPath, `account-global:${globalPath}`);
+  if (globalResult) return globalResult;
+
+  // 2. Client config dir account key
+  if (configDir) {
+    const clientResult = tryReadKey(
+      join(configDir, ACCOUNT_KEY_FILENAME),
+      `account-config:${configDir}`
+    );
+    if (clientResult) return clientResult;
+  }
+
+  // 3. Env var
+  if (process.env[ACCOUNT_KEY_ENV_VAR]) {
+    const key = process.env[ACCOUNT_KEY_ENV_VAR].trim();
+    if (key) return { key, source: `env:${ACCOUNT_KEY_ENV_VAR}` };
+  }
+
+  // 4. Agent key fallback — may have account scope
+  try {
+    const agentResult = loadApiKey(projectDir, configDir);
+    console.error("[AGENTS] account_key_source=agent-fallback");
+    return { key: agentResult.key, source: `agent-fallback:${agentResult.source}` };
+  } catch {
+    // Agent key also missing — error with setup instructions
+  }
+
+  const home = homedir();
+  throw new Error(
+    `No MidBrain account key found. To manage agents, save your account API key:\n\n` +
+    `  ${home}/.config/midbrain/${ACCOUNT_KEY_FILENAME}\n\n` +
+    `Get your account key from https://memory.midbrain.ai/dashboard/settings\n` +
+    `Then run:\n` +
+    `  echo "your-key" > ${home}/.config/midbrain/${ACCOUNT_KEY_FILENAME}\n` +
+    `  chmod 600 ${home}/.config/midbrain/${ACCOUNT_KEY_FILENAME}`
+  );
 }
 
 // --- storeEpisodic ---

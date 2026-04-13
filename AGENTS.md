@@ -8,19 +8,21 @@ Published on npm as `midbrain-memory-mcp` (v0.1.0+).
 Install: `npm install -g midbrain-memory-mcp` or use `npx -y midbrain-memory-mcp`.
 
 ## Architecture
-- `server.js` — MCP server (Node 20, plain JS). Exposes 6 tools:
+- `server.js` — MCP server (Node 20, plain JS). Exposes 7 tools:
   `memory_search`, `grep`, `get_episodic_memories_by_date`, `list_files`,
-  `read_file`, `memory_setup_project`
+  `read_file`, `memory_setup_project`, `memory_manage_agents`
 - `shared/midbrain-common.mjs` — Shared utilities consumed by all components:
-  `loadApiKey`, `storeEpisodic`, `makeDebugLogger`, and all API constants.
+  `loadApiKey`, `loadAccountKey`, `storeEpisodic`, `makeDebugLogger`, and all API constants.
 - `plugin/midbrain-memory.ts` — OpenCode plugin. Auto-stores every message as
   episodic memory via `chat.message` hook. Runs in Bun (OpenCode's runtime).
   Imports from `./midbrain-common.mjs` (copied alongside it at install time).
 - `claude-code/` — Standalone Node 20 scripts for Claude Code's hook system.
   `capture-user.mjs` (UserPromptSubmit) and `capture-assistant.mjs` (Stop).
   `common.mjs` re-exports from `../shared/midbrain-common.mjs`. No npm deps.
-- `install.mjs` — Automated installer. Detects OpenCode/Claude Code, writes
-  configs, copies plugin + shared lib, sets up API key file (chmod 600).
+- `commands/midbrain.md` — OpenCode slash command definition for `/midbrain`.
+  Routes to `memory_manage_agents` MCP tool via `$ARGUMENTS`.
+- `install.mjs` — Automated installer. Detects OpenCode/Claude Code,
+  writes configs, copies plugin + shared lib + commands, sets up API key files (chmod 600).
 
 ## API Reference
 - Auth: `Authorization: Bearer <key>` header
@@ -205,6 +207,42 @@ The plugin imports ./midbrain-common.mjs at runtime — both must be present.
   .midbrain-key files, .mcp.json, or opencode.json with shell commands.
   The tool handles permissions, config merging, and path resolution correctly.
   Manual setup will break.
+
+## Session Start Protocol
+
+At the start of every session, call `memory_search` with the following queries
+(in order, stop when you have enough context — usually 2-3 queries is sufficient):
+
+1. `memory_search("<project-name>")` — load project-specific context
+2. `memory_search("recent decisions")` — load recent architectural decisions
+3. `memory_search("<current-task-keywords>")` — load task-specific context
+
+**When to recall:**
+- Session start: always
+- When user references something you don't have context for: immediately
+- Before making architectural decisions: proactively
+- When you're about to repeat something: check first
+
+**When NOT to recall:**
+- Mid-implementation when you already have context
+- For questions about the current file (already in context)
+- More than 5 times per session (diminishing returns)
+
+## Slash Commands
+
+When the user types one of these commands, invoke `memory_manage_agents` accordingly:
+
+| Command | Tool action |
+|---------|-------------|
+| `/midbrain` or `/midbrain list` | `action: "list"` |
+| `/midbrain create <name>` | `action: "create"`, `agent_name: <name>` |
+| `/midbrain select <name>` | `action: "select"`, `agent_name: <name>` |
+| `/midbrain keys` | `action: "list_keys"` |
+| `/midbrain setup` | Run full setup flow: list agents → create or select → memory_setup_project |
+| `/midbrain setup <name>` | Create new agent with that name → key → memory_setup_project |
+
+OpenCode users: these are registered as native slash commands via
+`~/.config/opencode/commands/`. Type `/midbrain` or `/midbrain setup` directly in the input bar.
 
 ## Dev Practices
 

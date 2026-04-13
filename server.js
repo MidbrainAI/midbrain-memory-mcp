@@ -16,6 +16,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   loadApiKey,
+  loadAccountKey,
   isNewerVersion,
   SEARCH_SEMANTIC_ENDPOINT,
   SEARCH_LEXICAL_ENDPOINT,
@@ -24,6 +25,8 @@ import {
   DEFAULT_SEARCH_LIMIT,
   CONFIG_DIR_ENV_VAR,
   PROJECT_DIR_ENV_VAR,
+  AGENTS_ENDPOINT,
+  KEYS_ENDPOINT,
 } from "./shared/midbrain-common.mjs";
 import fs from "fs/promises";
 import path from "path";
@@ -96,6 +99,138 @@ async function fetchApi(baseUrl, params = {}) {
     throw new Error(`API ${response.status}: ${body}`);
   }
   return response.json();
+}
+
+// ---------------------------------------------------------------------------
+// Account API helpers (memory_manage_agents)
+// ---------------------------------------------------------------------------
+
+/** Resolve project directory from env or cwd. */
+function resolveProjectDir() {
+  const envDir = process.env[PROJECT_DIR_ENV_VAR];
+  if (envDir) return envDir;
+  return process.cwd();
+}
+
+/**
+ * Makes an authenticated request to MidBrain account API endpoints.
+ * Uses loadAccountKey (not loadApiKey).
+ * @returns {Promise<{ ok: boolean, data?: any, error?: string }>}
+ */
+async function makeAccountApiRequest(url, method, body) {
+  const configDir = process.env[CONFIG_DIR_ENV_VAR];
+  const projectDir = resolveProjectDir();
+  const { key: apiKey } = loadAccountKey(projectDir, configDir);
+
+  const options = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+  };
+  if (body) options.body = JSON.stringify(body);
+
+  const response = await fetch(url, options);
+
+  if (response.status === 401) {
+    return { ok: false, error: "Authentication failed. Your API key may be invalid or expired." };
+  }
+  if (response.status === 403) {
+    return { ok: false, error: "Forbidden. Your API key does not have permission for this operation." };
+  }
+  if (response.status === 429) {
+    return { ok: false, error: "Rate limited. Please wait a moment and try again." };
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => "(no body)");
+    return { ok: false, error: `API error (${response.status}): ${text}` };
+  }
+  if (response.status === 204) return { ok: true, data: null };
+  const data = await response.json();
+  return { ok: true, data };
+}
+
+/** Generate a human-readable key alias: <agent>-<client>-<YYYYMMDD>. */
+function generateKeyAlias(agentName) {
+  const configDir = process.env[CONFIG_DIR_ENV_VAR] || "";
+  let client = "mcp";
+  if (configDir.includes("opencode")) client = "opencode";
+  else if (configDir.includes("claude")) client = "claude";
+  else if (configDir.includes("codex")) client = "codex";
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const safeName = agentName.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 50);
+  return `${safeName}-${client}-${date}`;
+}
+
+/** Write key + project configs after agent create/select. Returns summary lines. */
+async function writeProjectSetup(apiKey, agentName) {
+  const lines = [];
+  const projectDir = resolveProjectDir();
+  const HOME = os.homedir();
+  const serverPath = path.join(__dirname, "server.js");
+  const nodePath = process.execPath;
+  const fingerprint = apiKey.length >= 4 ? `...${apiKey.slice(-4)}` : "****";
+
+  // Write key file (overwrite — intentional agent switch)
+  const keyDir = path.join(projectDir, ".midbrain");
+  const keyFilePath = path.join(keyDir, ".midbrain-key");
+  await fs.mkdir(keyDir, { recursive: true });
+  await fs.writeFile(keyFilePath, apiKey + "\n", "utf8");
+  await fs.chmod(keyFilePath, 0o600);
+  lines.push(`Key written: ${keyFilePath} (chmod 600, fingerprint: ${fingerprint})`);
+
+  // Write opencode.json
+  const ocConfigPath = path.join(projectDir, "opencode.json");
+  const ocConfig = (await readJson(ocConfigPath)) || {};
+  if (!ocConfig["$schema"]) ocConfig["$schema"] = "https://opencode.ai/config.json";
+  if (ocConfig.mcpServers) delete ocConfig.mcpServers;
+  ocConfig.mcp = ocConfig.mcp || {};
+  ocConfig.mcp[MCP_KEY] = {
+    type: "local",
+    command: [nodePath, serverPath],
+    environment: {
+      MIDBRAIN_CONFIG_DIR: path.join(HOME, ".config", "opencode"),
+      MIDBRAIN_PROJECT_DIR: projectDir,
+    },
+    enabled: true,
+  };
+  await writeJson(ocConfigPath, ocConfig);
+  lines.push(`Config written: ${ocConfigPath}`);
+
+  // Write .mcp.json
+  const mcpConfigPath = path.join(projectDir, ".mcp.json");
+  const mcpConfig = (await readJson(mcpConfigPath)) || {};
+  mcpConfig.mcpServers = mcpConfig.mcpServers || {};
+  mcpConfig.mcpServers[MCP_KEY] = {
+    command: nodePath,
+    args: [serverPath],
+    env: {
+      MIDBRAIN_CONFIG_DIR: path.join(HOME, ".config", "claude"),
+      MIDBRAIN_PROJECT_DIR: projectDir,
+    },
+  };
+  await writeJson(mcpConfigPath, mcpConfig);
+  lines.push(`Config written: ${mcpConfigPath}`);
+
+  // Ensure .gitignore has .midbrain-key
+  await ensureGitignore(projectDir);
+
+  lines.push(`Agent: ${agentName}`);
+  lines.push("");
+  lines.push("IMPORTANT: Restart your coding client for the new project config to take effect.");
+  return lines;
+}
+
+/** Append .midbrain-key to .gitignore if not already present. */
+async function ensureGitignore(projectDir) {
+  const giPath = path.join(projectDir, ".gitignore");
+  let content = "";
+  try { content = await fs.readFile(giPath, "utf8"); } catch { /* no .gitignore */ }
+  if (!content.includes(".midbrain-key")) {
+    const nl = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
+    await fs.writeFile(giPath, content + nl + ".midbrain-key\n", "utf8");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +371,131 @@ async function setupProject(projectDir, apiKeyParam) {
     const msg = err instanceof Error ? err.message : String(err);
     return `Error setting up project: ${msg}`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// memory_manage_agents action handlers
+// ---------------------------------------------------------------------------
+
+async function handleListAgents() {
+  const result = await makeAccountApiRequest(AGENTS_ENDPOINT, "GET");
+  if (!result.ok) return { content: [{ type: "text", text: result.error }] };
+
+  const agents = result.data;
+  if (!Array.isArray(agents) || agents.length === 0) {
+    return { content: [{ type: "text", text: "No agents found. Use action 'create' to create one." }] };
+  }
+
+  const lines = agents.map((a, i) => {
+    const desc = a.description ? `\n   Description: ${a.description}` : "";
+    const created = a.created_at ? a.created_at.slice(0, 10) : "unknown";
+    return `${i + 1}. ${a.name} (id: ${a.agent_id})${desc}\n   Created: ${created}`;
+  });
+  return { content: [{ type: "text", text: lines.join("\n") }] };
+}
+
+async function handleSelectAgent(agentName) {
+  if (!agentName) {
+    return { content: [{ type: "text", text: "Error: agent_name is required for 'select'." }] };
+  }
+
+  // Fetch agents to find the match
+  const listResult = await makeAccountApiRequest(AGENTS_ENDPOINT, "GET");
+  if (!listResult.ok) return { content: [{ type: "text", text: listResult.error }] };
+
+  const agents = listResult.data || [];
+  const nameLower = agentName.toLowerCase();
+  let match = agents.find((a) => a.name.toLowerCase() === nameLower);
+  if (!match) match = agents.find((a) => a.name.toLowerCase().includes(nameLower));
+
+  if (!match) {
+    const names = agents.map((a) => a.name).join(", ");
+    return { content: [{ type: "text", text: `Agent "${agentName}" not found. Available agents: ${names || "(none)"}` }] };
+  }
+
+  // Create key for the matched agent
+  const alias = generateKeyAlias(match.name);
+  const keyResult = await makeAccountApiRequest(KEYS_ENDPOINT, "POST", {
+    key_alias: alias,
+    agent_id: match.agent_id,
+  });
+  if (!keyResult.ok) return { content: [{ type: "text", text: `Key creation failed: ${keyResult.error}` }] };
+
+  const fullKey = keyResult.data.key;
+  const fingerprint = fullKey.length >= 4 ? `...${fullKey.slice(-4)}` : "****";
+
+  // Write project config
+  try {
+    const setupLines = await writeProjectSetup(fullKey, match.name);
+    return { content: [{ type: "text", text: [`Agent selected: ${match.name}`, `Key fingerprint: ${fingerprint}`, ...setupLines].join("\n") }] };
+  } catch (writeErr) {
+    const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+    return { content: [{ type: "text", text: `Agent selected: ${match.name}\nKey fingerprint: ${fingerprint}\nFile write failed: ${msg}\nManually place the key at <project>/.midbrain/.midbrain-key` }] };
+  }
+}
+
+async function handleCreateAgent(agentName, agentDescription) {
+  if (!agentName) {
+    return { content: [{ type: "text", text: "Error: agent_name is required for 'create'." }] };
+  }
+
+  // Create the agent
+  const body = { name: agentName };
+  if (agentDescription) body.description = agentDescription;
+  const agentResult = await makeAccountApiRequest(AGENTS_ENDPOINT, "POST", body);
+  if (!agentResult.ok) return { content: [{ type: "text", text: `Agent creation failed: ${agentResult.error}` }] };
+
+  const agent = agentResult.data;
+
+  // Create key for the new agent
+  const alias = generateKeyAlias(agent.name);
+  const keyResult = await makeAccountApiRequest(KEYS_ENDPOINT, "POST", {
+    key_alias: alias,
+    agent_id: agent.agent_id,
+  });
+  if (!keyResult.ok) {
+    return { content: [{ type: "text", text: `Agent created: ${agent.name} (id: ${agent.agent_id})\nKey creation failed: ${keyResult.error}\nUse 'select' with agent name to retry key creation.` }] };
+  }
+
+  const fullKey = keyResult.data.key;
+  const fingerprint = fullKey.length >= 4 ? `...${fullKey.slice(-4)}` : "****";
+
+  // Write project config
+  try {
+    const setupLines = await writeProjectSetup(fullKey, agent.name);
+    return { content: [{ type: "text", text: [`Agent created: ${agent.name} (id: ${agent.agent_id})`, `Key fingerprint: ${fingerprint}`, ...setupLines].join("\n") }] };
+  } catch (writeErr) {
+    const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+    return { content: [{ type: "text", text: `Agent created: ${agent.name} (id: ${agent.agent_id})\nKey fingerprint: ${fingerprint}\nFile write failed: ${msg}\nManually place the key at <project>/.midbrain/.midbrain-key` }] };
+  }
+}
+
+async function handleListKeys() {
+  // Fetch keys and agents in parallel for join
+  const [keysResult, agentsResult] = await Promise.all([
+    makeAccountApiRequest(KEYS_ENDPOINT, "GET"),
+    makeAccountApiRequest(AGENTS_ENDPOINT, "GET"),
+  ]);
+
+  if (!keysResult.ok) return { content: [{ type: "text", text: keysResult.error }] };
+
+  const keys = keysResult.data;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return { content: [{ type: "text", text: "No API keys found." }] };
+  }
+
+  // Build agent name lookup
+  const agentMap = {};
+  if (agentsResult.ok && Array.isArray(agentsResult.data)) {
+    for (const a of agentsResult.data) agentMap[a.agent_id] = a.name;
+  }
+
+  const lines = keys.map((k, i) => {
+    const agentName = agentMap[k.agent_id] || k.agent_id;
+    const budget = k.max_budget != null ? `$${k.spend?.toFixed(2) || "0.00"} / $${k.max_budget.toFixed(2)}` : `$${k.spend?.toFixed(2) || "0.00"}`;
+    return `${i + 1}. Alias: ${k.key_alias || "(none)"}\n   Agent: ${agentName}\n   Token: ${k.token}\n   Spend: ${budget}`;
+  });
+  return { content: [{ type: "text", text: lines.join("\n") }] };
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +733,36 @@ after memory_search to read context around a search hit.`,
     async ({ project_dir, api_key }) => {
       const text = await setupProject(project_dir, api_key);
       return { content: [{ type: "text", text }] };
+    }
+  );
+
+  // --- memory_manage_agents ---
+
+  server.tool(
+    "memory_manage_agents",
+    "Manage MidBrain memory agents and API keys. List agents, select an agent for this project, create new agents, or list API keys. Requires MIDBRAIN_ACCOUNT_KEY to be set.",
+    {
+      action: z.enum(["list", "select", "create", "list_keys"])
+        .describe('list: show all agents | select: wire existing agent to this project | create: new agent + key + project config | list_keys: audit all keys'),
+      agent_name: z.string().min(1).max(200).optional()
+        .describe("Agent name. Required for 'create'. For 'select', matches by name (case-insensitive, partial match allowed)."),
+      agent_description: z.string().max(1000).optional()
+        .describe("Agent description. Optional, used only with 'create'."),
+    },
+    async ({ action, agent_name, agent_description }) => {
+      try {
+        switch (action) {
+          case "list": return await handleListAgents();
+          case "select": return await handleSelectAgent(agent_name);
+          case "create": return await handleCreateAgent(agent_name, agent_description);
+          case "list_keys": return await handleListKeys();
+          default:
+            return { content: [{ type: "text", text: `Unknown action: ${action}` }] };
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: `Agent management failed: ${msg}` }] };
+      }
     }
   );
 

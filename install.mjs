@@ -44,16 +44,18 @@ const PERM_KEYS = [
   'mcp__midbrain-memory__list_files',
   'mcp__midbrain-memory__read_file',
   'mcp__midbrain-memory__memory_setup_project',
+  'mcp__midbrain-memory__memory_manage_agents',
 ];
 
 const PATHS = {
-  globalKey:        path.join(HOME, '.config', 'midbrain', KEY_FILENAME),
-  opencodeKey:      path.join(HOME, '.config', 'opencode', KEY_FILENAME),
-  opencodeConfig:   path.join(HOME, '.config', 'opencode', 'opencode.json'),
-  opencodePlugins:  path.join(HOME, '.config', 'opencode', 'plugins'),
-  claudeKey:        path.join(HOME, '.config', 'claude', KEY_FILENAME),
-  claudeJson:       path.join(HOME, '.claude.json'),
-  claudeSettings:   path.join(HOME, '.claude', 'settings.json'),
+  globalKey:           path.join(HOME, '.config', 'midbrain', KEY_FILENAME),
+  opencodeKey:         path.join(HOME, '.config', 'opencode', KEY_FILENAME),
+  opencodeConfig:      path.join(HOME, '.config', 'opencode', 'opencode.json'),
+  opencodePlugins:     path.join(HOME, '.config', 'opencode', 'plugins'),
+  opencodeCommandsDir: path.join(HOME, '.config', 'opencode', 'commands'),
+  claudeKey:           path.join(HOME, '.config', 'claude', KEY_FILENAME),
+  claudeJson:          path.join(HOME, '.claude.json'),
+  claudeSettings:      path.join(HOME, '.claude', 'settings.json'),
 };
 
 // ---------------------------------------------------------------------------
@@ -119,13 +121,30 @@ async function promptYesNo(question) {
 }
 
 // ---------------------------------------------------------------------------
+// Client registry — each entry describes how to detect, key, and install
+// ---------------------------------------------------------------------------
+const CLIENTS = [
+  {
+    name: 'opencode',
+    detect: () => existsSync(PATHS.opencodeConfig),
+    keyPath: PATHS.opencodeKey,
+    install: installOpenCode,
+  },
+  {
+    name: 'claude-code',
+    detect: () => existsSync(PATHS.claudeJson) || existsSync(PATHS.claudeSettings),
+    keyPath: PATHS.claudeKey,
+    install: installClaudeCode,
+  },
+];
+
+// ---------------------------------------------------------------------------
 // Step 1: Detect installed tools
 // ---------------------------------------------------------------------------
 function detectTools() {
-  return {
-    opencode: existsSync(PATHS.opencodeConfig),
-    claudeCode: existsSync(PATHS.claudeJson) || existsSync(PATHS.claudeSettings),
-  };
+  const tools = {};
+  for (const c of CLIENTS) tools[c.name] = c.detect();
+  return tools;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,61 +171,53 @@ async function findExistingKey(clientKeyPath) {
 
 /**
  * Resolves keys for all detected clients. Prompts when needed.
- * Returns { opencode?: string, claudeCode?: string, global: string }.
+ * Returns object keyed by client name + a 'global' entry.
  */
 async function resolveKeys(tools) {
   const keys = {};
+  const detected = CLIENTS.filter((c) => tools[c.name]);
 
-  if (tools.opencode && tools.claudeCode) {
-    // Both clients detected — check for existing keys first
-    const existingOC = await findExistingKey(PATHS.opencodeKey);
-    const existingCC = await findExistingKey(PATHS.claudeKey);
-
-    if (existingOC && existingCC) {
-      keys.opencode = existingOC.key;
-      keys.claudeCode = existingCC.key;
-      console.log(`Found OpenCode key: ${existingOC.source}`);
-      console.log(`Found Claude Code key: ${existingCC.source}`);
+  if (detected.length >= 2) {
+    // Multiple clients — check for existing keys first
+    const existing = {};
+    for (const c of detected) {
+      existing[c.name] = await findExistingKey(c.keyPath);
+    }
+    const allFound = detected.every((c) => existing[c.name]);
+    if (allFound) {
+      for (const c of detected) {
+        keys[c.name] = existing[c.name].key;
+        console.log(`Found ${c.name} key: ${existing[c.name].source}`);
+      }
     } else {
-      const sameKey = await promptYesNo('Same API key for OpenCode and Claude Code?');
+      const names = detected.map((c) => c.name).join(' and ');
+      const sameKey = await promptYesNo(`Same API key for ${names}?`);
       if (sameKey) {
-        const existing = existingOC || existingCC;
-        const key = existing
-          ? existing.key
+        const first = detected.find((c) => existing[c.name]);
+        const key = first
+          ? existing[first.name].key
           : await prompt('Enter your MidBrain API key: ');
         if (!key) throw new Error('API key is required. Aborting.');
-        keys.opencode = key;
-        keys.claudeCode = key;
+        for (const c of detected) keys[c.name] = key;
       } else {
-        keys.opencode = existingOC
-          ? existingOC.key
-          : await prompt('Enter OpenCode API key: ');
-        keys.claudeCode = existingCC
-          ? existingCC.key
-          : await prompt('Enter Claude Code API key: ');
-        if (!keys.opencode || !keys.claudeCode) {
-          throw new Error('Both API keys are required. Aborting.');
+        for (const c of detected) {
+          keys[c.name] = existing[c.name]
+            ? existing[c.name].key
+            : await prompt(`Enter ${c.name} API key: `);
+          if (!keys[c.name]) throw new Error(`${c.name} API key is required. Aborting.`);
         }
       }
     }
-  } else if (tools.opencode) {
-    const existing = await findExistingKey(PATHS.opencodeKey);
-    keys.opencode = existing
-      ? existing.key
-      : await prompt('Enter your MidBrain API key: ');
-    if (!keys.opencode) throw new Error('API key is required. Aborting.');
-    if (existing) console.log(`Found key: ${existing.source}`);
-  } else if (tools.claudeCode) {
-    const existing = await findExistingKey(PATHS.claudeKey);
-    keys.claudeCode = existing
-      ? existing.key
-      : await prompt('Enter your MidBrain API key: ');
-    if (!keys.claudeCode) throw new Error('API key is required. Aborting.');
-    if (existing) console.log(`Found key: ${existing.source}`);
+  } else if (detected.length === 1) {
+    const c = detected[0];
+    const ex = await findExistingKey(c.keyPath);
+    keys[c.name] = ex ? ex.key : await prompt('Enter your MidBrain API key: ');
+    if (!keys[c.name]) throw new Error('API key is required. Aborting.');
+    if (ex) console.log(`Found key: ${ex.source}`);
   }
 
   // Global fallback uses the first available key
-  keys.global = keys.opencode || keys.claudeCode;
+  keys.global = detected.map((c) => keys[c.name]).find(Boolean);
   return keys;
 }
 
@@ -215,17 +226,17 @@ async function resolveKeys(tools) {
 // ---------------------------------------------------------------------------
 async function writeKeys(keys, summary) {
   // Global fallback
-  await writeKeyFile(PATHS.globalKey, keys.global);
-  summary.push(`Key: ~/.config/midbrain/${KEY_FILENAME} (chmod 600)`);
-
-  if (keys.opencode) {
-    await writeKeyFile(PATHS.opencodeKey, keys.opencode);
-    summary.push(`Key: ~/.config/opencode/${KEY_FILENAME} (chmod 600)`);
+  if (keys.global) {
+    await writeKeyFile(PATHS.globalKey, keys.global);
+    summary.push(`Key: ~/.config/midbrain/${KEY_FILENAME} (chmod 600)`);
   }
 
-  if (keys.claudeCode) {
-    await writeKeyFile(PATHS.claudeKey, keys.claudeCode);
-    summary.push(`Key: ~/.config/claude/${KEY_FILENAME} (chmod 600)`);
+  for (const c of CLIENTS) {
+    if (keys[c.name]) {
+      await writeKeyFile(c.keyPath, keys[c.name]);
+      const rel = c.keyPath.replace(HOME, '~');
+      summary.push(`Key: ${rel} (chmod 600)`);
+    }
   }
 }
 
@@ -271,6 +282,14 @@ async function installOpenCode(summary) {
     enabled: true,
   };
   await writeJson(PATHS.opencodeConfig, config);
+
+  // Install slash command file
+  await fs.mkdir(PATHS.opencodeCommandsDir, { recursive: true });
+  await fs.copyFile(
+    path.join(SCRIPT_DIR, 'commands', 'midbrain.md'),
+    path.join(PATHS.opencodeCommandsDir, 'midbrain.md')
+  );
+  summary.push(`  + Slash command installed: /midbrain`);
 
   summary.push(`  -> Restart OpenCode to apply changes`);
 }
@@ -366,26 +385,24 @@ async function installClaudeCode(summary) {
 // ---------------------------------------------------------------------------
 // Step 6: Print summary
 // ---------------------------------------------------------------------------
-function printSummary(tools, keyLines, opencodeLines, claudeLines) {
+function printSummary(tools, keyLines, clientLines) {
   console.log('');
   console.log('MidBrain Memory MCP — Installation Complete');
   console.log('');
   keyLines.forEach((l) => console.log(l));
   console.log('');
 
-  if (tools.opencode) {
-    console.log('OpenCode:');
-    opencodeLines.forEach((l) => console.log(l));
-    console.log('');
+  let anyDetected = false;
+  for (const c of CLIENTS) {
+    if (tools[c.name]) {
+      anyDetected = true;
+      console.log(`${c.name}:`);
+      (clientLines[c.name] || []).forEach((l) => console.log(l));
+      console.log('');
+    }
   }
 
-  if (tools.claudeCode) {
-    console.log('Claude Code:');
-    claudeLines.forEach((l) => console.log(l));
-    console.log('');
-  }
-
-  if (!tools.opencode && !tools.claudeCode) {
+  if (!anyDetected) {
     console.log('No supported AI tools detected.');
     console.log('  Install OpenCode or Claude Code, then re-run this script.');
   }
@@ -396,8 +413,9 @@ function printSummary(tools, keyLines, opencodeLines, claudeLines) {
 // ---------------------------------------------------------------------------
 async function main() {
   const tools = detectTools();
+  const anyDetected = CLIENTS.some((c) => tools[c.name]);
 
-  if (!tools.opencode && !tools.claudeCode) {
+  if (!anyDetected) {
     console.log('No supported AI tools detected (OpenCode or Claude Code).');
     console.log('Install one of them and re-run: node install.mjs');
     process.exit(0);
@@ -408,26 +426,20 @@ async function main() {
   const keyLines = [];
   await writeKeys(keys, keyLines);
 
-  const opencodeLines = [];
-  const claudeLines = [];
-
-  if (tools.opencode) {
-    try {
-      await installOpenCode(opencodeLines);
-    } catch (err) {
-      opencodeLines.push(`  ! OpenCode install error: ${err.message}`);
+  const clientLines = {};
+  for (const c of CLIENTS) {
+    if (tools[c.name]) {
+      const lines = [];
+      try {
+        await c.install(lines);
+      } catch (err) {
+        lines.push(`  ! ${c.name} install error: ${err.message}`);
+      }
+      clientLines[c.name] = lines;
     }
   }
 
-  if (tools.claudeCode) {
-    try {
-      await installClaudeCode(claudeLines);
-    } catch (err) {
-      claudeLines.push(`  ! Claude Code install error: ${err.message}`);
-    }
-  }
-
-  printSummary(tools, keyLines, opencodeLines, claudeLines);
+  printSummary(tools, keyLines, clientLines);
 }
 
 // ---------------------------------------------------------------------------
@@ -538,7 +550,7 @@ async function projectSetup(rawPath) {
   const serverPath = path.join(SCRIPT_DIR, 'server.js'); // C-7: import.meta.url
   const nodePath = process.execPath; // C-3: absolute node path
 
-  if (tools.opencode) {
+  if (tools['opencode']) {
     const configPath = path.join(projectDir, 'opencode.json');
     const config = (await readJson(configPath)) || {};
 
@@ -568,7 +580,7 @@ async function projectSetup(rawPath) {
     console.error(`[project] wrote: ${configPath}`);
   }
 
-  if (tools.claudeCode) {
+  if (tools['claude-code']) {
     const configPath = path.join(projectDir, '.mcp.json');
     const config = (await readJson(configPath)) || {};
 
@@ -586,7 +598,7 @@ async function projectSetup(rawPath) {
     console.error(`[project] wrote: ${configPath}`);
   }
 
-  if (!tools.opencode && !tools.claudeCode) {
+  if (!tools['opencode'] && !tools['claude-code']) {
     warnings.push('No supported AI clients detected (OpenCode or Claude Code). No configs written.');
     console.error('[project] WARN: no clients detected');
   }
