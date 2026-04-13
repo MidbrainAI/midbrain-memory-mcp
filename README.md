@@ -1,7 +1,7 @@
 # MidBrain Memory MCP
 
 Persistent AI memory for coding agents. An MCP server exposes
-`search_memories`, `grep`, `get_episodic_memories_by_date`, `list_files`,
+`memory_search`, `grep`, `get_episodic_memories_by_date`, `list_files`,
 `read_file`, and `memory_setup_project` for context retrieval and project
 configuration; companion hooks auto-capture every message as episodic memory.
 Works with **OpenCode** and **Claude Code**.
@@ -89,7 +89,7 @@ curl https://memory.midbrain.ai/health
 # Expected: {"status":"ok"}
 
 # 2. Start a session in OpenCode or Claude Code
-# 3. The search_memories tool should be available
+# 3. The memory_search tool should be available
 # 4. Send a few messages, then search — your messages should appear
 ```
 
@@ -211,7 +211,7 @@ Claude Code session
 ```
 
 - **server.js** -- MCP server (Node 20, stdio transport). Exposes six tools:
-  `search_memories`, `grep`, `get_episodic_memories_by_date`, `list_files`,
+  `memory_search`, `grep`, `get_episodic_memories_by_date`, `list_files`,
   `read_file`, and `memory_setup_project`. Plain JavaScript, no build step.
 - **plugin/midbrain-memory.ts** -- OpenCode plugin (Bun/TS). Hooks into
   `chat.message` and `message.updated` events. POSTs every message to the
@@ -226,7 +226,7 @@ Claude Code session
 
 ## How It Works
 
-1. **Search** -- The LLM invokes `search_memories` via MCP. The server queries
+1. **Search** -- The LLM invokes `memory_search` via MCP. The server queries
    the search API and returns scored results as formatted text.
 2. **Capture (OpenCode)** -- The plugin hooks into OpenCode's message lifecycle.
    User messages are captured from `chat.message`; assistant messages from
@@ -333,7 +333,7 @@ so the AI assistant uses memory correctly:
 
 ```markdown
 ## MidBrain Memory Rules
-- Use search_memories at session start to load relevant context
+- Use memory_search at session start to load relevant context
 - Use grep for exact pattern matches (names, IDs, code, URLs)
 - Use list_files and read_file to browse semantic memory documents
 - Use get_episodic_memories_by_date for conversation history by date
@@ -531,7 +531,7 @@ Entries in `settings.json` are silently ignored for MCP server registration.
   },
   "permissions": {
     "allow": [
-      "mcp__midbrain-memory__search_memories",
+      "mcp__midbrain-memory__memory_search",
       "mcp__midbrain-memory__grep",
       "mcp__midbrain-memory__get_episodic_memories_by_date",
       "mcp__midbrain-memory__list_files",

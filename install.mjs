@@ -39,6 +39,10 @@ const KEY_FILENAME = '.midbrain-key';
 const MCP_KEY = 'midbrain-memory';
 const PERM_KEYS = [
   'mcp__midbrain-memory__memory_search',
+  'mcp__midbrain-memory__grep',
+  'mcp__midbrain-memory__get_episodic_memories_by_date',
+  'mcp__midbrain-memory__list_files',
+  'mcp__midbrain-memory__read_file',
   'mcp__midbrain-memory__memory_setup_project',
 ];
 

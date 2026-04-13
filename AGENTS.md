@@ -9,7 +9,7 @@ Install: `npm install -g midbrain-memory-mcp` or use `npx -y midbrain-memory-mcp
 
 ## Architecture
 - `server.js` — MCP server (Node 20, plain JS). Exposes 6 tools:
-  `search_memories`, `grep`, `get_episodic_memories_by_date`, `list_files`,
+  `memory_search`, `grep`, `get_episodic_memories_by_date`, `list_files`,
   `read_file`, `memory_setup_project`
 - `shared/midbrain-common.mjs` — Shared utilities consumed by all components:
   `loadApiKey`, `storeEpisodic`, `makeDebugLogger`, and all API constants.
@@ -71,7 +71,7 @@ Both OpenCode and Claude Code will automatically detect the project key.
 No hook reconfiguration, no env vars, no .mcp.json changes needed for the write path.
 
 ### Per-Project Search (MCP Server)
-The MCP server (search_memories tool) also needs project awareness for the read
+The MCP server (memory_search tool) also needs project awareness for the read
 path. Set MIDBRAIN_PROJECT_DIR in the MCP server's environment config:
 
 OpenCode — project-level opencode.json in the project root:
@@ -193,7 +193,7 @@ Copy BOTH files to ~/.config/opencode/plugins/:
 The plugin imports ./midbrain-common.mjs at runtime — both must be present.
 
 ## Rules for LLM (put in project AGENTS.md where MCP is used)
-- Use search_memories at session start to load relevant context
+- Use memory_search at session start to load relevant context
 - Use grep for exact pattern matches (names, IDs, code, URLs)
 - Use list_files and read_file to browse semantic memory documents
 - Use get_episodic_memories_by_date for conversation history by date
@@ -268,7 +268,7 @@ Tests live in `tests/`, using vitest (ESM). Two categories:
 ## Test Plan (manual smoke tests)
 1. node server.js -- should not crash, should print "MCP server running" to stderr
 2. curl https://memory.midbrain.ai/health -- should return {"status": "ok"}
-3. In fresh OpenCode session: search_memories should be available as a tool
+3. In fresh OpenCode session: memory_search should be available as a tool
 4. Send a message -- plugin should auto-store it as episodic
 5. Verify: curl /api/v1/memories/episodic?limit=1 shows the stored message
 

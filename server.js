@@ -2,7 +2,7 @@
 /**
  * MidBrain Memory MCP Server
  *
- * Exposes 6 tools: search_memories, grep, get_episodic_memories_by_date,
+ * Exposes 6 tools: memory_search, grep, get_episodic_memories_by_date,
  * list_files, read_file, memory_setup_project.
  * Communicates with the MidBrain memory API over HTTPS (GET endpoints).
  * Key priority: project file -> client config file -> env var -> global ~/.config/midbrain/.midbrain-key
@@ -70,10 +70,24 @@ async function fetchApi(baseUrl, params = {}) {
 
   console.error(`[API] url=${url} key_source=${source}`);
 
-  const response = await fetch(url.toString(), {
+  let response = await fetch(url.toString(), {
     method: "GET",
     headers: { Authorization: `Bearer ${apiKey}` },
   });
+
+  // GET→POST fallback: if GET endpoint not yet deployed, retry with legacy POST.
+  // Remove this block once Radu confirms GET routes are live on memory.midbrain.ai.
+  if (response.status === 404 || response.status === 405) {
+    console.error(`[API] GET ${url.toString()} returned ${response.status}, retrying with POST`);
+    response = await fetch(baseUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(params),
+    });
+  }
 
   console.error(`[API] status=${response.status}`);
 
@@ -239,10 +253,10 @@ export function createServer() {
     version: PKG_VERSION,
   });
 
-  // --- search_memories (semantic vector search) ---
+  // --- memory_search (semantic vector search) ---
 
   server.tool(
-    "search_memories",
+    "memory_search",
     `Search memories by semantic similarity.
 
 Results include source path and line numbers for semantic memories.
@@ -421,9 +435,9 @@ Use this to discover what knowledge files are available.`,
     `Read a document from semantic memory by line range.
 
 Returns numbered lines like a file viewer. Use after list_files or
-after search_memories to read context around a search hit.`,
+after memory_search to read context around a search hit.`,
     {
-      file_path: z.string().describe("Path of the file to read (as returned by list_files or search_memories)."),
+      file_path: z.string().describe("Path of the file to read (as returned by list_files or memory_search)."),
       start_line: z
         .number().int().min(1).optional().default(1)
         .describe("First line to read, 1-indexed (default: 1)."),
@@ -513,8 +527,9 @@ async function checkForUpdate() {
 }
 
 // --- Start (only when run directly, not when imported) ---
+import { realpathSync } from 'fs';
 const isMain = process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(__filename);
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 
 if (isMain) {
   const server = createServer();

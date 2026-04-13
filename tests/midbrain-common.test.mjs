@@ -22,6 +22,7 @@ import {
   EPISODIC_ENDPOINT,
   KEY_FILENAME,
   DEFAULT_SEARCH_LIMIT,
+  GLOBAL_KEY_PATH,
 } from "../shared/midbrain-common.mjs";
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,8 @@ describe("constants", () => {
 describe("loadApiKey", () => {
   let tmpDir;
   const savedEnv = {};
+  let globalKeyBackedUp = false;
+  const globalKeyBak = GLOBAL_KEY_PATH + ".test-bak";
 
   /** Create a key file with content and chmod 600. */
   function writeKey(filePath, content = "test-key-abc") {
@@ -117,6 +120,11 @@ describe("loadApiKey", () => {
       savedEnv[k] = process.env[k];
       delete process.env[k];
     }
+    // Move global key aside so tests control all key resolution paths
+    if (fs.existsSync(GLOBAL_KEY_PATH)) {
+      fs.renameSync(GLOBAL_KEY_PATH, globalKeyBak);
+      globalKeyBackedUp = true;
+    }
   });
 
   afterEach(() => {
@@ -126,6 +134,11 @@ describe("loadApiKey", () => {
       else process.env[k] = v;
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    // Restore global key
+    if (globalKeyBackedUp) {
+      fs.renameSync(globalKeyBak, GLOBAL_KEY_PATH);
+      globalKeyBackedUp = false;
+    }
   });
 
   it("step 1a: reads flat .midbrain-key in projectDir", () => {

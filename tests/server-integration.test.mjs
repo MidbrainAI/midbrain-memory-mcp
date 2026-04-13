@@ -186,17 +186,17 @@ describe("MCP server tool listing", () => {
       "get_episodic_memories_by_date",
       "grep",
       "list_files",
+      "memory_search",
       "memory_setup_project",
       "read_file",
-      "search_memories",
     ]);
   });
 });
 
-describe("search_memories tool", () => {
+describe("memory_search tool", () => {
   it("has required schema fields", async () => {
     const { tools } = await client.listTools();
-    const tool = tools.find((t) => t.name === "search_memories");
+    const tool = tools.find((t) => t.name === "memory_search");
     expect(tool).toBeDefined();
     expect(tool.inputSchema.properties).toHaveProperty("query");
     expect(tool.inputSchema.properties).toHaveProperty("limit");
@@ -204,7 +204,7 @@ describe("search_memories tool", () => {
   });
 
   it("returns formatted results with role, timestamp, and relevance", async () => {
-    const result = await client.callTool({ name: "search_memories", arguments: { query: "setup" } });
+    const result = await client.callTool({ name: "memory_search", arguments: { query: "setup" } });
     const text = result.content[0].text;
     expect(text).toContain("[user |");
     expect(text).toContain("relevance=");
@@ -212,14 +212,14 @@ describe("search_memories tool", () => {
   });
 
   it("includes source:line for semantic memories with metadata", async () => {
-    const result = await client.callTool({ name: "search_memories", arguments: { query: "setup" } });
+    const result = await client.callTool({ name: "memory_search", arguments: { query: "setup" } });
     const text = result.content[0].text;
     expect(text).toContain("docs/setup.md:1");
   });
 
   it("filters to semantic-only when memory_type=semantic", async () => {
     const result = await client.callTool({
-      name: "search_memories",
+      name: "memory_search",
       arguments: { query: "setup", memory_type: "semantic" },
     });
     const text = result.content[0].text;
@@ -230,7 +230,7 @@ describe("search_memories tool", () => {
 
   it("filters to episodic-only when memory_type=episodic", async () => {
     const result = await client.callTool({
-      name: "search_memories",
+      name: "memory_search",
       arguments: { query: "setup", memory_type: "episodic" },
     });
     const text = result.content[0].text;
@@ -240,7 +240,7 @@ describe("search_memories tool", () => {
 
   it("returns no-results message for empty API response", async () => {
     const result = await client.callTool({
-      name: "search_memories",
+      name: "memory_search",
       arguments: { query: "__empty__" },
     });
     const text = result.content[0].text;

@@ -21,7 +21,6 @@ export const API_V1 = `${API_BASE_URL}/api/v1`;
 export const EPISODIC_ENDPOINT = `${API_V1}/memories/episodic`;
 
 // Read-path endpoints (used by MCP server tools)
-export const SEARCH_ENDPOINT = `${API_V1}/memories/search`;
 export const SEARCH_SEMANTIC_ENDPOINT = `${API_V1}/memories/search/semantic`;
 export const SEARCH_LEXICAL_ENDPOINT = `${API_V1}/memories/search/lexical`;
 export const SEMANTIC_FILES_ENDPOINT = `${API_V1}/memories/semantic/files`;
