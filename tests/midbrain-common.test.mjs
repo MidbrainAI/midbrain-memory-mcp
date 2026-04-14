@@ -254,6 +254,100 @@ describe("loadApiKey", () => {
     expect(key).toBe("cfg-key");
     expect(source).toContain("config-arg");
   });
+
+  it("step 2b: reads .midbrain/.midbrain-key from MIDBRAIN_PROJECT_DIR env", () => {
+    const envDir = path.join(tmpDir, "env-proj-sub");
+    fs.mkdirSync(envDir);
+    writeKey(path.join(envDir, ".midbrain", KEY_FILENAME), "env-proj-sub-key");
+    process.env.MIDBRAIN_PROJECT_DIR = envDir;
+
+    const { key, source } = loadApiKey(undefined, undefined);
+    expect(key).toBe("env-proj-sub-key");
+    expect(source).toContain("project-env");
+    expect(source).toContain(".midbrain");
+  });
+
+  it("step 4: reads from MIDBRAIN_CONFIG_DIR env when no configDir arg", () => {
+    const envCfg = path.join(tmpDir, "env-config");
+    fs.mkdirSync(envCfg);
+    writeKey(path.join(envCfg, KEY_FILENAME), "env-config-key");
+    process.env.MIDBRAIN_CONFIG_DIR = envCfg;
+
+    const { key, source } = loadApiKey(undefined, undefined);
+    expect(key).toBe("env-config-key");
+    expect(source).toContain("config-env");
+  });
+
+  it("step 6: falls through to global key when projectDir has no key", () => {
+    // Create a projectDir with no key, and a global key
+    const projDir = path.join(tmpDir, "proj-no-key");
+    fs.mkdirSync(projDir);
+    writeKey(GLOBAL_KEY_PATH, "global-fallback-key");
+
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { key, source } = loadApiKey(projDir, undefined);
+    stderrSpy.mockRestore();
+
+    expect(key).toBe("global-fallback-key");
+    expect(source).toContain("global");
+  });
+
+  it("emits WARN to stderr when projectDir falls through to global key", () => {
+    const projDir = path.join(tmpDir, "proj-no-key-warn");
+    fs.mkdirSync(projDir);
+    writeKey(GLOBAL_KEY_PATH, "global-key");
+
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    loadApiKey(projDir, undefined);
+
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("WARN")
+    );
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining(projDir)
+    );
+    stderrSpy.mockRestore();
+  });
+
+  it("throws on EACCES (permission denied) for key file", () => {
+    const projDir = path.join(tmpDir, "proj-perm");
+    fs.mkdirSync(projDir);
+    const keyPath = path.join(projDir, KEY_FILENAME);
+    // Write key then make it unreadable
+    writeKey(keyPath, "secret-key");
+    fs.chmodSync(keyPath, 0o000);
+
+    try {
+      expect(() => loadApiKey(projDir, undefined)).toThrow(/permission denied/i);
+    } finally {
+      // Restore permissions for cleanup
+      fs.chmodSync(keyPath, 0o600);
+    }
+  });
+
+  it("step 2a takes priority over step 2b for MIDBRAIN_PROJECT_DIR env", () => {
+    const envDir = path.join(tmpDir, "env-proj-priority");
+    fs.mkdirSync(envDir);
+    writeKey(path.join(envDir, KEY_FILENAME), "flat-env-key");
+    writeKey(path.join(envDir, ".midbrain", KEY_FILENAME), "sub-env-key");
+    process.env.MIDBRAIN_PROJECT_DIR = envDir;
+
+    const { key } = loadApiKey(undefined, undefined);
+    expect(key).toBe("flat-env-key");
+  });
+
+  it("explicit configDir arg takes priority over MIDBRAIN_CONFIG_DIR env", () => {
+    const cfgArg = path.join(tmpDir, "config-arg");
+    const cfgEnv = path.join(tmpDir, "config-env");
+    fs.mkdirSync(cfgArg);
+    fs.mkdirSync(cfgEnv);
+    writeKey(path.join(cfgArg, KEY_FILENAME), "arg-key");
+    writeKey(path.join(cfgEnv, KEY_FILENAME), "env-key");
+    process.env.MIDBRAIN_CONFIG_DIR = cfgEnv;
+
+    const { key } = loadApiKey(undefined, cfgArg);
+    expect(key).toBe("arg-key");
+  });
 });
 
 // ---------------------------------------------------------------------------
