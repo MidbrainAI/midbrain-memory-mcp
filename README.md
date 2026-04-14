@@ -96,8 +96,8 @@ curl https://memory.midbrain.ai/health
 ### Alternative: Install from Source
 
 ```sh
-git clone https://github.com/MidbrainAI/MidBrain_Memory_MCP.git
-cd MidBrain_Memory_MCP
+git clone https://github.com/MidbrainAI/midbrain-memory-mcp.git
+cd midbrain-memory-mcp
 npm run bootstrap
 node install.mjs
 ```
@@ -358,7 +358,7 @@ so the AI assistant uses memory correctly:
 **Check:**
 ```sh
 # Verify the server starts
-node /path/to/MidBrain_Memory_MCP/server.js
+node /path/to/midbrain-memory-mcp/server.js
 # Should print "MCP server running" to stderr
 ```
 
@@ -439,7 +439,7 @@ chmod 600 ~/.config/midbrain/.midbrain-key
 #### 1. Install dependencies
 
 ```sh
-cd /path/to/MidBrain_Memory_MCP && npm install
+cd /path/to/midbrain-memory-mcp && npm install
 ```
 
 #### 2. Register the MCP server
@@ -476,7 +476,7 @@ Both files must live in the same directory -- the plugin imports from
 #### 1. Install dependencies
 
 ```sh
-cd /path/to/MidBrain_Memory_MCP && npm install
+cd /path/to/midbrain-memory-mcp && npm install
 ```
 
 #### 2. Register MCP server in `~/.claude.json`
@@ -547,7 +547,7 @@ Entries in `settings.json` are silently ignored for MCP server registration.
 ## File Structure
 
 ```
-MidBrain_Memory_MCP/
+midbrain-memory-mcp/
   server.js                  MCP server (Node 20, plain JS, 6 tools)
   install.mjs                Automated installer + --project CLI mode
   shared/
@@ -574,8 +574,8 @@ MidBrain_Memory_MCP/
 ### Getting Started
 
 ```sh
-git clone https://github.com/MidbrainAI/MidBrain_Memory_MCP.git
-cd MidBrain_Memory_MCP
+git clone https://github.com/MidbrainAI/midbrain-memory-mcp.git
+cd midbrain-memory-mcp
 npm run bootstrap   # installs deps + sets up git hooks
 ```
 

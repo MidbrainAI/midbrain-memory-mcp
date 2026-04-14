@@ -7,10 +7,10 @@
   "homepage": "https://memory.midbrain.ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MidbrainAI/MidBrain_Memory_MCP.git"
+    "url": "git+https://github.com/MidbrainAI/midbrain-memory-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/MidbrainAI/MidBrain_Memory_MCP/issues"
+    "url": "https://github.com/MidbrainAI/midbrain-memory-mcp/issues"
   },
   "main": "server.js",
   "type": "module",

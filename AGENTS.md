@@ -174,7 +174,7 @@ Using `path: { sessionID }` will silently fail (returns no data).
   "mcp": {
     "midbrain-memory": {
       "type": "local",
-      "command": ["node", "/Users/carloses/MidBrain_Memory_MCP/server.js"],
+      "command": ["node", "/Users/carloses/midbrain-memory-mcp/server.js"],
       "environment": {
         "MIDBRAIN_CONFIG_DIR": "~/.config/opencode"
       },
