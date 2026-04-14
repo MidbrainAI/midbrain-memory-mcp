@@ -6,7 +6,7 @@
  * and mocks globalThis.fetch to simulate API responses.
  */
 
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import fs from "fs";
@@ -89,6 +89,16 @@ function mockFetch(url, _opts) {
   if (p === "/api/v1/memories/search/semantic") {
     const query = parsed.searchParams.get("query");
     if (query === "__empty__") return Promise.resolve(jsonResponse([]));
+    if (query === "__only_episodic__") {
+      // Return only user/assistant (episodic) results — no external/semantic
+      return Promise.resolve(jsonResponse([
+        MOCK_DATA.searchSemantic[0], // user
+        MOCK_DATA.searchSemantic[2], // assistant
+      ]));
+    }
+    if (query === "__server_error__") {
+      return Promise.resolve(jsonResponse({ detail: "Internal server error" }, 500));
+    }
     return Promise.resolve(jsonResponse(MOCK_DATA.searchSemantic));
   }
   if (p === "/api/v1/memories/search/lexical") {
@@ -97,12 +107,26 @@ function mockFetch(url, _opts) {
       return Promise.resolve(jsonResponse({ detail: "Invalid regex pattern" }, 400));
     }
     if (pattern === "__empty__") return Promise.resolve(jsonResponse([]));
+    if (pattern === "__server_error__") {
+      return Promise.resolve(jsonResponse({ detail: "Internal server error" }, 500));
+    }
     return Promise.resolve(jsonResponse(MOCK_DATA.searchLexical));
   }
   if (p === "/api/v1/memories/episodic") {
     const startDate = parsed.searchParams.get("start_date") || "";
     if (startDate.startsWith("1999")) {
       return Promise.resolve(jsonResponse({ items: [], total: 0, page: 1, limit: 1000 }));
+    }
+    if (startDate.startsWith("2020")) {
+      // Return truncated result: total > items.length
+      return Promise.resolve(jsonResponse({
+        items: [
+          { role: "user", text: "First message", occurred_at: "2020-01-01T10:00:00Z" },
+        ],
+        total: 50,
+        page: 1,
+        limit: 1000,
+      }));
     }
     return Promise.resolve(jsonResponse(MOCK_DATA.episodicList));
   }
@@ -246,6 +270,26 @@ describe("memory_search tool", () => {
     const text = result.content[0].text;
     expect(text).toBe("No memories found matching that query.");
   });
+
+  it("returns no-results when all results filtered out by memory_type", async () => {
+    // __only_episodic__ returns only user+assistant; filtering for semantic yields nothing
+    const result = await client.callTool({
+      name: "memory_search",
+      arguments: { query: "__only_episodic__", memory_type: "semantic" },
+    });
+    const text = result.content[0].text;
+    expect(text).toBe("No memories found matching that query.");
+  });
+
+  it("returns error text on API 500 (never throws)", async () => {
+    const result = await client.callTool({
+      name: "memory_search",
+      arguments: { query: "__server_error__" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("Memory search failed");
+    expect(text).toContain("500");
+  });
 });
 
 describe("grep tool", () => {
@@ -275,6 +319,13 @@ describe("grep tool", () => {
     const result = await client.callTool({ name: "grep", arguments: { pattern: "__empty__" } });
     const text = result.content[0].text;
     expect(text).toBe("No matches for pattern '__empty__'.");
+  });
+
+  it("returns error text on API 500 (never throws)", async () => {
+    const result = await client.callTool({ name: "grep", arguments: { pattern: "__server_error__" } });
+    const text = result.content[0].text;
+    expect(text).toContain("Grep failed");
+    expect(text).toContain("500");
   });
 });
 
@@ -317,6 +368,15 @@ describe("get_episodic_memories_by_date tool", () => {
     });
     const text = result.content[0].text;
     expect(text).toContain("No episodic memories found");
+  });
+
+  it("shows truncation warning when total exceeds returned items", async () => {
+    const result = await client.callTool({
+      name: "get_episodic_memories_by_date",
+      arguments: { date: "2020-01-01" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("showing 1 of 50 memories");
   });
 });
 
@@ -392,5 +452,269 @@ describe("memory_setup_project tool", () => {
     });
     const text = result.content[0].text;
     expect(text).toContain("does not exist");
+  });
+});
+
+describe("memory_setup_project — config file integration", () => {
+  let tmpProjectDir;
+  let savedConfigDir;
+
+  beforeEach(() => {
+    tmpProjectDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-project-test-"));
+    savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
+  });
+
+  afterEach(() => {
+    if (savedConfigDir === undefined) delete process.env.MIDBRAIN_CONFIG_DIR;
+    else process.env.MIDBRAIN_CONFIG_DIR = savedConfigDir;
+    try { fs.rmSync(tmpProjectDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("creates .midbrain/.midbrain-key with chmod 600", async () => {
+    process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "proj-test-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("Key file created");
+
+    const keyPath = path.join(tmpProjectDir, ".midbrain", ".midbrain-key");
+    expect(fs.existsSync(keyPath)).toBe(true);
+    const content = fs.readFileSync(keyPath, "utf8").trim();
+    expect(content).toBe("proj-test-key");
+    const stat = fs.statSync(keyPath);
+    expect(stat.mode & 0o777).toBe(0o600);
+  });
+
+  it("preserves existing key file", async () => {
+    process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
+    // Pre-create key
+    const keyDir = path.join(tmpProjectDir, ".midbrain");
+    fs.mkdirSync(keyDir, { recursive: true });
+    fs.writeFileSync(path.join(keyDir, ".midbrain-key"), "existing-key\n", "utf8");
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "new-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("preserved");
+    const content = fs.readFileSync(path.join(keyDir, ".midbrain-key"), "utf8").trim();
+    expect(content).toBe("existing-key");
+  });
+
+  it("writes opencode.json when MIDBRAIN_CONFIG_DIR contains 'opencode'", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "oc-test-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("Config written");
+
+    const configPath = path.join(tmpProjectDir, "opencode.json");
+    expect(fs.existsSync(configPath)).toBe(true);
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    expect(config.mcp).toBeDefined();
+    expect(config.mcp["midbrain-memory"]).toBeDefined();
+    expect(config.mcp["midbrain-memory"].type).toBe("local");
+    expect(config.mcp["midbrain-memory"].environment.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
+    expect(config.mcp["midbrain-memory"].enabled).toBe(true);
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("writes .mcp.json when MIDBRAIN_CONFIG_DIR contains 'claude'", async () => {
+    const ccConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-cfg-"));
+    fs.writeFileSync(path.join(ccConfigDir, ".midbrain-key"), "cc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ccConfigDir;
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "cc-test-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("Config written");
+
+    const configPath = path.join(tmpProjectDir, ".mcp.json");
+    expect(fs.existsSync(configPath)).toBe(true);
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    expect(config.mcpServers).toBeDefined();
+    expect(config.mcpServers["midbrain-memory"]).toBeDefined();
+    expect(config.mcpServers["midbrain-memory"].env.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
+
+    fs.rmSync(ccConfigDir, { recursive: true, force: true });
+  });
+
+  it("merges into existing opencode.json without clobbering", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    // Pre-create opencode.json with existing config
+    const existingConfig = {
+      $schema: "https://opencode.ai/config.json",
+      provider: { aws: {} },
+      model: "my-model",
+      mcp: { "other-server": { type: "local", enabled: true } },
+    };
+    fs.writeFileSync(
+      path.join(tmpProjectDir, "opencode.json"),
+      JSON.stringify(existingConfig, null, 2),
+      "utf8"
+    );
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "oc-test-key" },
+    });
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
+    expect(config.provider).toEqual({ aws: {} });
+    expect(config.model).toBe("my-model");
+    expect(config.mcp["other-server"]).toEqual({ type: "local", enabled: true });
+    expect(config.mcp["midbrain-memory"]).toBeDefined();
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("merges into existing .mcp.json without clobbering", async () => {
+    const ccConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-cfg-"));
+    fs.writeFileSync(path.join(ccConfigDir, ".midbrain-key"), "cc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ccConfigDir;
+
+    // Pre-create .mcp.json
+    const existingConfig = {
+      mcpServers: { "other-server": { command: "other", args: ["-v"] } },
+    };
+    fs.writeFileSync(
+      path.join(tmpProjectDir, ".mcp.json"),
+      JSON.stringify(existingConfig, null, 2),
+      "utf8"
+    );
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "cc-test-key" },
+    });
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, ".mcp.json"), "utf8"));
+    expect(config.mcpServers["other-server"]).toEqual({ command: "other", args: ["-v"] });
+    expect(config.mcpServers["midbrain-memory"]).toBeDefined();
+
+    fs.rmSync(ccConfigDir, { recursive: true, force: true });
+  });
+
+  it("removes invalid mcpServers from opencode.json", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    fs.writeFileSync(
+      path.join(tmpProjectDir, "opencode.json"),
+      JSON.stringify({ mcpServers: { old: {} }, model: "keep-me" }),
+      "utf8"
+    );
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "oc-test-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("mcpServers");
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
+    expect(config.mcpServers).toBeUndefined();
+    expect(config.model).toBe("keep-me");
+    expect(config.mcp["midbrain-memory"]).toBeDefined();
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("uses absolute node path in command", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "oc-test-key" },
+    });
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
+    const cmd = config.mcp["midbrain-memory"].command;
+    expect(path.isAbsolute(cmd[0])).toBe(true);
+    expect(path.isAbsolute(cmd[1])).toBe(true);
+    expect(cmd[1]).toContain("server.js");
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("includes restart reminder in output", async () => {
+    process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "test-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("restart");
+  });
+
+  it("warns when client cannot be detected from config dir", async () => {
+    // Config dir doesn't contain "opencode" or "claude"
+    process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "test-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("could not detect client");
+  });
+
+  it("never throws — returns error as text", async () => {
+    // Even for a valid-looking but permission-denied scenario, should not throw
+    process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "test-key" },
+    });
+    expect(result.content[0].type).toBe("text");
+    expect(typeof result.content[0].text).toBe("string");
+  });
+
+  it("adds $schema when creating new opencode.json", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "oc-test-key" },
+    });
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
+    expect(config.$schema).toBe("https://opencode.ai/config.json");
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("falls back to server key when api_key not provided", async () => {
+    process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("Key file created");
+
+    const keyContent = fs.readFileSync(
+      path.join(tmpProjectDir, ".midbrain", ".midbrain-key"),
+      "utf8"
+    ).trim();
+    expect(keyContent).toBe("test-key-for-mcp-tests");
   });
 });

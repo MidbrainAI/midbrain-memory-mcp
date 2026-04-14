@@ -607,28 +607,49 @@ async function projectSetup(rawPath) {
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch: --project mode vs interactive
+// Exports (for testability — no behaviour change when run as CLI)
 // ---------------------------------------------------------------------------
-const projectFlagIdx = process.argv.indexOf('--project');
-if (projectFlagIdx !== -1) {
-  // C-12: validate arg
-  const projectArg = process.argv[projectFlagIdx + 1];
-  if (!projectArg || projectArg.startsWith('-')) {
-    console.error('Error: --project requires a path argument.');
-    console.error('Usage: node install.mjs --project /absolute/path/to/project');
-    process.exit(1);
+export {
+  readJson,
+  writeJson,
+  detectTools,
+  projectSetup,
+  installOpenCode,
+  installClaudeJson,
+  installClaudeSettings,
+  PATHS,
+  MCP_KEY,
+};
+
+// ---------------------------------------------------------------------------
+// Dispatch: --project mode vs interactive (only when run directly)
+// ---------------------------------------------------------------------------
+import { realpathSync } from 'fs';
+const isMain = process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+
+if (isMain) {
+  const projectFlagIdx = process.argv.indexOf('--project');
+  if (projectFlagIdx !== -1) {
+    // C-12: validate arg
+    const projectArg = process.argv[projectFlagIdx + 1];
+    if (!projectArg || projectArg.startsWith('-')) {
+      console.error('Error: --project requires a path argument.');
+      console.error('Usage: node install.mjs --project /absolute/path/to/project');
+      process.exit(1);
+    }
+    if (projectArg.trim() === '') {
+      console.error('Error: --project path cannot be empty.');
+      process.exit(1);
+    }
+    projectSetup(projectArg).catch((err) => {
+      console.error(`Fatal error: ${err.message}`);
+      process.exit(1);
+    });
+  } else {
+    main().catch((err) => {
+      console.error('Fatal error:', err.message);
+      process.exit(1);
+    });
   }
-  if (projectArg.trim() === '') {
-    console.error('Error: --project path cannot be empty.');
-    process.exit(1);
-  }
-  projectSetup(projectArg).catch((err) => {
-    console.error(`Fatal error: ${err.message}`);
-    process.exit(1);
-  });
-} else {
-  main().catch((err) => {
-    console.error('Fatal error:', err.message);
-    process.exit(1);
-  });
 }
