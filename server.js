@@ -26,10 +26,12 @@ import {
   PROJECT_DIR_ENV_VAR,
 } from "./shared/midbrain-common.mjs";
 import fs from "fs/promises";
+import { existsSync } from "fs";
 import path from "path";
 import os from "os";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
+import { parse as jsoncParse, modify as jsoncModify, applyEdits } from "jsonc-parser";
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require("./package.json");
@@ -39,6 +41,7 @@ const __dirname = path.dirname(__filename);
 
 const MCP_KEY = "midbrain-memory";
 const EPISODIC_PAGE_LIMIT = 1000;
+const JSONC_FORMAT = { tabSize: 2, insertSpaces: true, eol: "\n" };
 
 // --- Update check constants (PRD-005) ---
 const NPM_REGISTRY_URL = "https://registry.npmjs.org/midbrain-memory-mcp/latest";
@@ -102,11 +105,16 @@ async function fetchApi(baseUrl, params = {}) {
 // Setup-project helpers (module-level, called from tool handler)
 // ---------------------------------------------------------------------------
 
-/** Read and JSON-parse a file. Returns null if file does not exist. */
+/** Read and parse a JSON/JSONC file. Returns null if file does not exist. */
 async function readJson(filePath) {
   try {
     const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw);
+    const errors = [];
+    const result = jsoncParse(raw, errors, { allowTrailingComma: true });
+    if (errors.length > 0) {
+      throw new SyntaxError(`Invalid JSON/JSONC content (${errors.length} error(s))`);
+    }
+    return result;
   } catch (err) {
     if (err.code === "ENOENT") return null;
     throw new Error(`Failed to parse ${filePath}: ${err.message}`, { cause: err });
@@ -117,6 +125,39 @@ async function readJson(filePath) {
 async function writeJson(filePath, data) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(data, null, 2) + "\n", "utf8");
+}
+
+/**
+ * Resolves which OpenCode config file exists in a directory.
+ * Prefers .jsonc over .json (matches OpenCode's own resolution order).
+ */
+function resolveOpencodeConfig(dir) {
+  const jsoncPath = path.join(dir, "opencode.jsonc");
+  if (existsSync(jsoncPath)) return jsoncPath;
+  const jsonPath = path.join(dir, "opencode.json");
+  if (existsSync(jsonPath)) return jsonPath;
+  return jsonPath;
+}
+
+/**
+ * Surgically patch a JSON/JSONC file, preserving comments and formatting.
+ * Creates the file with '{}' if it does not exist.
+ */
+async function patchJsonFile(filePath, modifications) {
+  let text;
+  try {
+    text = await fs.readFile(filePath, "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT") text = "{}";
+    else throw err;
+  }
+  for (const { path: jsonPath, value } of modifications) {
+    const edits = jsoncModify(text, jsonPath, value, { formattingOptions: JSONC_FORMAT });
+    text = applyEdits(text, edits);
+  }
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  if (!text.endsWith("\n")) text += "\n";
+  await fs.writeFile(filePath, text, "utf8");
 }
 
 /**
@@ -191,24 +232,29 @@ async function setupProject(projectDir, apiKeyParam) {
     const isClaude = configDir.includes("claude");
 
     if (isOpenCode) {
-      const configPath = path.join(resolvedDir, "opencode.json");
+      const configPath = resolveOpencodeConfig(resolvedDir);
       const config = (await readJson(configPath)) || {};
-      if (!config["$schema"]) config["$schema"] = "https://opencode.ai/config.json";
-      if (config.mcpServers) {
-        delete config.mcpServers;
-        lines.push("Removed invalid mcpServers key from opencode.json");
+      const modifications = [];
+      if (!config["$schema"]) {
+        modifications.push({ path: ["$schema"], value: "https://opencode.ai/config.json" });
       }
-      config.mcp = config.mcp || {};
-      config.mcp[MCP_KEY] = {
-        type: "local",
-        command: [nodePath, serverPath],
-        environment: {
-          MIDBRAIN_CONFIG_DIR: path.join(HOME, ".config", "opencode"),
-          MIDBRAIN_PROJECT_DIR: resolvedDir,
+      if (config.mcpServers) {
+        modifications.push({ path: ["mcpServers"], value: undefined });
+        lines.push("Removed invalid mcpServers key from " + path.basename(configPath));
+      }
+      modifications.push({
+        path: ["mcp", MCP_KEY],
+        value: {
+          type: "local",
+          command: [nodePath, serverPath],
+          environment: {
+            MIDBRAIN_CONFIG_DIR: path.join(HOME, ".config", "opencode"),
+            MIDBRAIN_PROJECT_DIR: resolvedDir,
+          },
+          enabled: true,
         },
-        enabled: true,
-      };
-      await writeJson(configPath, config);
+      });
+      await patchJsonFile(configPath, modifications);
       lines.push(`Config written: ${configPath}`);
     } else if (isClaude) {
       const configPath = path.join(resolvedDir, ".mcp.json");

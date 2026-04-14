@@ -25,6 +25,7 @@ import path from 'path';
 import os from 'os';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
+import { parse as jsoncParse, modify as jsoncModify, applyEdits } from 'jsonc-parser';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -49,22 +50,42 @@ const PERM_KEYS = [
 const PATHS = {
   globalKey:        path.join(HOME, '.config', 'midbrain', KEY_FILENAME),
   opencodeKey:      path.join(HOME, '.config', 'opencode', KEY_FILENAME),
-  opencodeConfig:   path.join(HOME, '.config', 'opencode', 'opencode.json'),
+  opencodeDir:      path.join(HOME, '.config', 'opencode'),
   opencodePlugins:  path.join(HOME, '.config', 'opencode', 'plugins'),
   claudeKey:        path.join(HOME, '.config', 'claude', KEY_FILENAME),
   claudeJson:       path.join(HOME, '.claude.json'),
   claudeSettings:   path.join(HOME, '.claude', 'settings.json'),
 };
 
+const JSONC_FORMAT = { tabSize: 2, insertSpaces: true, eol: '\n' };
+
 // ---------------------------------------------------------------------------
 // Utility helpers
 // ---------------------------------------------------------------------------
 
-/** Read and JSON-parse a file. Returns null if file does not exist. */
+/**
+ * Resolves which OpenCode config file exists in a directory.
+ * Prefers .jsonc over .json (matches OpenCode's own resolution order).
+ * Falls back to opencode.json for new installs.
+ */
+function resolveOpencodeConfig(dir) {
+  const jsoncPath = path.join(dir, 'opencode.jsonc');
+  if (existsSync(jsoncPath)) return jsoncPath;
+  const jsonPath = path.join(dir, 'opencode.json');
+  if (existsSync(jsonPath)) return jsonPath;
+  return jsonPath; // default for new installs
+}
+
+/** Read and parse a JSON/JSONC file. Returns null if file does not exist. */
 async function readJson(filePath) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw);
+    const errors = [];
+    const result = jsoncParse(raw, errors, { allowTrailingComma: true });
+    if (errors.length > 0) {
+      throw new SyntaxError(`Invalid JSON/JSONC content (${errors.length} error(s))`);
+    }
+    return result;
   } catch (err) {
     if (err.code === 'ENOENT') return null;
     throw new Error(`Failed to parse ${filePath}: ${err.message}`, { cause: err });
@@ -75,6 +96,28 @@ async function readJson(filePath) {
 async function writeJson(filePath, data) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(data, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * Surgically patch a JSON/JSONC file, preserving comments and formatting.
+ * Each modification is { path: JSONPath, value: any } (value=undefined removes).
+ * Creates the file with '{}' content if it does not exist.
+ */
+async function patchJsonFile(filePath, modifications) {
+  let text;
+  try {
+    text = await fs.readFile(filePath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') text = '{}';
+    else throw err;
+  }
+  for (const { path: jsonPath, value } of modifications) {
+    const edits = jsoncModify(text, jsonPath, value, { formattingOptions: JSONC_FORMAT });
+    text = applyEdits(text, edits);
+  }
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  if (!text.endsWith('\n')) text += '\n';
+  await fs.writeFile(filePath, text, 'utf8');
 }
 
 /** Back up a file to <path>.bak (only if source exists). */
@@ -122,8 +165,9 @@ async function promptYesNo(question) {
 // Step 1: Detect installed tools
 // ---------------------------------------------------------------------------
 function detectTools() {
+  const opencodeConfig = resolveOpencodeConfig(PATHS.opencodeDir);
   return {
-    opencode: existsSync(PATHS.opencodeConfig),
+    opencode: existsSync(opencodeConfig),
     claudeCode: existsSync(PATHS.claudeJson) || existsSync(PATHS.claudeSettings),
   };
 }
@@ -243,34 +287,41 @@ async function installOpenCode(summary) {
   await fs.copyFile(path.join(SCRIPT_DIR, 'shared', 'midbrain-common.mjs'), sharedDst);
   summary.push(`  + Shared lib copied: ~/.config/opencode/plugins/midbrain-common.mjs`);
 
-  // Patch opencode.json
-  const config = await readJson(PATHS.opencodeConfig);
-  if (!config) throw new Error(`Cannot read ${PATHS.opencodeConfig}`);
-  await backup(PATHS.opencodeConfig);
+  // Patch opencode config (.json or .jsonc) — preserves comments
+  const opencodeConfigPath = resolveOpencodeConfig(PATHS.opencodeDir);
+  const configBasename = path.basename(opencodeConfigPath);
+  const config = await readJson(opencodeConfigPath);
+  if (!config) throw new Error(`Cannot read ${opencodeConfigPath}`);
+  await backup(opencodeConfigPath);
 
   if (config.mcp && config.mcp[MCP_KEY]) {
-    console.log('[OpenCode] MCP entry already present — updating');
-    summary.push(`  ~ MCP server: updated in opencode.json`);
+    console.log(`[OpenCode] MCP entry already present — updating`);
+    summary.push(`  ~ MCP server: updated in ${configBasename}`);
   } else {
-    summary.push(`  + MCP server added to opencode.json`);
+    summary.push(`  + MCP server added to ${configBasename}`);
   }
+
+  const modifications = [];
 
   // Remove invalid key that older OpenCode versions or other tools may have written
   if (config.mcpServers) {
-    delete config.mcpServers;
-    summary.push(`  ~ Removed invalid "mcpServers" key from opencode.json (OpenCode requires "mcp")`);
+    modifications.push({ path: ['mcpServers'], value: undefined });
+    summary.push(`  ~ Removed invalid "mcpServers" key from ${configBasename} (OpenCode requires "mcp")`);
   }
 
-  config.mcp = config.mcp || {};
-  config.mcp[MCP_KEY] = {
-    type: 'local',
-    command: [process.execPath, path.join(SCRIPT_DIR, 'server.js')],
-    environment: {
-      MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'opencode'),
+  modifications.push({
+    path: ['mcp', MCP_KEY],
+    value: {
+      type: 'local',
+      command: [process.execPath, path.join(SCRIPT_DIR, 'server.js')],
+      environment: {
+        MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'opencode'),
+      },
+      enabled: true,
     },
-    enabled: true,
-  };
-  await writeJson(PATHS.opencodeConfig, config);
+  });
+
+  await patchJsonFile(opencodeConfigPath, modifications);
 
   summary.push(`  -> Restart OpenCode to apply changes`);
 }
@@ -539,32 +590,38 @@ async function projectSetup(rawPath) {
   const nodePath = process.execPath; // C-3: absolute node path
 
   if (tools.opencode) {
-    const configPath = path.join(projectDir, 'opencode.json');
+    const configPath = resolveOpencodeConfig(projectDir);
+    const configBasename = path.basename(configPath);
     const config = (await readJson(configPath)) || {};
+
+    const modifications = [];
 
     // Ensure $schema is present
     if (!config['$schema']) {
-      config['$schema'] = 'https://opencode.ai/config.json';
+      modifications.push({ path: ['$schema'], value: 'https://opencode.ai/config.json' });
     }
 
     // Remove invalid mcpServers key (OpenCode uses "mcp")
     if (config.mcpServers) {
-      delete config.mcpServers;
-      warnings.push('Removed invalid "mcpServers" key from opencode.json (OpenCode requires "mcp")');
+      modifications.push({ path: ['mcpServers'], value: undefined });
+      warnings.push(`Removed invalid "mcpServers" key from ${configBasename} (OpenCode requires "mcp")`);
     }
 
-    config.mcp = config.mcp || {};
-    config.mcp[MCP_KEY] = {
-      type: 'local',
-      command: [nodePath, serverPath],
-      environment: {
-        MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'opencode'),
-        MIDBRAIN_PROJECT_DIR: projectDir,
+    modifications.push({
+      path: ['mcp', MCP_KEY],
+      value: {
+        type: 'local',
+        command: [nodePath, serverPath],
+        environment: {
+          MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'opencode'),
+          MIDBRAIN_PROJECT_DIR: projectDir,
+        },
+        enabled: true,
       },
-      enabled: true,
-    };
-    await writeJson(configPath, config);
-    configsWritten.push('opencode.json');
+    });
+
+    await patchJsonFile(configPath, modifications);
+    configsWritten.push(configBasename);
     console.error(`[project] wrote: ${configPath}`);
   }
 
@@ -612,6 +669,8 @@ async function projectSetup(rawPath) {
 export {
   readJson,
   writeJson,
+  patchJsonFile,
+  resolveOpencodeConfig,
   detectTools,
   projectSetup,
   installOpenCode,

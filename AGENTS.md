@@ -74,7 +74,7 @@ No hook reconfiguration, no env vars, no .mcp.json changes needed for the write 
 The MCP server (memory_search tool) also needs project awareness for the read
 path. Set MIDBRAIN_PROJECT_DIR in the MCP server's environment config:
 
-OpenCode — project-level opencode.json in the project root:
+OpenCode — project-level opencode.json (or opencode.jsonc) in the project root:
   {
     "$schema": "https://opencode.ai/config.json",
     "mcp": {
@@ -113,8 +113,10 @@ when the client's shell environment extraction doesn't include PATH.
 The `memory_setup_project` MCP tool and `node install.mjs --project` CLI
 automate per-project memory configuration:
   - Creates .midbrain/.midbrain-key with chmod 600
-  - Writes project-level MCP config (opencode.json / .mcp.json)
+  - Writes project-level MCP config (opencode.json/.jsonc or .mcp.json)
   - Merges into existing configs without data loss
+  - Preserves comments and formatting in JSONC files (via jsonc-parser)
+  - Prefers opencode.jsonc over opencode.json when both exist
   - Uses process.execPath for reliable node path resolution
   - Guards existing key files (never overwrites)
 
@@ -136,6 +138,7 @@ CLI: node install.mjs --project /absolute/path/to/project
 - Import McpServer from @modelcontextprotocol/sdk/server/mcp.js
 - Import StdioServerTransport from @modelcontextprotocol/sdk/server/stdio.js
 - Import { z } from "zod" (zod@3, not zod@4)
+- Import { parse, modify, applyEdits } from "jsonc-parser" for config file I/O
 - Native fetch (Node 20 built-in). No axios, no httpx.
 
 ## Plugin Constraints
@@ -168,7 +171,7 @@ CRITICAL: The SDK uses `id` not `sessionID` in path params:
   - client.session.message({ path: { id: sessionID, messageID } })
 Using `path: { sessionID }` will silently fail (returns no data).
 
-## OpenCode Global Config (~/.config/opencode/opencode.json)
+## OpenCode Global Config (~/.config/opencode/opencode.json or opencode.jsonc)
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
@@ -237,7 +240,7 @@ Install hooks after clone: `npm run bootstrap`.
 
 ## Test Architecture
 
-Tests live in `tests/`, using vitest (ESM). Two categories:
+Tests live in `tests/`, using vitest (ESM). Three categories:
 
 1. **Unit tests** (`tests/midbrain-common.test.mjs`)
    - Pure function tests: `loadApiKey`, `isNewerVersion`, `storeEpisodic`, constants
@@ -245,13 +248,21 @@ Tests live in `tests/`, using vitest (ESM). Two categories:
    - Mocks `globalThis.fetch` with `vi.spyOn` for network calls
    - No external dependencies beyond vitest
 
-2. **Integration tests** (`tests/server-integration.test.mjs`)
+2. **Installer tests** (`tests/install.test.mjs`)
+   - All filesystem operations mocked via `vi.mock('fs/promises')` and `vi.mock('fs')`
+   - Tests: readJson, writeJson, patchJsonFile, resolveOpencodeConfig,
+     detectTools, installOpenCode, installClaudeJson, installClaudeSettings, projectSetup
+   - Verifies JSONC comment preservation, config merging, key file handling
+   - No real files read or written
+
+3. **Integration tests** (`tests/server-integration.test.mjs`)
    - Self-contained, in-process: no child process, no stdio, no mock HTTP server
    - Imports `createServer()` from `server.js` directly
    - Uses MCP SDK `InMemoryTransport.createLinkedPair()` to connect Client <-> Server
    - Mocks `globalThis.fetch` with `vi.spyOn` to intercept all API calls
    - Routes mock responses by URL path in a `mockFetch()` function
    - Temp API key file + env vars set in `beforeAll`, restored in `afterAll`
+   - memory_setup_project tests use real temp dirs for config file I/O
 
 **Writing new tool tests:**
 1. Add mock response data to `MOCK_DATA` in the integration test

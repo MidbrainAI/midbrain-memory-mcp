@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { parse as jsoncParse } from "jsonc-parser";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -716,5 +717,107 @@ describe("memory_setup_project — config file integration", () => {
       "utf8"
     ).trim();
     expect(keyContent).toBe("test-key-for-mcp-tests");
+  });
+
+  it("uses existing opencode.jsonc instead of creating opencode.json", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    // Create opencode.jsonc with comments
+    const jsoncContent = '{\n  // My project settings\n  "$schema": "https://opencode.ai/config.json",\n  "model": "my-model"\n}\n';
+    fs.writeFileSync(path.join(tmpProjectDir, "opencode.jsonc"), jsoncContent, "utf8");
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "oc-test-key" },
+    });
+
+    // Should NOT create opencode.json
+    expect(fs.existsSync(path.join(tmpProjectDir, "opencode.json"))).toBe(false);
+    // Should write to opencode.jsonc
+    expect(fs.existsSync(path.join(tmpProjectDir, "opencode.jsonc"))).toBe(true);
+
+    const raw = fs.readFileSync(path.join(tmpProjectDir, "opencode.jsonc"), "utf8");
+    // Comments preserved
+    expect(raw).toContain("// My project settings");
+    // MCP config added
+    const parsed = jsoncParse(raw);
+    expect(parsed.mcp["midbrain-memory"]).toBeDefined();
+    expect(parsed.mcp["midbrain-memory"].type).toBe("local");
+    // Existing keys preserved
+    expect(parsed.model).toBe("my-model");
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("preserves comments when merging into existing opencode.jsonc", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    const jsoncContent = [
+      "{",
+      "  // Provider configuration",
+      '  "$schema": "https://opencode.ai/config.json",',
+      '  "provider": {',
+      '    // AWS Bedrock setup',
+      '    "amazon-bedrock": { "options": { "region": "eu-central-1" } }',
+      "  },",
+      '  "mcp": {',
+      "    // Other MCP servers",
+      '    "other-server": { "type": "local", "enabled": true }',
+      "  }",
+      "}",
+    ].join("\n") + "\n";
+    fs.writeFileSync(path.join(tmpProjectDir, "opencode.jsonc"), jsoncContent, "utf8");
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "oc-test-key" },
+    });
+
+    const raw = fs.readFileSync(path.join(tmpProjectDir, "opencode.jsonc"), "utf8");
+    expect(raw).toContain("// Provider configuration");
+    expect(raw).toContain("// AWS Bedrock setup");
+    expect(raw).toContain("// Other MCP servers");
+    expect(raw).toContain("midbrain-memory");
+    expect(raw).toContain("other-server");
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("prefers opencode.jsonc over opencode.json when both exist", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    // Create both files
+    fs.writeFileSync(
+      path.join(tmpProjectDir, "opencode.json"),
+      '{"from": "json"}',
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(tmpProjectDir, "opencode.jsonc"),
+      '{\n  // JSONC version\n  "from": "jsonc"\n}',
+      "utf8"
+    );
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "oc-test-key" },
+    });
+
+    // opencode.jsonc should be updated (has midbrain-memory)
+    const jsoncRaw = fs.readFileSync(path.join(tmpProjectDir, "opencode.jsonc"), "utf8");
+    expect(jsoncRaw).toContain("midbrain-memory");
+    expect(jsoncRaw).toContain("// JSONC version");
+
+    // opencode.json should be untouched
+    const jsonRaw = fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8");
+    expect(jsonRaw).not.toContain("midbrain-memory");
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
   });
 });
