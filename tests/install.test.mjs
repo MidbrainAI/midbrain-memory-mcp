@@ -1,5 +1,5 @@
 /**
- * Unit tests for install.mjs (ORIGINAL behavior before jsonc-parser migration)
+ * Unit tests for install.mjs
  *
  * All filesystem operations are mocked — no real files are read or written.
  * Tests cover: readJson, writeJson, detectTools, installOpenCode,
@@ -43,6 +43,8 @@ vi.mock("fs", async (importOriginal) => {
 const {
   readJson,
   writeJson,
+  patchJsonFile,
+  resolveOpencodeConfig,
   detectTools,
   projectSetup,
   installOpenCode,
@@ -54,6 +56,10 @@ const {
 
 const fs = (await import("fs/promises")).default;
 const { existsSync } = await import("fs");
+
+// Convenience: the resolved opencode.json path (OPENCODE_CONFIG was removed
+// in favor of PATHS.opencodeDir + resolveOpencodeConfig; this matches the old path).
+const OPENCODE_CONFIG = path.join(PATHS.opencodeDir, "opencode.json");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -189,7 +195,7 @@ describe("detectTools", () => {
   beforeEach(resetMocks);
 
   it("detects OpenCode when opencode.json exists in config dir", () => {
-    existsFor(PATHS.opencodeConfig);
+    existsFor(OPENCODE_CONFIG);
     const tools = detectTools();
     expect(tools.opencode).toBe(true);
   });
@@ -219,7 +225,7 @@ describe("detectTools", () => {
   });
 
   it("detects both clients when both exist", () => {
-    existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+    existsFor(OPENCODE_CONFIG, PATHS.claudeJson);
     const tools = detectTools();
     expect(tools.opencode).toBe(true);
     expect(tools.claudeCode).toBe(true);
@@ -233,9 +239,9 @@ describe("detectTools", () => {
 
   it("checks the correct paths", () => {
     detectTools();
-    // Should have checked opencodeConfig, claudeJson, claudeSettings
+    // Should have checked for opencode config (.jsonc then .json) and claude paths
     const checkedPaths = existsSync.mock.calls.map(([p]) => p);
-    expect(checkedPaths).toContain(PATHS.opencodeConfig);
+    expect(checkedPaths).toContain(OPENCODE_CONFIG);
     expect(checkedPaths).toContain(PATHS.claudeJson);
   });
 });
@@ -249,8 +255,8 @@ describe("installOpenCode", () => {
 
   /** Set up mocks for a successful installOpenCode call. */
   function setupOpenCode(configContent) {
-    readFileReturns({ [PATHS.opencodeConfig]: JSON.stringify(configContent) });
-    existsFor(PATHS.opencodeConfig);
+    readFileReturns({ [OPENCODE_CONFIG]: JSON.stringify(configContent) });
+    existsFor(OPENCODE_CONFIG);
   }
 
   it("copies plugin and shared lib to plugins dir", async () => {
@@ -278,7 +284,7 @@ describe("installOpenCode", () => {
     const summary = [];
     await installOpenCode(summary);
 
-    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeConfig);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
     expect(writeCall).toBeDefined();
     const written = JSON.parse(writeCall[1]);
     expect(written.mcp).toBeDefined();
@@ -297,7 +303,7 @@ describe("installOpenCode", () => {
     const summary = [];
     await installOpenCode(summary);
 
-    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeConfig);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
     const written = JSON.parse(writeCall[1]);
     expect(written.provider).toEqual({
       "amazon-bedrock": { options: { region: "eu-central-1" } },
@@ -317,7 +323,7 @@ describe("installOpenCode", () => {
     const summary = [];
     await installOpenCode(summary);
 
-    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeConfig);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
     const written = JSON.parse(writeCall[1]);
     expect(written.mcp["other-server"]).toBeDefined();
     expect(written.mcp[MCP_KEY].command).not.toContain("old-node");
@@ -332,7 +338,7 @@ describe("installOpenCode", () => {
     const summary = [];
     await installOpenCode(summary);
 
-    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeConfig);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
     const written = JSON.parse(writeCall[1]);
     expect(written.mcpServers).toBeUndefined();
     expect(summary.some((s) => s.includes("mcpServers"))).toBe(true);
@@ -344,8 +350,8 @@ describe("installOpenCode", () => {
     await installOpenCode(summary);
 
     expect(fs.copyFile).toHaveBeenCalledWith(
-      PATHS.opencodeConfig,
-      PATHS.opencodeConfig + ".bak"
+      OPENCODE_CONFIG,
+      OPENCODE_CONFIG + ".bak"
     );
   });
 
@@ -360,7 +366,7 @@ describe("installOpenCode", () => {
     const summary = [];
     await installOpenCode(summary);
 
-    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeConfig);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
     const written = JSON.parse(writeCall[1]);
     const cmd = written.mcp[MCP_KEY].command;
     expect(cmd).toHaveLength(2);
@@ -375,14 +381,14 @@ describe("installOpenCode", () => {
     expect(summary.some((s) => s.includes("added") || s.includes("MCP server"))).toBe(true);
   });
 
-  it("writes to PATHS.opencodeConfig (opencode.json)", async () => {
+  it("writes to opencode.json config path", async () => {
     setupOpenCode({ $schema: "https://opencode.ai/config.json" });
     const summary = [];
     await installOpenCode(summary);
 
-    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeConfig);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
     expect(writeCall).toBeDefined();
-    expect(PATHS.opencodeConfig).toContain("opencode.json");
+    expect(OPENCODE_CONFIG).toContain("opencode.json");
   });
 });
 
@@ -704,7 +710,7 @@ describe("projectSetup", () => {
     // existsSync for detectTools + backup
     const existsPaths = [];
     if (opencodeDetected) {
-      existsPaths.push(PATHS.opencodeConfig);
+      existsPaths.push(OPENCODE_CONFIG);
     }
     if (claudeDetected) {
       existsPaths.push(PATHS.claudeJson);
@@ -1007,5 +1013,295 @@ describe("projectSetup", () => {
     );
     expect(configWrites.length).toBe(1);
     expect(configWrites[0][0]).toBe(path.join(PROJECT_DIR, "opencode.json"));
+  });
+});
+
+// ===================================================================
+// JSONC support: patchJsonFile
+// ===================================================================
+
+describe("patchJsonFile", () => {
+  beforeEach(resetMocks);
+
+  it("adds a key to an existing JSON file", async () => {
+    readFileReturns({ "/config.json": '{"existing": 1}' });
+    await patchJsonFile("/config.json", [{ path: ["new"], value: 2 }]);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === "/config.json");
+    const written = JSON.parse(writeCall[1]);
+    expect(written.existing).toBe(1);
+    expect(written.new).toBe(2);
+  });
+
+  it("preserves line comments in JSONC files", async () => {
+    const jsonc = '{\n  // My comment\n  "existing": 1\n}';
+    readFileReturns({ "/config.jsonc": jsonc });
+    await patchJsonFile("/config.jsonc", [{ path: ["new"], value: 2 }]);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === "/config.jsonc");
+    expect(writeCall[1]).toContain("// My comment");
+    expect(writeCall[1]).toContain('"new"');
+    expect(writeCall[1]).toContain('"existing"');
+  });
+
+  it("preserves block comments in JSONC files", async () => {
+    const jsonc = '{\n  /* block comment */\n  "a": 1\n}';
+    readFileReturns({ "/config.jsonc": jsonc });
+    await patchJsonFile("/config.jsonc", [{ path: ["b"], value: 2 }]);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === "/config.jsonc");
+    expect(writeCall[1]).toContain("/* block comment */");
+  });
+
+  it("removes a key when value is undefined", async () => {
+    readFileReturns({ "/config.json": '{"keep": 1, "remove": 2}' });
+    await patchJsonFile("/config.json", [{ path: ["remove"], value: undefined }]);
+    const written = JSON.parse(
+      fs.writeFile.mock.calls.find(([p]) => p === "/config.json")[1]
+    );
+    expect(written.keep).toBe(1);
+    expect(written.remove).toBeUndefined();
+  });
+
+  it("creates file with {} when it does not exist", async () => {
+    await patchJsonFile("/new.json", [{ path: ["key"], value: "val" }]);
+    const written = JSON.parse(
+      fs.writeFile.mock.calls.find(([p]) => p === "/new.json")[1]
+    );
+    expect(written.key).toBe("val");
+  });
+
+  it("applies multiple modifications in order", async () => {
+    readFileReturns({ "/config.json": '{"old": true}' });
+    await patchJsonFile("/config.json", [
+      { path: ["old"], value: undefined },
+      { path: ["new"], value: "added" },
+    ]);
+    const written = JSON.parse(
+      fs.writeFile.mock.calls.find(([p]) => p === "/config.json")[1]
+    );
+    expect(written.old).toBeUndefined();
+    expect(written.new).toBe("added");
+  });
+
+  it("sets nested keys", async () => {
+    readFileReturns({ "/config.json": '{"mcp": {}}' });
+    await patchJsonFile("/config.json", [
+      { path: ["mcp", "midbrain-memory"], value: { type: "local" } },
+    ]);
+    const written = JSON.parse(
+      fs.writeFile.mock.calls.find(([p]) => p === "/config.json")[1]
+    );
+    expect(written.mcp["midbrain-memory"]).toEqual({ type: "local" });
+  });
+
+  it("ensures trailing newline", async () => {
+    readFileReturns({ "/config.json": '{"a": 1}' });
+    await patchJsonFile("/config.json", [{ path: ["b"], value: 2 }]);
+    const raw = fs.writeFile.mock.calls.find(([p]) => p === "/config.json")[1];
+    expect(raw.endsWith("\n")).toBe(true);
+  });
+
+  it("creates parent directories", async () => {
+    await patchJsonFile("/deep/dir/config.json", [{ path: ["a"], value: 1 }]);
+    expect(fs.mkdir).toHaveBeenCalledWith("/deep/dir", { recursive: true });
+  });
+});
+
+// ===================================================================
+// JSONC support: resolveOpencodeConfig
+// ===================================================================
+
+describe("resolveOpencodeConfig", () => {
+  beforeEach(resetMocks);
+
+  it("returns opencode.jsonc when it exists (preferred)", () => {
+    existsFor("/dir/opencode.jsonc");
+    expect(resolveOpencodeConfig("/dir")).toBe("/dir/opencode.jsonc");
+  });
+
+  it("returns opencode.json when only .json exists", () => {
+    existsFor("/dir/opencode.json");
+    expect(resolveOpencodeConfig("/dir")).toBe("/dir/opencode.json");
+  });
+
+  it("prefers .jsonc over .json when both exist", () => {
+    existsFor("/dir/opencode.jsonc", "/dir/opencode.json");
+    expect(resolveOpencodeConfig("/dir")).toBe("/dir/opencode.jsonc");
+  });
+
+  it("defaults to opencode.json when neither exists (new install)", () => {
+    expect(resolveOpencodeConfig("/dir")).toBe("/dir/opencode.json");
+  });
+
+  it("works with paths containing spaces", () => {
+    existsFor("/my dir/opencode.jsonc");
+    expect(resolveOpencodeConfig("/my dir")).toBe("/my dir/opencode.jsonc");
+  });
+});
+
+// ===================================================================
+// JSONC support: detectTools with .jsonc
+// ===================================================================
+
+describe("detectTools — JSONC support", () => {
+  beforeEach(resetMocks);
+
+  it("detects OpenCode when opencode.jsonc exists", () => {
+    existsFor(path.join(PATHS.opencodeDir, "opencode.jsonc"));
+    const tools = detectTools();
+    expect(tools.opencode).toBe(true);
+  });
+
+  it("detects OpenCode when both .json and .jsonc exist", () => {
+    existsFor(
+      path.join(PATHS.opencodeDir, "opencode.json"),
+      path.join(PATHS.opencodeDir, "opencode.jsonc")
+    );
+    const tools = detectTools();
+    expect(tools.opencode).toBe(true);
+  });
+});
+
+// ===================================================================
+// JSONC support: installOpenCode with .jsonc
+// ===================================================================
+
+describe("installOpenCode — JSONC support", () => {
+  beforeEach(resetMocks);
+
+  it("preserves comments in .jsonc config", async () => {
+    const jsoncPath = path.join(PATHS.opencodeDir, "opencode.jsonc");
+    const jsonc = '{\n  // My provider config\n  "$schema": "https://opencode.ai/config.json",\n  "model": "test"\n}';
+    readFileReturns({ [jsoncPath]: jsonc });
+    existsFor(jsoncPath);
+
+    const summary = [];
+    await installOpenCode(summary);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === jsoncPath);
+    expect(writeCall).toBeDefined();
+    expect(writeCall[1]).toContain("// My provider config");
+    expect(writeCall[1]).toContain("midbrain-memory");
+    expect(summary.some((s) => s.includes("opencode.jsonc"))).toBe(true);
+  });
+});
+
+// ===================================================================
+// JSONC support: projectSetup with .jsonc
+// ===================================================================
+
+describe("projectSetup — JSONC support", () => {
+  const PROJECT_DIR = "/home/testuser/myproject";
+  const savedEnv = {};
+
+  beforeEach(() => {
+    resetMocks();
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR", "MIDBRAIN_CONFIG_DIR"]) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("uses existing opencode.jsonc and preserves comments", async () => {
+    const jsoncContent =
+      '{\n  // Project config\n  "$schema": "https://opencode.ai/config.json"\n}';
+    const jsoncPath = path.join(PROJECT_DIR, "opencode.jsonc");
+
+    fs.stat.mockImplementation(async (p) => {
+      if (p === PROJECT_DIR) return { isDirectory: () => true };
+      throw enoent(p);
+    });
+    fs.realpath.mockImplementation(async (p) => p);
+    readFileReturns({
+      [PATHS.globalKey]: "test-key\n",
+      [jsoncPath]: jsoncContent,
+    });
+    existsFor(
+      OPENCODE_CONFIG, // global config for detectTools
+      jsoncPath // project-level .jsonc for resolveOpencodeConfig
+    );
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await projectSetup(PROJECT_DIR);
+    const result = JSON.parse(logSpy.mock.calls[0][0]);
+    logSpy.mockRestore();
+
+    expect(result.configs_written).toContain("opencode.jsonc");
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === jsoncPath);
+    expect(writeCall).toBeDefined();
+    expect(writeCall[1]).toContain("// Project config");
+    expect(writeCall[1]).toContain("midbrain-memory");
+  });
+
+  it("defaults to opencode.json when no .jsonc exists in project", async () => {
+    const jsonPath = path.join(PROJECT_DIR, "opencode.json");
+
+    fs.stat.mockImplementation(async (p) => {
+      if (p === PROJECT_DIR) return { isDirectory: () => true };
+      throw enoent(p);
+    });
+    fs.realpath.mockImplementation(async (p) => p);
+    readFileReturns({ [PATHS.globalKey]: "test-key\n" });
+    existsFor(OPENCODE_CONFIG); // global config for detectTools
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await projectSetup(PROJECT_DIR);
+    const result = JSON.parse(logSpy.mock.calls[0][0]);
+    logSpy.mockRestore();
+
+    expect(result.configs_written).toContain("opencode.json");
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === jsonPath);
+    expect(writeCall).toBeDefined();
+  });
+
+  it("prefers .jsonc over .json when both exist in project", async () => {
+    const jsoncPath = path.join(PROJECT_DIR, "opencode.jsonc");
+    const jsonPath = path.join(PROJECT_DIR, "opencode.json");
+
+    fs.stat.mockImplementation(async (p) => {
+      if (p === PROJECT_DIR) return { isDirectory: () => true };
+      throw enoent(p);
+    });
+    fs.realpath.mockImplementation(async (p) => p);
+    readFileReturns({
+      [PATHS.globalKey]: "test-key\n",
+      [jsoncPath]: '{"$schema": "https://opencode.ai/config.json"}',
+      [jsonPath]: '{"$schema": "https://opencode.ai/config.json"}',
+    });
+    existsFor(OPENCODE_CONFIG, jsoncPath, jsonPath);
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await projectSetup(PROJECT_DIR);
+    const result = JSON.parse(logSpy.mock.calls[0][0]);
+    logSpy.mockRestore();
+
+    expect(result.configs_written).toContain("opencode.jsonc");
+    // .jsonc should be written, not .json
+    const jsoncWrite = fs.writeFile.mock.calls.find(([p]) => p === jsoncPath);
+    const jsonWrite = fs.writeFile.mock.calls.find(([p]) => p === jsonPath);
+    expect(jsoncWrite).toBeDefined();
+    expect(jsonWrite).toBeUndefined();
+  });
+
+  it("readJson handles JSONC with comments", async () => {
+    fs.readFile.mockResolvedValue('{\n  // line comment\n  "key": "value"\n}');
+    const result = await readJson("/file.jsonc");
+    expect(result).toEqual({ key: "value" });
+  });
+
+  it("readJson tolerates trailing commas", async () => {
+    fs.readFile.mockResolvedValue('{"a": 1, "b": 2,}');
+    const result = await readJson("/file.jsonc");
+    expect(result).toEqual({ a: 1, b: 2 });
+  });
+
+  it("readJson still throws on invalid content", async () => {
+    fs.readFile.mockResolvedValue("not json at all");
+    await expect(readJson("/bad.json")).rejects.toThrow(/Failed to parse/);
   });
 });
