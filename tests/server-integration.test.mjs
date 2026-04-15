@@ -461,7 +461,7 @@ describe("memory_setup_project — config file integration", () => {
   let savedConfigDir;
 
   beforeEach(() => {
-    tmpProjectDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-project-test-"));
+    tmpProjectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-project-test-")));
     savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
   });
 
