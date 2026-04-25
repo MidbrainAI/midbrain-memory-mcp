@@ -50,6 +50,7 @@ const {
   installOpenCode,
   installClaudeJson,
   installClaudeSettings,
+  installClaudeProjectLocal,
   PATHS,
   MCP_KEY,
 } = await import("../install.mjs");
@@ -857,6 +858,42 @@ describe("projectSetup", () => {
     expect(ccWrite).toBeDefined();
   });
 
+  it("patches ~/.claude.json project-local scope when Claude Code detected", async () => {
+    setupProjectMocks({ opencodeDetected: false, claudeDetected: true });
+    // Also provide ~/.claude.json content for patchJsonFile to read
+    const origReadFile = fs.readFile.getMockImplementation();
+    const claudeJsonContent = JSON.stringify({ mcpServers: {}, projects: {} });
+    fs.readFile.mockImplementation(async (p, ...rest) => {
+      if (p === PATHS.claudeJson) return claudeJsonContent;
+      return origReadFile(p, ...rest);
+    });
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await projectSetup(PROJECT_DIR);
+    logSpy.mockRestore();
+
+    const claudeJsonWrite = fs.writeFile.mock.calls.find(([p]) =>
+      p === PATHS.claudeJson
+    );
+    expect(claudeJsonWrite).toBeDefined();
+    const written = JSON.parse(claudeJsonWrite[1]);
+    const entry = written.projects[PROJECT_DIR].mcpServers[MCP_KEY];
+    expect(entry).toBeDefined();
+    expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(PROJECT_DIR);
+  });
+
+  it("does NOT patch ~/.claude.json when only OpenCode detected", async () => {
+    setupProjectMocks({ opencodeDetected: true, claudeDetected: false });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await projectSetup(PROJECT_DIR);
+    logSpy.mockRestore();
+
+    const claudeJsonWrite = fs.writeFile.mock.calls.find(([p]) =>
+      p === PATHS.claudeJson
+    );
+    expect(claudeJsonWrite).toBeUndefined();
+  });
+
   it("outputs valid JSON result to stdout", async () => {
     setupProjectMocks();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -1013,6 +1050,161 @@ describe("projectSetup", () => {
     );
     expect(configWrites.length).toBe(1);
     expect(configWrites[0][0]).toBe(path.join(PROJECT_DIR, "opencode.json"));
+  });
+});
+
+// ===================================================================
+// installClaudeProjectLocal (PRD-009)
+// ===================================================================
+
+describe("installClaudeProjectLocal", () => {
+  const PROJECT_DIR = "/home/testuser/myproject";
+  const NODE_PATH = "/usr/local/bin/node";
+  const SERVER_PATH = "/opt/midbrain/server.js";
+
+  beforeEach(resetMocks);
+
+  it("patches ~/.claude.json with project-local mcpServers entry", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({
+        mcpServers: {},
+        projects: { [PROJECT_DIR]: { allowedTools: [] } },
+      }),
+    });
+
+    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) =>
+      p === PATHS.claudeJson
+    );
+    expect(writeCall).toBeDefined();
+    const written = JSON.parse(writeCall[1]);
+    const entry = written.projects[PROJECT_DIR].mcpServers[MCP_KEY];
+    expect(entry).toBeDefined();
+    expect(entry.type).toBe("stdio");
+    expect(entry.command).toBe(NODE_PATH);
+    expect(entry.args).toEqual([SERVER_PATH]);
+    expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(PROJECT_DIR);
+    expect(entry.env.MIDBRAIN_CONFIG_DIR).toContain("claude");
+  });
+
+  it("preserves existing project entries and other mcpServers", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({
+        mcpServers: { otter: { command: "otter" } },
+        projects: {
+          [PROJECT_DIR]: {
+            allowedTools: ["Bash"],
+            mcpServers: { "other-server": { command: "other" } },
+          },
+        },
+      }),
+    });
+
+    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) =>
+      p === PATHS.claudeJson
+    );
+    const written = JSON.parse(writeCall[1]);
+    // Top-level mcpServers preserved
+    expect(written.mcpServers.otter).toEqual({ command: "otter" });
+    // Project allowedTools preserved
+    expect(written.projects[PROJECT_DIR].allowedTools).toEqual(["Bash"]);
+    // Other project mcpServers preserved
+    expect(written.projects[PROJECT_DIR].mcpServers["other-server"]).toEqual({
+      command: "other",
+    });
+    // New entry added
+    expect(written.projects[PROJECT_DIR].mcpServers[MCP_KEY]).toBeDefined();
+  });
+
+  it("creates project entry when it does not exist in ~/.claude.json", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({ mcpServers: {} }),
+    });
+
+    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) =>
+      p === PATHS.claudeJson
+    );
+    const written = JSON.parse(writeCall[1]);
+    expect(written.projects[PROJECT_DIR].mcpServers[MCP_KEY]).toBeDefined();
+  });
+
+  it("skips gracefully when ~/.claude.json does not exist", async () => {
+    // patchJsonFile creates file from {} when ENOENT on readFile.
+    // But installClaudeProjectLocal wraps patchJsonFile and catches ENOENT.
+    // Simulate: readFile throws ENOENT for claudeJson (patchJsonFile starts from {}),
+    // then writeFile succeeds — the function should not throw.
+    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+
+    // Should still write (patchJsonFile creates from {})
+    const writeCall = fs.writeFile.mock.calls.find(([p]) =>
+      p === PATHS.claudeJson
+    );
+    expect(writeCall).toBeDefined();
+  });
+
+  it("is idempotent — running twice produces same result", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({ projects: {} }),
+    });
+
+    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+
+    const firstWrite = fs.writeFile.mock.calls.find(([p]) =>
+      p === PATHS.claudeJson
+    );
+    const firstResult = JSON.parse(firstWrite[1]);
+
+    // Reset and run again with the output of the first run
+    resetMocks();
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify(firstResult),
+    });
+
+    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+
+    const secondWrite = fs.writeFile.mock.calls.find(([p]) =>
+      p === PATHS.claudeJson
+    );
+    const secondResult = JSON.parse(secondWrite[1]);
+
+    expect(secondResult.projects[PROJECT_DIR].mcpServers[MCP_KEY]).toEqual(
+      firstResult.projects[PROJECT_DIR].mcpServers[MCP_KEY]
+    );
+  });
+
+  it("returns false and skips when ~/.claude.json has EACCES", async () => {
+    const err = new Error("Permission denied");
+    err.code = "EACCES";
+    fs.readFile.mockImplementation(async (p) => {
+      if (p === PATHS.claudeJson) throw err;
+      throw enoent(p);
+    });
+
+    const result = await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+
+    expect(result).toBe(false);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) =>
+      p === PATHS.claudeJson
+    );
+    expect(writeCall).toBeUndefined();
+  });
+
+  it("re-throws unexpected errors", async () => {
+    const err = new Error("Disk I/O error");
+    err.code = "EIO";
+    fs.readFile.mockImplementation(async (p) => {
+      if (p === PATHS.claudeJson) throw err;
+      throw enoent(p);
+    });
+
+    await expect(
+      installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH)
+    ).rejects.toThrow("Disk I/O error");
   });
 });
 

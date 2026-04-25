@@ -459,16 +459,34 @@ describe("memory_setup_project tool", () => {
 describe("memory_setup_project — config file integration", () => {
   let tmpProjectDir;
   let savedConfigDir;
+  let savedHome;
+  let fakeHome;
 
   beforeEach(() => {
     tmpProjectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-project-test-")));
     savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
+
+    // Isolate HOME so tests never touch the real ~/.claude.json or ~/.config/opencode.
+    // server.js reads os.homedir() inside setupProject, which on POSIX honors $HOME.
+    savedHome = process.env.HOME;
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fake-home-"));
+    process.env.HOME = fakeHome;
+
+    // Seed fake HOME so existsSync-based client detection in server.js succeeds
+    // for both OpenCode and Claude Code by default. Individual tests can override.
+    fs.mkdirSync(path.join(fakeHome, ".config", "opencode"), { recursive: true });
+    fs.writeFileSync(path.join(fakeHome, ".claude.json"), JSON.stringify({ projects: {} }, null, 2), "utf8");
   });
 
   afterEach(() => {
     if (savedConfigDir === undefined) delete process.env.MIDBRAIN_CONFIG_DIR;
     else process.env.MIDBRAIN_CONFIG_DIR = savedConfigDir;
+
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+
     try { fs.rmSync(tmpProjectDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   it("creates .midbrain/.midbrain-key with chmod 600", async () => {
@@ -665,15 +683,17 @@ describe("memory_setup_project — config file integration", () => {
     expect(text).toContain("restart");
   });
 
-  it("warns when client cannot be detected from config dir", async () => {
-    // Config dir doesn't contain "opencode" or "claude"
+  it("writes configs based on client existence checks, not just config dir string", async () => {
+    // Config dir doesn't contain "opencode" or "claude" — but existence checks find both
     process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
     const result = await client.callTool({
       name: "memory_setup_project",
       arguments: { project_dir: tmpProjectDir, api_key: "test-key" },
     });
     const text = result.content[0].text;
-    expect(text).toContain("could not detect client");
+    // With bidirectional detection, configs are written if clients exist on disk
+    // (regardless of MIDBRAIN_CONFIG_DIR string matching)
+    expect(text).toContain("Config written");
   });
 
   it("never throws — returns error as text", async () => {
@@ -819,5 +839,146 @@ describe("memory_setup_project — config file integration", () => {
     expect(jsonRaw).not.toContain("midbrain-memory");
 
     fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("writes BOTH OpenCode and Claude Code configs when called from OpenCode (bidirectional)", async () => {
+    // Simulate calling from OpenCode (config dir contains "opencode")
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir + "/opencode"; // contains "opencode"
+    fs.mkdirSync(ocConfigDir + "/opencode", { recursive: true });
+    fs.writeFileSync(path.join(ocConfigDir, "opencode", ".midbrain-key"), "oc-key\n", "utf8");
+
+    // fakeHome already has a seeded ~/.claude.json from beforeEach — hasClaude is true deterministically.
+    const claudeJsonPath = path.join(fakeHome, ".claude.json");
+
+    try {
+      const result = await client.callTool({
+        name: "memory_setup_project",
+        arguments: { project_dir: tmpProjectDir, api_key: "bidir-test-key" },
+      });
+      expect(result.content[0].text).toContain("Config written");
+
+      // OpenCode config should be written
+      const ocConfigPath = path.join(tmpProjectDir, "opencode.json");
+      expect(fs.existsSync(ocConfigPath)).toBe(true);
+      const ocConfig = JSON.parse(fs.readFileSync(ocConfigPath, "utf8"));
+      expect(ocConfig.mcp?.["midbrain-memory"]).toBeDefined();
+
+      // Claude Code .mcp.json should also be written (bidirectional)
+      const ccConfigPath = path.join(tmpProjectDir, ".mcp.json");
+      expect(fs.existsSync(ccConfigPath)).toBe(true);
+      const ccConfig = JSON.parse(fs.readFileSync(ccConfigPath, "utf8"));
+      expect(ccConfig.mcpServers?.["midbrain-memory"]).toBeDefined();
+      expect(ccConfig.mcpServers["midbrain-memory"].env.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
+
+      // Fake ~/.claude.json should be patched with project-local entry
+      const updated = JSON.parse(fs.readFileSync(claudeJsonPath, "utf8"));
+      const entry = updated.projects?.[tmpProjectDir]?.mcpServers?.["midbrain-memory"];
+      expect(entry).toBeDefined();
+      expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
+    } finally {
+      fs.rmSync(ocConfigDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes BOTH OpenCode and Claude Code configs when called from Claude Code (reverse bidirectional)", async () => {
+    // Simulate calling from Claude Code (config dir contains "claude")
+    const ccConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-cfg-"));
+    fs.writeFileSync(path.join(ccConfigDir, ".midbrain-key"), "cc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ccConfigDir;
+
+    // fakeHome seeded by beforeEach: both ~/.config/opencode and ~/.claude.json exist.
+    const claudeJsonPath = path.join(fakeHome, ".claude.json");
+
+    try {
+      const result = await client.callTool({
+        name: "memory_setup_project",
+        arguments: { project_dir: tmpProjectDir, api_key: "reverse-bidir-key" },
+      });
+      expect(result.content[0].text).toContain("Config written");
+
+      // Claude .mcp.json must be written
+      expect(fs.existsSync(path.join(tmpProjectDir, ".mcp.json"))).toBe(true);
+
+      // OpenCode config must also be written (detected via fakeHome/.config/opencode existence)
+      expect(fs.existsSync(path.join(tmpProjectDir, "opencode.json"))).toBe(true);
+
+      // ~/.claude.json must be patched
+      const updated = JSON.parse(fs.readFileSync(claudeJsonPath, "utf8"));
+      expect(updated.projects?.[tmpProjectDir]?.mcpServers?.["midbrain-memory"]).toBeDefined();
+    } finally {
+      fs.rmSync(ccConfigDir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when neither client is detected", async () => {
+    // Unseed fakeHome so neither OpenCode nor Claude Code is detected
+    fs.rmSync(path.join(fakeHome, ".config"), { recursive: true, force: true });
+    fs.rmSync(path.join(fakeHome, ".claude.json"), { force: true });
+
+    // Use a config dir that doesn't contain "opencode" or "claude" substrings
+    process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "no-client-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("could not detect any installed clients");
+    // No project configs should have been written
+    expect(fs.existsSync(path.join(tmpProjectDir, "opencode.json"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpProjectDir, ".mcp.json"))).toBe(false);
+  });
+
+  it("patches ~/.claude.json project-local scope for Claude Code projects", async () => {
+    const ccConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-cfg-"));
+    fs.writeFileSync(path.join(ccConfigDir, ".midbrain-key"), "cc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ccConfigDir;
+
+    // fakeHome already seeded with ~/.claude.json from beforeEach
+    try {
+      const result = await client.callTool({
+        name: "memory_setup_project",
+        arguments: { project_dir: tmpProjectDir, api_key: "cc-test-key" },
+      });
+      const text = result.content[0].text;
+
+      // Should write .mcp.json
+      expect(text).toContain("Config written");
+      expect(fs.existsSync(path.join(tmpProjectDir, ".mcp.json"))).toBe(true);
+
+      // Should patch ~/.claude.json successfully (fakeHome has a writable one)
+      expect(text).toContain("Config patched");
+    } finally {
+      fs.rmSync(ccConfigDir, { recursive: true, force: true });
+    }
+  });
+
+  it("patches ~/.claude.json with correct project-local MCP entry", async () => {
+    const ccConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-cfg-"));
+    fs.writeFileSync(path.join(ccConfigDir, ".midbrain-key"), "cc-key\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ccConfigDir;
+
+    const claudeJsonPath = path.join(fakeHome, ".claude.json");
+
+    try {
+      await client.callTool({
+        name: "memory_setup_project",
+        arguments: { project_dir: tmpProjectDir, api_key: "cc-test-key" },
+      });
+
+      const updated = JSON.parse(fs.readFileSync(claudeJsonPath, "utf8"));
+      const entry = updated.projects?.[tmpProjectDir]?.mcpServers?.["midbrain-memory"];
+      expect(entry).toBeDefined();
+      expect(entry.type).toBe("stdio");
+      expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
+      expect(entry.env.MIDBRAIN_CONFIG_DIR).toContain("claude");
+      expect(path.isAbsolute(entry.command)).toBe(true);
+      expect(path.isAbsolute(entry.env.MIDBRAIN_CONFIG_DIR)).toBe(true);
+      expect(path.isAbsolute(entry.env.MIDBRAIN_PROJECT_DIR)).toBe(true);
+    } finally {
+      fs.rmSync(ccConfigDir, { recursive: true, force: true });
+    }
   });
 });

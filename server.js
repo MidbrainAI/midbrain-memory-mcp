@@ -227,11 +227,12 @@ async function setupProject(projectDir, apiKeyParam) {
       lines.push(`Key file created: ${keyFilePath} (chmod 600)`);
     }
 
+    // PRD-009: detect ALL installed clients, write configs for each (bidirectional)
     const configDir = process.env[CONFIG_DIR_ENV_VAR] || "";
-    const isOpenCode = configDir.includes("opencode");
-    const isClaude = configDir.includes("claude");
+    const hasOpenCode = configDir.includes("opencode") || existsSync(path.join(HOME, ".config", "opencode"));
+    const hasClaude = existsSync(path.join(HOME, ".claude.json"));
 
-    if (isOpenCode) {
+    if (hasOpenCode) {
       const configPath = resolveOpencodeConfig(resolvedDir);
       const config = (await readJson(configPath)) || {};
       const modifications = [];
@@ -256,7 +257,9 @@ async function setupProject(projectDir, apiKeyParam) {
       });
       await patchJsonFile(configPath, modifications);
       lines.push(`Config written: ${configPath}`);
-    } else if (isClaude) {
+    }
+
+    if (hasClaude) {
       const configPath = path.join(resolvedDir, ".mcp.json");
       const config = (await readJson(configPath)) || {};
       config.mcpServers = config.mcpServers || {};
@@ -270,8 +273,34 @@ async function setupProject(projectDir, apiKeyParam) {
       };
       await writeJson(configPath, config);
       lines.push(`Config written: ${configPath}`);
-    } else {
-      lines.push("Warning: could not detect client from MIDBRAIN_CONFIG_DIR. No config written.");
+
+      // PRD-009: also patch ~/.claude.json project-local scope (bypass trust gate)
+      const claudeJsonPath = path.join(HOME, ".claude.json");
+      try {
+        await patchJsonFile(claudeJsonPath, [{
+          path: ["projects", resolvedDir, "mcpServers", MCP_KEY],
+          value: {
+            type: "stdio",
+            command: nodePath,
+            args: [serverPath],
+            env: {
+              MIDBRAIN_CONFIG_DIR: path.join(HOME, ".config", "claude"),
+              MIDBRAIN_PROJECT_DIR: resolvedDir,
+            },
+          },
+        }]);
+        lines.push(`Config patched: ${claudeJsonPath} (project-local mcpServers)`);
+      } catch (patchErr) {
+        if (patchErr.code === "EACCES") {
+          lines.push(`Warning: could not patch ${claudeJsonPath}: ${patchErr.code}`);
+        } else {
+          throw patchErr;
+        }
+      }
+    }
+
+    if (!hasOpenCode && !hasClaude) {
+      lines.push("Warning: could not detect any installed clients. No config written.");
     }
 
     lines.push("");
