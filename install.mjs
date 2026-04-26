@@ -641,6 +641,12 @@ async function projectSetup(rawPath) {
     await writeJson(configPath, config);
     configsWritten.push('.mcp.json');
     console.error(`[project] wrote: ${configPath}`);
+
+    // Also patch ~/.claude.json project-local scope (PRD-009: bypass trust gate)
+    const patched = await installClaudeProjectLocal(projectDir, nodePath, serverPath);
+    if (patched) {
+      console.error(`[project] patched: ${PATHS.claudeJson} (project-local mcpServers)`);
+    }
   }
 
   if (!tools.opencode && !tools.claudeCode) {
@@ -664,6 +670,35 @@ async function projectSetup(rawPath) {
 }
 
 // ---------------------------------------------------------------------------
+// installClaudeProjectLocal — PRD-009: bypass Claude Code .mcp.json trust gate
+// Patches ~/.claude.json project-local scope so MCP server loads immediately.
+// ---------------------------------------------------------------------------
+async function installClaudeProjectLocal(projectDir, nodePath, serverPath) {
+  try {
+    await patchJsonFile(PATHS.claudeJson, [{
+      path: ['projects', projectDir, 'mcpServers', MCP_KEY],
+      value: {
+        type: 'stdio',
+        command: nodePath,
+        args: [serverPath],
+        env: {
+          MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'claude'),
+          MIDBRAIN_PROJECT_DIR: projectDir,
+        },
+      },
+    }]);
+    return true;
+  } catch (err) {
+    // patchJsonFile handles ENOENT internally (starts from {}), so only EACCES reaches here
+    if (err.code === 'EACCES') {
+      console.error(`[project] WARN: could not patch ${PATHS.claudeJson}: ${err.code}`);
+      return false;
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports (for testability — no behaviour change when run as CLI)
 // ---------------------------------------------------------------------------
 export {
@@ -676,6 +711,7 @@ export {
   installOpenCode,
   installClaudeJson,
   installClaudeSettings,
+  installClaudeProjectLocal,
   PATHS,
   MCP_KEY,
 };

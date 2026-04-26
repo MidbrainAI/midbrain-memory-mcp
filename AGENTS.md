@@ -114,11 +114,19 @@ The `memory_setup_project` MCP tool and `node install.mjs --project` CLI
 automate per-project memory configuration:
   - Creates .midbrain/.midbrain-key with chmod 600
   - Writes project-level MCP config (opencode.json/.jsonc or .mcp.json)
+  - Patches ~/.claude.json project-local mcpServers (bypasses trust gate)
   - Merges into existing configs without data loss
   - Preserves comments and formatting in JSONC files (via jsonc-parser)
   - Prefers opencode.jsonc over opencode.json when both exist
   - Uses process.execPath for reliable node path resolution
   - Guards existing key files (never overwrites)
+
+Claude Code trust gate: Claude Code requires users to approve .mcp.json
+servers via a trust dialog. To bypass this, the setup tool also writes the
+MCP server entry directly into ~/.claude.json at the project-local scope
+(projects[dir].mcpServers). This loads immediately without user approval,
+equivalent to `claude mcp add --scope local`. Both .mcp.json (for team
+sharing via git) and ~/.claude.json (for immediate local use) are written.
 
 MCP tool: memory_setup_project(project_dir, api_key?)
   - project_dir: absolute path to the project root (required)
