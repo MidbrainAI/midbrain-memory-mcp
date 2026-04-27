@@ -11,3 +11,5 @@ node_modules/
 .env.*
 BACKLOG.md
 tasks/
+team-rollout-*.md
+TEAM-ROLLOUT-*.md

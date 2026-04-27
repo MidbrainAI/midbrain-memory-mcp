@@ -32,6 +32,26 @@ import {
   toClaudeShape,
 } from './shared/midbrain-common.mjs';
 
+// Reserved env keys that are rewritten on every install/migration. Custom
+// env vars on existing midbrain entries are carried over to the new entry
+// so users don't silently lose configuration on a re-run.
+const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR']);
+
+/**
+ * Extracts non-reserved env keys from an existing MCP entry.
+ * @param {object|undefined} entry
+ * @param {"environment"|"env"} envKey  "environment" for OpenCode, "env" for Claude.
+ */
+function extractCustomEnv(entry, envKey) {
+  const source = entry && typeof entry === 'object' && entry[envKey];
+  if (!source || typeof source !== 'object') return {};
+  const out = {};
+  for (const [k, v] of Object.entries(source)) {
+    if (!RESERVED_ENV_KEYS.has(k)) out[k] = v;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -371,7 +391,13 @@ async function installOpenCode(summary, opts = {}) {
 
   modifications.push({
     path: ['mcp', MCP_KEY],
-    value: buildOpenCodeMcpEntry({ isDev }),
+    value: (function () {
+      const entry = buildOpenCodeMcpEntry({ isDev });
+      const existing = config.mcp && config.mcp[MCP_KEY];
+      const customEnv = extractCustomEnv(existing, 'environment');
+      entry.environment = { ...customEnv, ...entry.environment };
+      return entry;
+    })(),
   });
 
   await patchJsonFile(opencodeConfigPath, modifications);
@@ -387,12 +413,16 @@ async function installClaudeJson(summary, opts = {}) {
   const data = (await readJson(PATHS.claudeJson)) || {};
   await backup(PATHS.claudeJson);
 
-  const existed = data.mcpServers && data.mcpServers[MCP_KEY];
+  const existing = data.mcpServers && data.mcpServers[MCP_KEY];
+  const customEnv = extractCustomEnv(existing, 'env');
+  const entry = buildClaudeMcpEntry({ isDev });
+  entry.env = { ...customEnv, ...entry.env };
+
   data.mcpServers = data.mcpServers || {};
-  data.mcpServers[MCP_KEY] = buildClaudeMcpEntry({ isDev });
+  data.mcpServers[MCP_KEY] = entry;
   await writeJson(PATHS.claudeJson, data);
 
-  if (existed) {
+  if (existing) {
     summary.push(`  ~ MCP server: updated in ~/.claude.json`);
   } else {
     summary.push(`  + MCP server added to ~/.claude.json`);
@@ -656,7 +686,13 @@ async function projectSetup(rawPath, opts = {}) {
 
     modifications.push({
       path: ['mcp', MCP_KEY],
-      value: buildOpenCodeMcpEntry({ isDev, projectDir }),
+      value: (function () {
+        const entry = buildOpenCodeMcpEntry({ isDev, projectDir });
+        const existing = config.mcp && config.mcp[MCP_KEY];
+        const customEnv = extractCustomEnv(existing, 'environment');
+        entry.environment = { ...customEnv, ...entry.environment };
+        return entry;
+      })(),
     });
 
     await patchJsonFile(configPath, modifications);
@@ -669,7 +705,11 @@ async function projectSetup(rawPath, opts = {}) {
     const config = (await readJson(configPath)) || {};
 
     config.mcpServers = config.mcpServers || {};
-    config.mcpServers[MCP_KEY] = buildClaudeMcpEntry({ isDev, projectDir });
+    const existingMcp = config.mcpServers[MCP_KEY];
+    const customMcpEnv = extractCustomEnv(existingMcp, 'env');
+    const mcpEntry = buildClaudeMcpEntry({ isDev, projectDir });
+    mcpEntry.env = { ...customMcpEnv, ...mcpEntry.env };
+    config.mcpServers[MCP_KEY] = mcpEntry;
     await writeJson(configPath, config);
     configsWritten.push('.mcp.json');
     console.error(`[project] wrote: ${configPath}`);
@@ -712,9 +752,29 @@ async function projectSetup(rawPath, opts = {}) {
 async function installClaudeProjectLocal(projectDir, opts = {}) {
   const { isDev = false } = opts;
   try {
+    // Read existing ~/.claude.json (if any) to preserve custom env vars on
+    // the existing midbrain project-local entry across re-runs / migrations.
+    // Read is best-effort: if the file is unreadable (EACCES, corrupt JSON),
+    // fall through to an empty merge. The subsequent patchJsonFile call is
+    // where a real EACCES will surface and be handled below.
+    let existingRoot = {};
+    try {
+      existingRoot = (await readJson(PATHS.claudeJson)) || {};
+    } catch {
+      existingRoot = {};
+    }
+    const existingEntry =
+      existingRoot.projects &&
+      existingRoot.projects[projectDir] &&
+      existingRoot.projects[projectDir].mcpServers &&
+      existingRoot.projects[projectDir].mcpServers[MCP_KEY];
+    const customEnv = extractCustomEnv(existingEntry, 'env');
+    const entry = buildClaudeMcpEntry({ isDev, projectDir });
+    entry.env = { ...customEnv, ...entry.env };
+
     await patchJsonFile(PATHS.claudeJson, [{
       path: ['projects', projectDir, 'mcpServers', MCP_KEY],
-      value: buildClaudeMcpEntry({ isDev, projectDir }),
+      value: entry,
     }]);
     return true;
   } catch (err) {

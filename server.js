@@ -39,7 +39,19 @@ import { createRequire } from "module";
 import { parse as jsoncParse, modify as jsoncModify, applyEdits } from "jsonc-parser";
 
 const require = createRequire(import.meta.url);
-const { version: PKG_VERSION } = require("./package.json");
+// Read package.json version defensively (PRD-010 §3.4 / §10 edge case):
+// missing or corrupt package.json must NOT crash the server; fall back
+// to "unknown" and let startup continue so the user at least gets an
+// MCP server. The stderr log will read "v unknown" in that case.
+let PKG_VERSION = "unknown";
+try {
+  const pkg = require("./package.json");
+  if (pkg && typeof pkg.version === "string" && pkg.version) {
+    PKG_VERSION = pkg.version;
+  }
+} catch {
+  // swallow — PKG_VERSION already defaults to "unknown"
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

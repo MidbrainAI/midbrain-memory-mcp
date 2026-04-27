@@ -394,6 +394,32 @@ describe("installOpenCode", () => {
     expect(cmd[1]).toContain("server.js");
   });
 
+  it("preserves custom env vars on existing midbrain entry (PRD-010 AC-3)", async () => {
+    setupOpenCode({
+      $schema: "https://opencode.ai/config.json",
+      mcp: {
+        [MCP_KEY]: {
+          type: "local",
+          command: ["/old/node", "/old/server.js"],
+          environment: {
+            MIDBRAIN_CONFIG_DIR: "/old/cfg",
+            CUSTOM_OC: "keep-me",
+          },
+          enabled: true,
+        },
+      },
+    });
+    const summary = [];
+    await installOpenCode(summary);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
+    const written = JSON.parse(writeCall[1]);
+    const env = written.mcp[MCP_KEY].environment;
+    expect(env.CUSTOM_OC).toBe("keep-me");
+    expect(env.MIDBRAIN_CONFIG_DIR).toContain("opencode");
+    expect(env.MIDBRAIN_CONFIG_DIR).not.toBe("/old/cfg");
+  });
+
   it("summary reports addition for new MCP entry", async () => {
     setupOpenCode({ $schema: "https://opencode.ai/config.json" });
     const summary = [];
@@ -512,6 +538,34 @@ describe("installClaudeJson", () => {
     const srv = written.mcpServers[MCP_KEY];
     expect(path.isAbsolute(srv.command)).toBe(true);
     expect(srv.args[0]).toContain("server.js");
+  });
+
+  it("preserves custom env vars on existing midbrain entry (PRD-010 AC-3)", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({
+        mcpServers: {
+          [MCP_KEY]: {
+            type: "stdio",
+            command: "/old/node",
+            args: ["/old/server.js"],
+            env: {
+              MIDBRAIN_CONFIG_DIR: "/old/cfg",
+              CUSTOM_CC: "keep-me",
+            },
+          },
+        },
+      }),
+    });
+    existsFor(PATHS.claudeJson);
+    const summary = [];
+    await installClaudeJson(summary);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    const written = JSON.parse(writeCall[1]);
+    const env = written.mcpServers[MCP_KEY].env;
+    expect(env.CUSTOM_CC).toBe("keep-me");
+    expect(env.MIDBRAIN_CONFIG_DIR).toContain("claude");
+    expect(env.MIDBRAIN_CONFIG_DIR).not.toBe("/old/cfg");
   });
 
   it("preserves non-mcpServers keys in .claude.json", async () => {
@@ -1257,6 +1311,38 @@ describe("installClaudeProjectLocal", () => {
     await expect(
       installClaudeProjectLocal(PROJECT_DIR)
     ).rejects.toThrow("Disk I/O error");
+  });
+
+  it("preserves custom env vars on existing project-local midbrain entry (PRD-010 AC-3)", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({
+        projects: {
+          [PROJECT_DIR]: {
+            mcpServers: {
+              [MCP_KEY]: {
+                type: "stdio",
+                command: "npx",
+                args: ["-y", "midbrain-memory-mcp"],
+                env: {
+                  MIDBRAIN_CONFIG_DIR: "/old/path",
+                  CUSTOM_VAR: "keep-me",
+                },
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    await installClaudeProjectLocal(PROJECT_DIR);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    const written = JSON.parse(writeCall[1]);
+    const entry = written.projects[PROJECT_DIR].mcpServers[MCP_KEY];
+    expect(entry.env.CUSTOM_VAR).toBe("keep-me");
+    // Reserved keys get rewritten to the new canonical values, not preserved.
+    expect(entry.env.MIDBRAIN_CONFIG_DIR).toContain("claude");
+    expect(entry.env.MIDBRAIN_CONFIG_DIR).not.toBe("/old/path");
   });
 });
 
