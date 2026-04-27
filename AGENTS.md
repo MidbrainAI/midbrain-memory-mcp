@@ -1,11 +1,22 @@
 # MidBrain Memory MCP
 
+## Important: Deferred Codex work
+
+`tasks/PRD-010-npx-install-readiness/codex-followups.md` lists
+Codex-related work deferred from PRD-010 (npx install readiness).
+Before starting any Codex PRD, read that file. Remove this section
+from AGENTS.md when the Codex PRD closes.
+
 ## What This Is
 MCP server + episodic capture hooks for persistent AI memory.
 Supports **OpenCode** (plugin) and **Claude Code** (hook scripts).
 API: https://memory.midbrain.ai
-Published on npm as `midbrain-memory-mcp` (v0.1.0+).
-Install: `npm install -g midbrain-memory-mcp` or use `npx -y midbrain-memory-mcp`.
+Published on npm as midbrain-memory-mcp. Version 0.1.0+.
+Install: `npx -y midbrain-memory-mcp@latest` (MCP config command) or
+`npx midbrain-memory-setup` (interactive automated installer). Pin the
+spec to `@latest` for auto-updates on every cold start; use `@X.Y.Z`
+to freeze a specific version. Never use the bare unpinned form — it
+looks auto-updating but is sticky on the first resolved version.
 
 ## Architecture
 - `server.js` — MCP server (Node 20, plain JS). Exposes 6 tools:
@@ -185,7 +196,7 @@ Using `path: { sessionID }` will silently fail (returns no data).
   "mcp": {
     "midbrain-memory": {
       "type": "local",
-      "command": ["node", "/Users/carloses/midbrain-memory-mcp/server.js"],
+      "command": ["npx", "-y", "midbrain-memory-mcp@latest"],
       "environment": {
         "MIDBRAIN_CONFIG_DIR": "~/.config/opencode"
       },
