@@ -10,11 +10,16 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { parse as jsoncParse } from "jsonc-parser";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import fs from "fs";
 import os from "os";
 import path from "path";
 
 import { createServer } from "../server.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const SERVER_PATH = path.resolve(path.dirname(__filename), "..", "server.js");
 
 // ---------------------------------------------------------------------------
 // Mock API response data
@@ -1242,5 +1247,58 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
     expect(updated.mcpServers.sibling).toEqual({ command: "other", args: [] });
 
     fs.rmSync(ccConfigDir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PRD-010: --version flag + startup version log (G-5..G-8)
+// ---------------------------------------------------------------------------
+
+describe("server.js CLI — --version flag (PRD-010)", () => {
+  /** Spawn `node server.js <args>` and return {status, stdout, stderr}. */
+  function spawnServer(args, extraEnv = {}) {
+    return spawnSync(process.execPath, [SERVER_PATH, ...args], {
+      env: { ...process.env, ...extraEnv },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  }
+
+  it("G-6: --version prints version to stdout and exits 0", () => {
+    const result = spawnServer(["--version"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+    // No MCP startup line in stderr — short-circuited before transport
+    expect(result.stderr).not.toMatch(/MCP server running/);
+  });
+
+  it("G-7: -v prints version to stdout and exits 0", () => {
+    const result = spawnServer(["-v"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it("B-14: --version with trailing args still short-circuits", () => {
+    const result = spawnServer(["--version", "foo", "bar"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  it("does not emit the PRD-005 update notice (no network call)", () => {
+    // Short-circuit happens before checkForUpdate(). Stderr stays quiet
+    // regardless of whether npm registry is reachable.
+    const result = spawnServer(["--version"]);
+    expect(result.stderr).not.toMatch(/Update available/);
+  });
+});
+
+describe("server.js startup — version log line (PRD-010 G-5)", () => {
+  it("G-8: importing server.js via createServer() does NOT trigger process.exit", () => {
+    // If --version short-circuit were at module-level instead of inside isMain,
+    // this test file itself wouldn't have run. We've already imported
+    // createServer at the top without process exiting; calling it again is
+    // a further sanity check.
+    const s = createServer();
+    expect(s).toBeDefined();
   });
 });

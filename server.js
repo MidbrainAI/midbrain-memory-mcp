@@ -702,9 +702,17 @@ const isMain = process.argv[1] &&
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 
 if (isMain) {
+  if (process.argv.includes("--version") || process.argv.includes("-v")) {
+    // --version CLI contract: print to stdout + exit.
+    // Safe because MCP stdio transport has not been attached yet;
+    // the no-console.log rule for this file only applies once the
+    // JSON-RPC pipe is live.
+    console.log(PKG_VERSION);
+    process.exit(0);
+  }
   const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("MCP server running");
+  console.error(`MCP server running (midbrain-memory-mcp v${PKG_VERSION})`);
   checkForUpdate(); // fire-and-forget -- no await (PRD-005)
 }
