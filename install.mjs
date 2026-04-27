@@ -826,6 +826,65 @@ function printHelp() {
 }
 
 // ---------------------------------------------------------------------------
+// CLI entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * CLI entry point for the installer. Used by:
+ *   - install.mjs's own isMain block (direct `node install.mjs`)
+ *   - server.js's `install` subcommand dispatch (PRD-011)
+ *
+ * Parses argv flags (--help, -h, --project <path>, --dev) and runs the
+ * matching installer flow. Writes all progress/debug to stderr.
+ *
+ * Exit-ownership contract: runInstallerCli OWNS all exits. On fatal
+ * error, it logs to stderr and calls process.exit(1) internally. On
+ * success (--help, project-mode completion, interactive completion),
+ * it calls process.exit(0|1) via the underlying call paths. The
+ * returned Promise therefore never rejects in practice. Callers may
+ * `await runInstallerCli(...)` without a .catch block.
+ *
+ * @param {string[]} argv  Installer flags only (no node/script path).
+ *   Equivalent to process.argv.slice(2) when called directly, or
+ *   process.argv.slice(3) when dispatched from `server.js install`.
+ * @returns {Promise<void>}  Resolves only after process.exit in
+ *   practice the process terminates inside this function.
+ */
+async function runInstallerCli(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    printHelp();
+    process.exit(0);
+  }
+  const isDev = argv.includes('--dev');
+  const projectFlagIdx = argv.indexOf('--project');
+  if (projectFlagIdx !== -1) {
+    const projectArg = argv[projectFlagIdx + 1];
+    if (!projectArg || projectArg.startsWith('-')) {
+      console.error('Error: --project requires a path argument.');
+      console.error('Usage: node install.mjs --project /absolute/path/to/project');
+      process.exit(1);
+    }
+    if (projectArg.trim() === '') {
+      console.error('Error: --project path cannot be empty.');
+      process.exit(1);
+    }
+    try {
+      await projectSetup(projectArg, { isDev });
+    } catch (err) {
+      console.error(`Fatal error: ${err.message}`);
+      process.exit(1);
+    }
+  } else {
+    try {
+      await main({ isDev });
+    } catch (err) {
+      console.error('Fatal error:', err.message);
+      process.exit(1);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports (for testability — no behaviour change when run as CLI)
 // ---------------------------------------------------------------------------
 export {
@@ -842,7 +901,9 @@ export {
   installClaudeProjectLocal,
   buildOpenCodeMcpEntry,
   buildClaudeMcpEntry,
+  main,
   printHelp,
+  runInstallerCli,
   PATHS,
   MCP_KEY,
 };
@@ -855,32 +916,5 @@ const isMain = process.argv[1] &&
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 
 if (isMain) {
-  if (process.argv.includes('--help') || process.argv.includes('-h')) {
-    printHelp();
-    process.exit(0);
-  }
-  const isDev = process.argv.includes('--dev');
-  const projectFlagIdx = process.argv.indexOf('--project');
-  if (projectFlagIdx !== -1) {
-    // C-12: validate arg
-    const projectArg = process.argv[projectFlagIdx + 1];
-    if (!projectArg || projectArg.startsWith('-')) {
-      console.error('Error: --project requires a path argument.');
-      console.error('Usage: node install.mjs --project /absolute/path/to/project');
-      process.exit(1);
-    }
-    if (projectArg.trim() === '') {
-      console.error('Error: --project path cannot be empty.');
-      process.exit(1);
-    }
-    projectSetup(projectArg, { isDev }).catch((err) => {
-      console.error(`Fatal error: ${err.message}`);
-      process.exit(1);
-    });
-  } else {
-    main({ isDev }).catch((err) => {
-      console.error('Fatal error:', err.message);
-      process.exit(1);
-    });
-  }
+  await runInstallerCli(process.argv.slice(2));
 }

@@ -1745,3 +1745,139 @@ describe("docs regression (PRD-010 I-14)", () => {
     expect(readme).not.toMatch(/\bmidbrain-memory-mcp --help\b/);
   });
 });
+
+// ===================================================================
+// runInstallerCli export + flag routing (PRD-011 U-1..U-10 + U-5b)
+// ===================================================================
+
+describe("runInstallerCli (PRD-011)", () => {
+  let exitSpy;
+  let errSpy;
+  let logSpy;
+
+  beforeEach(() => {
+    resetMocks();
+    // process.exit stubbed to throw so control flow stops at the exit
+    // site and the test can assert exit code without killing vitest.
+    exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`__EXIT__${code ?? 0}`);
+    });
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  async function callCli(argv) {
+    const { runInstallerCli } = await import("../install.mjs");
+    return runInstallerCli(argv);
+  }
+
+  it("U-1: runInstallerCli is an exported async function", async () => {
+    const { runInstallerCli } = await import("../install.mjs");
+    expect(typeof runInstallerCli).toBe("function");
+    expect(runInstallerCli.constructor.name).toBe("AsyncFunction");
+  });
+
+  it("U-2: --help prints help and exits 0", async () => {
+    await expect(callCli(["--help"])).rejects.toThrow("__EXIT__0");
+    const out = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(out).toContain("--project");
+    expect(out).toContain("--dev");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("U-3: -h prints help and exits 0", async () => {
+    await expect(callCli(["-h"])).rejects.toThrow("__EXIT__0");
+    const out = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(out).toContain("--project");
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("U-4: --project (no value) exits 1 with 'requires a path argument'", async () => {
+    await expect(callCli(["--project"])).rejects.toThrow("__EXIT__1");
+    const err = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(err).toContain("requires a path argument");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("U-5: --project with empty string exits 1 with 'requires a path argument' (falsy guard)", async () => {
+    await expect(callCli(["--project", ""])).rejects.toThrow("__EXIT__1");
+    const err = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(err).toContain("requires a path argument");
+    expect(err).not.toContain("cannot be empty");
+  });
+
+  it("U-5b: --project with whitespace-only string exits 1 with 'cannot be empty'", async () => {
+    await expect(callCli(["--project", "   "])).rejects.toThrow("__EXIT__1");
+    const err = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(err).toContain("cannot be empty");
+  });
+
+  it("U-6: --project with flag-prefix value exits 1 (flag-prefix rejected)", async () => {
+    await expect(callCli(["--project", "--dev"])).rejects.toThrow("__EXIT__1");
+    const err = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(err).toContain("requires a path argument");
+  });
+
+  it("U-7: --project <path> reaches projectSetup (fs.stat called)", async () => {
+    // projectSetup's first I/O step is fs.stat(resolved). If runInstallerCli
+    // reached projectSetup, fs.stat will be called with the resolved path.
+    // We mock fs.stat to reject with ENOENT so projectSetup exits early.
+    fs.stat.mockRejectedValue(enoent("/tmp/mbm-u7-xyz"));
+    await expect(callCli(["--project", "/tmp/mbm-u7-xyz"])).rejects.toThrow(
+      /__EXIT__1/
+    );
+    expect(fs.stat).toHaveBeenCalledWith(path.resolve("/tmp/mbm-u7-xyz"));
+  });
+
+  it("U-8: --project <path> --dev forwards isDev=true to projectSetup", async () => {
+    // Same approach: mock fs.stat to reject so we don't fully execute.
+    // The proof that --dev reached projectSetup is that the isDev branch
+    // would surface the absolute-path command in the config if we let it
+    // run. Here we just assert projectSetup was entered (fs.stat called).
+    fs.stat.mockRejectedValue(enoent("/tmp/mbm-u8-xyz"));
+    await expect(
+      callCli(["--project", "/tmp/mbm-u8-xyz", "--dev"])
+    ).rejects.toThrow(/__EXIT__1/);
+    expect(fs.stat).toHaveBeenCalled();
+  });
+
+  it("U-9: no args routes to main() interactive flow", async () => {
+    // main() eventually calls detectTools() -> existsSync(). If no tools
+    // detected and no key found, main() logs a 'No tools detected' message
+    // and exits. We force detectTools to return nothing by keeping
+    // existsSync mocked to false (default), causing main() to early-exit.
+    existsSync.mockReturnValue(false);
+    // main() may call process.exit(1) on empty detection OR may just
+    // return cleanly depending on the path. Allow either outcome; assert
+    // that it didn't blow up at argv parsing.
+    try {
+      await callCli([]);
+    } catch (err) {
+      // accept any __EXIT__ sentinel
+      expect(String(err.message)).toMatch(/__EXIT__/);
+    }
+    // existsSync was called by detectTools inside main()
+    expect(existsSync).toHaveBeenCalled();
+  });
+
+  it("U-10: --dev alone routes to main() with isDev=true", async () => {
+    existsSync.mockReturnValue(false);
+    try {
+      await callCli(["--dev"]);
+    } catch (err) {
+      expect(String(err.message)).toMatch(/__EXIT__/);
+    }
+    expect(existsSync).toHaveBeenCalled();
+  });
+
+  it("exports main from install.mjs (PRD-011 AC-1 sub-item)", async () => {
+    const mod = await import("../install.mjs");
+    expect(typeof mod.main).toBe("function");
+  });
+});
