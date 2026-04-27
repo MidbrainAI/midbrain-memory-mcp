@@ -257,6 +257,29 @@ Install hooks after clone: `npm run bootstrap`.
 
 **Always** finish all tasks by running `npm run check` and fixing any failures.
 
+**SOP for PRDs** -- All PRD work in this repo follows
+`tasks/sop/prd-to-pr-sop.md` (authoritative, repo-local) which mirrors
+`~/Projects/OpenCode-workspace/workflows/prd-to-pr-workflow.md`. When
+they disagree, the repo-local file wins.
+
+Session prompts for PRD implementation MUST cover Phases 4
+(implementation), 5 (parallel testing subagents: A tests / B ACs vs
+actual code / C security), and 6 (PR artifact prep: `context.md` +
+`pr-prompt.md` under `tasks/prs/PR-NNN/`) in a SINGLE session. Only
+Phase 7 (PR review) runs in a separate fresh session.
+
+Before drafting any `session-prompt.md`:
+1. Read `tasks/sop/prd-to-pr-sop.md` (canonical).
+2. Copy `tasks/templates/session-prompt-template.md` and customize.
+3. Read `tasks/prs/pr-reviewer-profile.md` (review contract).
+4. Read the most recent `tasks/prs/PR-NNN-*/` as structural exemplar.
+5. Query midbrain memory for "SOP", "PRD session prompt", "Phase 5 Phase 6".
+
+If your draft session-prompt stops at "ready for PR" without Phase 5+6,
+it is wrong. The implementation session pushes the branch and writes
+PR artifacts; the PR review session (separate) runs the 4-subagent
+review and creates the PR.
+
 ## Test Architecture
 
 Tests live in `tests/`, using vitest (ESM). Three categories:
