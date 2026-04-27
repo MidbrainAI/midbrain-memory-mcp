@@ -1363,3 +1363,255 @@ describe("server.js startup — version log line (PRD-010 G-5)", () => {
     expect(s).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// PRD-011: install subcommand dispatch (G-1..G-6 + R-1..R-4)
+// ---------------------------------------------------------------------------
+
+describe("server.js CLI — install subcommand (PRD-011)", () => {
+  function spawnServer(args, extraEnv = {}) {
+    return spawnSync(process.execPath, [SERVER_PATH, ...args], {
+      env: { ...process.env, ...extraEnv },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  }
+
+  it("G-1: install --help exits 0 with installer help text", () => {
+    const result = spawnServer(["install", "--help"]);
+    expect(result.status).toBe(0);
+    const out = (result.stdout || "") + (result.stderr || "");
+    expect(out).toContain("--project");
+    expect(out).toContain("--dev");
+    expect(out).toContain("--help");
+    // MCP server must NOT have started
+    expect(result.stderr).not.toMatch(/MCP server running/);
+  });
+
+  it("G-4: --version beats install in argv ordering", () => {
+    const result = spawnServer(["--version", "install"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+    // install help must NOT have printed
+    expect(result.stdout).not.toContain("--project");
+  });
+
+  it("G-6: unknown subcommand falls through to normal MCP start", () => {
+    // Spawn, wait briefly for the 'MCP server running' line, then kill.
+    const child = spawnSync(process.execPath, [SERVER_PATH, "foo"], {
+      env: { ...process.env },
+      encoding: "utf8",
+      timeout: 1500,
+      // SIGTERM after the timeout since normal start waits on stdin.
+    });
+    // spawnSync with a timeout returns once the child terminates or the
+    // timeout fires. Either way, stderr should have the startup line.
+    expect(child.stderr).toMatch(/MCP server running \(midbrain-memory-mcp v/);
+    expect(child.stdout).not.toContain("--project");
+  });
+
+  it("G-3: install --project (no value) exits 1 with validation error", () => {
+    const result = spawnServer(["install", "--project"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("requires a path argument");
+    expect(result.stderr).not.toMatch(/MCP server running/);
+  });
+
+  it("G-2: install --project <tmpdir> writes project files end-to-end", () => {
+    // Three isolated tmpdirs: project, HOME, MIDBRAIN_CONFIG_DIR.
+    // Without HOME + MIDBRAIN_CONFIG_DIR isolation the installer would
+    // write into the real ~/.claude.json and ~/.config/opencode — that
+    // is test contamination.
+    const projectTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-proj-"));
+    const homeTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-home-"));
+    const configTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-cfg-"));
+
+    // Write a global key file so resolveProjectKey finds something.
+    const globalKeyDir = path.join(homeTmpdir, ".config", "midbrain");
+    fs.mkdirSync(globalKeyDir, { recursive: true });
+    const globalKeyPath = path.join(globalKeyDir, ".midbrain-key");
+    fs.writeFileSync(globalKeyPath, "test-key-prd011");
+    fs.chmodSync(globalKeyPath, 0o600);
+
+    // Stub ~/.claude.json so detectTools() reports claudeCode=true and
+    // the .mcp.json + ~/.claude.json project-local paths both fire.
+    fs.writeFileSync(path.join(homeTmpdir, ".claude.json"), "{}");
+
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [SERVER_PATH, "install", "--project", projectTmpdir],
+        {
+          env: {
+            ...process.env,
+            HOME: homeTmpdir,
+            MIDBRAIN_CONFIG_DIR: configTmpdir,
+          },
+          encoding: "utf8",
+          timeout: 10000,
+        }
+      );
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toMatch(/MCP server running/);
+
+      // Key file created at <project>/.midbrain/.midbrain-key, chmod 600
+      const keyFile = path.join(projectTmpdir, ".midbrain", ".midbrain-key");
+      expect(fs.existsSync(keyFile)).toBe(true);
+      const stat = fs.statSync(keyFile);
+      // chmod 600 = owner rw only; lower 9 bits must equal 0o600
+      expect(stat.mode & 0o777).toBe(0o600);
+
+      // <project>/.mcp.json written with @latest (PRD-010 preserved through dispatch)
+      const mcpJson = path.join(projectTmpdir, ".mcp.json");
+      expect(fs.existsSync(mcpJson)).toBe(true);
+      const parsed = JSON.parse(fs.readFileSync(mcpJson, "utf8"));
+      const entry = parsed.mcpServers?.["midbrain-memory"];
+      expect(entry).toBeDefined();
+      expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    } finally {
+      fs.rmSync(projectTmpdir, { recursive: true, force: true });
+      fs.rmSync(homeTmpdir, { recursive: true, force: true });
+      fs.rmSync(configTmpdir, { recursive: true, force: true });
+    }
+  });
+
+  it("G-5: no-arg startup produces MCP server running line (regression)", () => {
+    const child = spawnSync(process.execPath, [SERVER_PATH], {
+      env: { ...process.env },
+      encoding: "utf8",
+      timeout: 1500,
+    });
+    expect(child.stderr).toMatch(/MCP server running \(midbrain-memory-mcp v/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PRD-011: server.js source-level invariants (R-1..R-4)
+// ---------------------------------------------------------------------------
+
+describe("server.js source invariants (PRD-011 R-1..R-4)", () => {
+  const serverSrc = fs.readFileSync(SERVER_PATH, "utf8");
+
+  it("R-1: console.log appears on exactly one line (the --version short-circuit)", () => {
+    const matches = serverSrc.match(/console\.log\(/g) || [];
+    expect(matches.length).toBe(1);
+  });
+
+  it("R-2: dispatch ordering: --version < install < createServer < checkForUpdate", () => {
+    const lines = serverSrc.split("\n");
+    const idxVersion = lines.findIndex((l) =>
+      /process\.argv\.includes\(["']--version["']\)/.test(l)
+    );
+    const idxInstall = lines.findIndex((l) =>
+      /process\.argv\[2\]\s*===\s*["']install["']/.test(l)
+    );
+    const idxCreate = lines.findIndex((l) => /createServer\(/.test(l) && !/function createServer/.test(l));
+    const idxUpdate = lines.findIndex((l) => /checkForUpdate\(/.test(l) && !/function checkForUpdate/.test(l) && !/async function checkForUpdate/.test(l));
+
+    expect(idxVersion).toBeGreaterThan(-1);
+    expect(idxInstall).toBeGreaterThan(idxVersion);
+    // createServer call site must come AFTER install dispatch line
+    // (the definition of createServer is earlier — we filtered it out)
+    expect(idxCreate).toBeGreaterThan(idxInstall);
+    expect(idxUpdate).toBeGreaterThan(idxCreate);
+  });
+
+  it("R-3: no top-level static import of install.mjs", () => {
+    const regex = /^import\s.+from\s+['"]\.\/install\.mjs['"]/m;
+    expect(serverSrc).not.toMatch(regex);
+  });
+
+  it("R-4: exactly one `await import(\"./install.mjs\")` expression", () => {
+    const matches =
+      serverSrc.match(/await\s+import\(["']\.\/install\.mjs["']\)/g) || [];
+    expect(matches.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PRD-011: memory_setup_project MCP tool coexistence (G-8 regression)
+// ---------------------------------------------------------------------------
+
+describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
+  let client;
+  let server;
+  let projectTmpdir;
+  let homeTmpdir;
+  let configTmpdir;
+  let origHome;
+  let origConfigDir;
+  let origMidbrainProjectDir;
+
+  beforeEach(async () => {
+    projectTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-mcp-proj-"));
+    homeTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-mcp-home-"));
+    configTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-mcp-cfg-"));
+
+    origHome = process.env.HOME;
+    origConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
+    origMidbrainProjectDir = process.env.MIDBRAIN_PROJECT_DIR;
+    process.env.HOME = homeTmpdir;
+    process.env.MIDBRAIN_CONFIG_DIR = configTmpdir;
+    delete process.env.MIDBRAIN_PROJECT_DIR;
+
+    // Put a key in MIDBRAIN_CONFIG_DIR so setupProject's loadApiKey resolves.
+    fs.writeFileSync(path.join(configTmpdir, ".midbrain-key"), "test-key-g8");
+    fs.chmodSync(path.join(configTmpdir, ".midbrain-key"), 0o600);
+
+    // Stub ~/.claude.json so setupProject's hasClaude branch runs and
+    // writes <project>/.mcp.json. Without this the Claude migration
+    // helper never fires.
+    fs.writeFileSync(path.join(homeTmpdir, ".claude.json"), "{}");
+
+    // Boot in-process MCP server + client.
+    server = createServer();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    client = new Client({ name: "test-client", version: "1.0" }, { capabilities: {} });
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+  });
+
+  afterEach(async () => {
+    await client.close();
+    await server.close();
+    if (origHome === undefined) delete process.env.HOME;
+    else process.env.HOME = origHome;
+    if (origConfigDir === undefined) delete process.env.MIDBRAIN_CONFIG_DIR;
+    else process.env.MIDBRAIN_CONFIG_DIR = origConfigDir;
+    if (origMidbrainProjectDir !== undefined)
+      process.env.MIDBRAIN_PROJECT_DIR = origMidbrainProjectDir;
+    fs.rmSync(projectTmpdir, { recursive: true, force: true });
+    fs.rmSync(homeTmpdir, { recursive: true, force: true });
+    fs.rmSync(configTmpdir, { recursive: true, force: true });
+  });
+
+  it("G-8: memory_setup_project still writes key file + .mcp.json with @latest", async () => {
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: projectTmpdir },
+    });
+
+    expect(result.content).toBeDefined();
+    expect(result.content[0].type).toBe("text");
+    const text = result.content[0].text;
+
+    // Key file written at <project>/.midbrain/.midbrain-key, chmod 600
+    const keyFile = path.join(projectTmpdir, ".midbrain", ".midbrain-key");
+    expect(fs.existsSync(keyFile)).toBe(true);
+    expect(fs.statSync(keyFile).mode & 0o777).toBe(0o600);
+
+    // <project>/.mcp.json written with @latest (PRD-010 behavior preserved)
+    const mcpJson = path.join(projectTmpdir, ".mcp.json");
+    expect(fs.existsSync(mcpJson)).toBe(true);
+    const parsed = jsoncParse(fs.readFileSync(mcpJson, "utf8"));
+    const entry = parsed.mcpServers?.["midbrain-memory"];
+    expect(entry).toBeDefined();
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+
+    // Tool response shape unchanged: text content with key + config lines
+    expect(text).toMatch(/key|Key|midbrain/);
+  });
+});
