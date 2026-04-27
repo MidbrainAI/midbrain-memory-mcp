@@ -533,7 +533,7 @@ describe("memory_setup_project — config file integration", () => {
       arguments: { project_dir: tmpProjectDir, api_key: "oc-test-key" },
     });
     const text = result.content[0].text;
-    expect(text).toContain("Config written");
+    expect(text).toMatch(/(Config written|midbrain-memory entry)/);
 
     const configPath = path.join(tmpProjectDir, "opencode.json");
     expect(fs.existsSync(configPath)).toBe(true);
@@ -557,7 +557,7 @@ describe("memory_setup_project — config file integration", () => {
       arguments: { project_dir: tmpProjectDir, api_key: "cc-test-key" },
     });
     const text = result.content[0].text;
-    expect(text).toContain("Config written");
+    expect(text).toMatch(/(Config written|midbrain-memory entry)/);
 
     const configPath = path.join(tmpProjectDir, ".mcp.json");
     expect(fs.existsSync(configPath)).toBe(true);
@@ -654,7 +654,7 @@ describe("memory_setup_project — config file integration", () => {
     fs.rmSync(ocConfigDir, { recursive: true, force: true });
   });
 
-  it("uses absolute node path in command", async () => {
+  it("uses npx -y midbrain-memory-mcp@latest in command (PRD-010)", async () => {
     const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
     fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "oc-key\n", "utf8");
     process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
@@ -666,9 +666,7 @@ describe("memory_setup_project — config file integration", () => {
 
     const config = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
     const cmd = config.mcp["midbrain-memory"].command;
-    expect(path.isAbsolute(cmd[0])).toBe(true);
-    expect(path.isAbsolute(cmd[1])).toBe(true);
-    expect(cmd[1]).toContain("server.js");
+    expect(cmd).toEqual(["npx", "-y", "midbrain-memory-mcp@latest"]);
 
     fs.rmSync(ocConfigDir, { recursive: true, force: true });
   });
@@ -693,7 +691,7 @@ describe("memory_setup_project — config file integration", () => {
     const text = result.content[0].text;
     // With bidirectional detection, configs are written if clients exist on disk
     // (regardless of MIDBRAIN_CONFIG_DIR string matching)
-    expect(text).toContain("Config written");
+    expect(text).toMatch(/(Config written|midbrain-memory entry)/);
   });
 
   it("never throws — returns error as text", async () => {
@@ -857,7 +855,7 @@ describe("memory_setup_project — config file integration", () => {
         name: "memory_setup_project",
         arguments: { project_dir: tmpProjectDir, api_key: "bidir-test-key" },
       });
-      expect(result.content[0].text).toContain("Config written");
+      expect(result.content[0].text).toMatch(/(Config written|midbrain-memory entry)/);
 
       // OpenCode config should be written
       const ocConfigPath = path.join(tmpProjectDir, "opencode.json");
@@ -896,7 +894,7 @@ describe("memory_setup_project — config file integration", () => {
         name: "memory_setup_project",
         arguments: { project_dir: tmpProjectDir, api_key: "reverse-bidir-key" },
       });
-      expect(result.content[0].text).toContain("Config written");
+      expect(result.content[0].text).toMatch(/(Config written|midbrain-memory entry)/);
 
       // Claude .mcp.json must be written
       expect(fs.existsSync(path.join(tmpProjectDir, ".mcp.json"))).toBe(true);
@@ -945,11 +943,11 @@ describe("memory_setup_project — config file integration", () => {
       const text = result.content[0].text;
 
       // Should write .mcp.json
-      expect(text).toContain("Config written");
+      expect(text).toMatch(/(Config written|midbrain-memory entry)/);
       expect(fs.existsSync(path.join(tmpProjectDir, ".mcp.json"))).toBe(true);
 
       // Should patch ~/.claude.json successfully (fakeHome has a writable one)
-      expect(text).toContain("Config patched");
+      expect(text).toMatch(/(Config patched|project-local)/);
     } finally {
       fs.rmSync(ccConfigDir, { recursive: true, force: true });
     }
@@ -974,11 +972,275 @@ describe("memory_setup_project — config file integration", () => {
       expect(entry.type).toBe("stdio");
       expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
       expect(entry.env.MIDBRAIN_CONFIG_DIR).toContain("claude");
-      expect(path.isAbsolute(entry.command)).toBe(true);
-      expect(path.isAbsolute(entry.env.MIDBRAIN_CONFIG_DIR)).toBe(true);
-      expect(path.isAbsolute(entry.env.MIDBRAIN_PROJECT_DIR)).toBe(true);
+      expect(entry.command).toBe("npx");
+      expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
     } finally {
       fs.rmSync(ccConfigDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PRD-010: memory_setup_project migration of stale configs
+// ---------------------------------------------------------------------------
+
+describe("memory_setup_project — stale config migration (PRD-010)", () => {
+  let tmpProjectDir;
+  let savedConfigDir;
+  let savedHome;
+  let fakeHome;
+
+  beforeEach(() => {
+    tmpProjectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-migrate-")));
+    savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
+    savedHome = process.env.HOME;
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fake-home-migrate-"));
+    process.env.HOME = fakeHome;
+    fs.mkdirSync(path.join(fakeHome, ".config", "opencode"), { recursive: true });
+    fs.writeFileSync(path.join(fakeHome, ".claude.json"), JSON.stringify({ projects: {} }, null, 2), "utf8");
+  });
+
+  afterEach(() => {
+    if (savedConfigDir === undefined) delete process.env.MIDBRAIN_CONFIG_DIR;
+    else process.env.MIDBRAIN_CONFIG_DIR = savedConfigDir;
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    try { fs.rmSync(tmpProjectDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("G-2: migrates stale absolute-path entry in opencode.json; preserves siblings + env vars", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "k\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    // Pre-create opencode.json with a stale absolute-path midbrain entry + sibling
+    const stale = {
+      $schema: "https://opencode.ai/config.json",
+      mcp: {
+        "midbrain-memory": {
+          type: "local",
+          command: [
+            "/usr/local/Cellar/node@20/20.19.2/bin/node",
+            "/usr/local/lib/node_modules/midbrain-memory-mcp/server.js",
+          ],
+          environment: {
+            MIDBRAIN_CONFIG_DIR: "/old/config/opencode",
+            CUSTOM_VAR: "custom-value",
+          },
+          enabled: true,
+        },
+        "notion": {
+          type: "local",
+          command: ["docker", "run", "--rm", "-i", "mcp/notion"],
+          enabled: true,
+        },
+      },
+    };
+    fs.writeFileSync(
+      path.join(tmpProjectDir, "opencode.json"),
+      JSON.stringify(stale, null, 2),
+      "utf8",
+    );
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "new-key" },
+    });
+    const text = result.content[0].text;
+
+    const updated = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
+    // Migrated to @latest
+    expect(updated.mcp["midbrain-memory"].command).toEqual(["npx", "-y", "midbrain-memory-mcp@latest"]);
+    // Custom env var preserved
+    expect(updated.mcp["midbrain-memory"].environment.CUSTOM_VAR).toBe("custom-value");
+    // MIDBRAIN_CONFIG_DIR updated to new client-based value
+    expect(updated.mcp["midbrain-memory"].environment.MIDBRAIN_CONFIG_DIR).toContain("opencode");
+    // MIDBRAIN_PROJECT_DIR set
+    expect(updated.mcp["midbrain-memory"].environment.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
+    // Sibling preserved byte-for-byte
+    expect(updated.mcp.notion).toEqual(stale.mcp.notion);
+    // Summary mentions migration
+    expect(text.toLowerCase()).toMatch(/migrat/);
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("G-3: migrates unpinned npx entry in opencode.json", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "k\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    fs.writeFileSync(
+      path.join(tmpProjectDir, "opencode.json"),
+      JSON.stringify({
+        $schema: "https://opencode.ai/config.json",
+        mcp: {
+          "midbrain-memory": {
+            type: "local",
+            command: ["npx", "-y", "midbrain-memory-mcp"],
+            environment: {},
+            enabled: true,
+          },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "new-key" },
+    });
+
+    const updated = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
+    expect(updated.mcp["midbrain-memory"].command).toEqual(["npx", "-y", "midbrain-memory-mcp@latest"]);
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("G-4: tool response summary includes per-file migration outcome", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "k\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    fs.writeFileSync(
+      path.join(tmpProjectDir, "opencode.json"),
+      JSON.stringify({
+        $schema: "https://opencode.ai/config.json",
+        mcp: {
+          "midbrain-memory": {
+            type: "local",
+            command: ["midbrain-memory-mcp"],
+            environment: {},
+            enabled: true,
+          },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "new-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toMatch(/global-installed-bin|migrated|migration/i);
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("pinned @X.Y.Z entries are preserved, not migrated", async () => {
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "k\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    fs.writeFileSync(
+      path.join(tmpProjectDir, "opencode.json"),
+      JSON.stringify({
+        $schema: "https://opencode.ai/config.json",
+        mcp: {
+          "midbrain-memory": {
+            type: "local",
+            command: ["npx", "-y", "midbrain-memory-mcp@0.3.1"],
+            environment: {},
+            enabled: true,
+          },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "new-key" },
+    });
+    const text = result.content[0].text;
+
+    const updated = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
+    expect(updated.mcp["midbrain-memory"].command).toEqual(["npx", "-y", "midbrain-memory-mcp@0.3.1"]);
+    expect(text.toLowerCase()).toMatch(/pinned/);
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
+  it("G-4b: migrates stale entry in ~/.claude.json project-local scope", async () => {
+    const ccConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-cfg-"));
+    fs.writeFileSync(path.join(ccConfigDir, ".midbrain-key"), "k\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ccConfigDir;
+
+    const claudeJsonPath = path.join(fakeHome, ".claude.json");
+    // Seed stale absolute-path entry in project-local + a sibling project
+    fs.writeFileSync(
+      claudeJsonPath,
+      JSON.stringify({
+        projects: {
+          [tmpProjectDir]: {
+            mcpServers: {
+              "midbrain-memory": {
+                type: "stdio",
+                command: "/usr/local/bin/node",
+                args: ["/Users/me/midbrain-memory-mcp/server.js"],
+                env: { MIDBRAIN_CONFIG_DIR: "/old", KEEP: "me" },
+              },
+            },
+          },
+          "/some/other/proj": {
+            mcpServers: { "midbrain-memory": { type: "stdio", command: "noop" } },
+          },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "k" },
+    });
+
+    const updated = JSON.parse(fs.readFileSync(claudeJsonPath, "utf8"));
+    const entry = updated.projects[tmpProjectDir].mcpServers["midbrain-memory"];
+    expect(entry.command).toBe("npx");
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    // Custom env preserved
+    expect(entry.env.KEEP).toBe("me");
+    // Other project untouched
+    expect(updated.projects["/some/other/proj"].mcpServers["midbrain-memory"])
+      .toEqual({ type: "stdio", command: "noop" });
+
+    fs.rmSync(ccConfigDir, { recursive: true, force: true });
+  });
+
+  it("G-4c: migrates stale entry in <project>/.mcp.json", async () => {
+    const ccConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-cfg-"));
+    fs.writeFileSync(path.join(ccConfigDir, ".midbrain-key"), "k\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ccConfigDir;
+
+    fs.writeFileSync(
+      path.join(tmpProjectDir, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          "midbrain-memory": {
+            command: "/usr/local/bin/node",
+            args: ["/Users/me/midbrain-memory-mcp/server.js"],
+            env: { MIDBRAIN_CONFIG_DIR: "/old", CUSTOM: "v" },
+          },
+          "sibling": { command: "other", args: [] },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "k" },
+    });
+
+    const updated = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, ".mcp.json"), "utf8"));
+    expect(updated.mcpServers["midbrain-memory"].command).toBe("npx");
+    expect(updated.mcpServers["midbrain-memory"].args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    expect(updated.mcpServers["midbrain-memory"].env.CUSTOM).toBe("v");
+    expect(updated.mcpServers.sibling).toEqual({ command: "other", args: [] });
+
+    fs.rmSync(ccConfigDir, { recursive: true, force: true });
   });
 });

@@ -24,6 +24,11 @@ import {
   DEFAULT_SEARCH_LIMIT,
   CONFIG_DIR_ENV_VAR,
   PROJECT_DIR_ENV_VAR,
+  buildMcpCommandSpec,
+  toOpenCodeShape,
+  toClaudeShape,
+  normalizeMcpEntry,
+  detectMcpSpecShape,
 } from "./shared/midbrain-common.mjs";
 import fs from "fs/promises";
 import { existsSync } from "fs";
@@ -140,27 +145,6 @@ function resolveOpencodeConfig(dir) {
 }
 
 /**
- * Surgically patch a JSON/JSONC file, preserving comments and formatting.
- * Creates the file with '{}' if it does not exist.
- */
-async function patchJsonFile(filePath, modifications) {
-  let text;
-  try {
-    text = await fs.readFile(filePath, "utf8");
-  } catch (err) {
-    if (err.code === "ENOENT") text = "{}";
-    else throw err;
-  }
-  for (const { path: jsonPath, value } of modifications) {
-    const edits = jsoncModify(text, jsonPath, value, { formattingOptions: JSONC_FORMAT });
-    text = applyEdits(text, edits);
-  }
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  if (!text.endsWith("\n")) text += "\n";
-  await fs.writeFile(filePath, text, "utf8");
-}
-
-/**
  * Sets up per-project memory: key file + MCP config.
  * Returns a human-readable summary string. Never throws (C-2).
  */
@@ -168,8 +152,6 @@ async function setupProject(projectDir, apiKeyParam) {
   try {
     const lines = [];
     const HOME = os.homedir();
-    const serverPath = path.join(__dirname, "server.js");
-    const nodePath = process.execPath; // C-3
 
     if (!path.isAbsolute(projectDir)) {
       return `Error: project_dir must be an absolute path. Got: "${projectDir}"`;
@@ -233,70 +215,13 @@ async function setupProject(projectDir, apiKeyParam) {
     const hasClaude = existsSync(path.join(HOME, ".claude.json"));
 
     if (hasOpenCode) {
-      const configPath = resolveOpencodeConfig(resolvedDir);
-      const config = (await readJson(configPath)) || {};
-      const modifications = [];
-      if (!config["$schema"]) {
-        modifications.push({ path: ["$schema"], value: "https://opencode.ai/config.json" });
-      }
-      if (config.mcpServers) {
-        modifications.push({ path: ["mcpServers"], value: undefined });
-        lines.push("Removed invalid mcpServers key from " + path.basename(configPath));
-      }
-      modifications.push({
-        path: ["mcp", MCP_KEY],
-        value: {
-          type: "local",
-          command: [nodePath, serverPath],
-          environment: {
-            MIDBRAIN_CONFIG_DIR: path.join(HOME, ".config", "opencode"),
-            MIDBRAIN_PROJECT_DIR: resolvedDir,
-          },
-          enabled: true,
-        },
-      });
-      await patchJsonFile(configPath, modifications);
-      lines.push(`Config written: ${configPath}`);
+      const ocResult = await migrateOpenCodeConfig(resolvedDir, HOME);
+      lines.push(...ocResult);
     }
 
     if (hasClaude) {
-      const configPath = path.join(resolvedDir, ".mcp.json");
-      const config = (await readJson(configPath)) || {};
-      config.mcpServers = config.mcpServers || {};
-      config.mcpServers[MCP_KEY] = {
-        command: nodePath,
-        args: [serverPath],
-        env: {
-          MIDBRAIN_CONFIG_DIR: path.join(HOME, ".config", "claude"),
-          MIDBRAIN_PROJECT_DIR: resolvedDir,
-        },
-      };
-      await writeJson(configPath, config);
-      lines.push(`Config written: ${configPath}`);
-
-      // PRD-009: also patch ~/.claude.json project-local scope (bypass trust gate)
-      const claudeJsonPath = path.join(HOME, ".claude.json");
-      try {
-        await patchJsonFile(claudeJsonPath, [{
-          path: ["projects", resolvedDir, "mcpServers", MCP_KEY],
-          value: {
-            type: "stdio",
-            command: nodePath,
-            args: [serverPath],
-            env: {
-              MIDBRAIN_CONFIG_DIR: path.join(HOME, ".config", "claude"),
-              MIDBRAIN_PROJECT_DIR: resolvedDir,
-            },
-          },
-        }]);
-        lines.push(`Config patched: ${claudeJsonPath} (project-local mcpServers)`);
-      } catch (patchErr) {
-        if (patchErr.code === "EACCES") {
-          lines.push(`Warning: could not patch ${claudeJsonPath}: ${patchErr.code}`);
-        } else {
-          throw patchErr;
-        }
-      }
+      const ccResult = await migrateClaudeConfigs(resolvedDir, HOME);
+      lines.push(...ccResult);
     }
 
     if (!hasOpenCode && !hasClaude) {
@@ -310,6 +235,176 @@ async function setupProject(projectDir, apiKeyParam) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return `Error setting up project: ${msg}`;
+  }
+}
+
+/**
+ * Writes / migrates the OpenCode project config. Returns summary lines.
+ * Detects stale midbrain-memory entries and rewrites them to @latest,
+ * preserving sibling MCP servers and custom env vars.
+ */
+async function migrateOpenCodeConfig(resolvedDir, HOME) {
+  const out = [];
+  const configPath = resolveOpencodeConfig(resolvedDir);
+  const configBasename = path.basename(configPath);
+  const config = (await readJson(configPath)) || {};
+
+  const existingEntry = config.mcp && config.mcp[MCP_KEY];
+  const { stale, reason, extraEnv } = classifyEntry(existingEntry, "opencode");
+
+  const modifications = [];
+  if (!config["$schema"]) {
+    modifications.push({ path: ["$schema"], value: "https://opencode.ai/config.json" });
+  }
+  if (config.mcpServers) {
+    modifications.push({ path: ["mcpServers"], value: undefined });
+    out.push("Removed invalid mcpServers key from " + configBasename);
+  }
+
+  // Skip rewrite if already at @latest, explicitly pinned, or unknown shape.
+  const shouldWrite = reason === "missing" || stale;
+  if (shouldWrite) {
+    const spec = buildMcpCommandSpec({
+      configDir: path.join(HOME, ".config", "opencode"),
+      projectDir: resolvedDir,
+    });
+    const shaped = toOpenCodeShape(spec);
+    // Preserve custom env vars
+    shaped.environment = { ...extraEnv, ...shaped.environment };
+    modifications.push({ path: ["mcp", MCP_KEY], value: shaped });
+  }
+
+  if (modifications.length > 0) {
+    await patchJsonFile(configPath, modifications);
+  }
+  out.push(formatMigrationLine(configPath, reason));
+  return out;
+}
+
+/**
+ * Writes / migrates both Claude config locations: <proj>/.mcp.json and
+ * ~/.claude.json project-local scope. Returns summary lines.
+ */
+async function migrateClaudeConfigs(resolvedDir, HOME) {
+  const out = [];
+
+  // 1. <project>/.mcp.json
+  const mcpJsonPath = path.join(resolvedDir, ".mcp.json");
+  const mcpJson = (await readJson(mcpJsonPath)) || {};
+  mcpJson.mcpServers = mcpJson.mcpServers || {};
+  const { stale: mcpStale, reason: mcpReason, extraEnv: mcpExtraEnv } =
+    classifyEntry(mcpJson.mcpServers[MCP_KEY], "claude");
+  if (mcpReason === "missing" || mcpStale) {
+    const spec = buildMcpCommandSpec({
+      configDir: path.join(HOME, ".config", "claude"),
+      projectDir: resolvedDir,
+    });
+    const shaped = toClaudeShape(spec);
+    shaped.env = { ...mcpExtraEnv, ...shaped.env };
+    mcpJson.mcpServers[MCP_KEY] = shaped;
+    await writeJson(mcpJsonPath, mcpJson);
+  }
+  out.push(formatMigrationLine(mcpJsonPath, mcpReason));
+
+  // 2. ~/.claude.json project-local scope (bypass trust gate)
+  const claudeJsonPath = path.join(HOME, ".claude.json");
+  try {
+    const claudeJson = (await readJson(claudeJsonPath)) || {};
+    const projectEntry =
+      claudeJson.projects
+      && claudeJson.projects[resolvedDir]
+      && claudeJson.projects[resolvedDir].mcpServers
+      && claudeJson.projects[resolvedDir].mcpServers[MCP_KEY];
+    const cls = classifyEntry(projectEntry, "claude");
+    const shouldWrite = cls.reason === "missing" || cls.stale;
+    if (shouldWrite) {
+      const spec = buildMcpCommandSpec({
+        configDir: path.join(HOME, ".config", "claude"),
+        projectDir: resolvedDir,
+      });
+      const shaped = toClaudeShape(spec);
+      shaped.env = { ...cls.extraEnv, ...shaped.env };
+      await patchJsonFile(claudeJsonPath, [{
+        path: ["projects", resolvedDir, "mcpServers", MCP_KEY],
+        value: shaped,
+      }]);
+    }
+    out.push(formatMigrationLine(`${claudeJsonPath} (project-local)`, cls.reason));
+  } catch (patchErr) {
+    if (patchErr.code === "EACCES") {
+      out.push(`Warning: could not patch ${claudeJsonPath}: ${patchErr.code}`);
+    } else {
+      throw patchErr;
+    }
+  }
+  return out;
+}
+
+/**
+ * Surgically patch a JSON/JSONC file, preserving comments and formatting.
+ * Creates the file with '{}' if it does not exist.
+ */
+async function patchJsonFile(filePath, modifications) {
+  let text;
+  try {
+    text = await fs.readFile(filePath, "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT") text = "{}";
+    else throw err;
+  }
+  for (const { path: jsonPath, value } of modifications) {
+    const edits = jsoncModify(text, jsonPath, value, { formattingOptions: JSONC_FORMAT });
+    text = applyEdits(text, edits);
+  }
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  if (!text.endsWith("\n")) text += "\n";
+  await fs.writeFile(filePath, text, "utf8");
+}
+
+/**
+ * Classifies an existing MCP config entry for a client. Returns
+ * `{stale, reason, extraEnv}`:
+ *   - stale: true if the entry matches a known legacy install pattern
+ *   - reason: classification from detectMcpSpecShape
+ *   - extraEnv: custom env vars worth preserving across migration
+ *     (drops MIDBRAIN_CONFIG_DIR / MIDBRAIN_PROJECT_DIR since they get
+ *     rewritten by the current setup call).
+ *
+ * @param {object|undefined} entry  Raw entry value at mcp[key] or mcpServers[key].
+ * @param {"opencode"|"claude"} shape
+ */
+function classifyEntry(entry, shape) {
+  if (!entry || typeof entry !== "object") {
+    return { stale: false, reason: "missing", extraEnv: {} };
+  }
+  const normalized = normalizeMcpEntry(entry, shape);
+  const { stale, reason } = detectMcpSpecShape(normalized);
+  const envKey = shape === "opencode" ? "environment" : "env";
+  const oldEnv = (entry[envKey] && typeof entry[envKey] === "object") ? entry[envKey] : {};
+  const extraEnv = {};
+  for (const [k, v] of Object.entries(oldEnv)) {
+    if (k === "MIDBRAIN_CONFIG_DIR" || k === "MIDBRAIN_PROJECT_DIR") continue;
+    extraEnv[k] = v;
+  }
+  return { stale, reason, extraEnv };
+}
+
+/**
+ * Builds a status line for the summary describing a migration outcome.
+ * @param {string} label  Human-readable config location.
+ * @param {string} reason Classification from classifyEntry.
+ */
+function formatMigrationLine(label, reason) {
+  switch (reason) {
+    case "missing":       return `${label}: midbrain-memory entry added (@latest)`;
+    case "at-latest":     return `${label}: midbrain-memory already at @latest (no change)`;
+    case "pinned":        return `${label}: midbrain-memory pinned version preserved (no change)`;
+    case "unknown":       return `${label}: midbrain-memory has unknown shape, not migrated`;
+    case "global-installed-bin":
+    case "absolute-path-server-js":
+    case "unpinned-npx":
+      return `${label}: midbrain-memory migrated from ${reason} to @latest`;
+    default: return `${label}: ${reason}`;
   }
 }
 
