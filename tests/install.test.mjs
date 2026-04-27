@@ -357,15 +357,34 @@ describe("installOpenCode", () => {
   });
 
   it("throws when config file cannot be read", async () => {
-    // readJson returns null for nonexistent config
+    // PRD-010 AC-8 I-11: missing ~/.config/opencode/opencode.json is no longer
+    // a hard error. installOpenCode now creates a minimal starter config with
+    // $schema and the MCP entry.
     const summary = [];
-    await expect(installOpenCode(summary)).rejects.toThrow(/Cannot read/);
+    await installOpenCode(summary);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
+    expect(writeCall).toBeDefined();
+    const written = JSON.parse(writeCall[1]);
+    expect(written.$schema).toBe("https://opencode.ai/config.json");
+    expect(written.mcp[MCP_KEY]).toBeDefined();
   });
 
-  it("command array contains absolute node path and server.js path", async () => {
+  it("command array defaults to npx -y midbrain-memory-mcp@latest (PRD-010 I-1)", async () => {
     setupOpenCode({ $schema: "https://opencode.ai/config.json" });
     const summary = [];
     await installOpenCode(summary);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
+    const written = JSON.parse(writeCall[1]);
+    const cmd = written.mcp[MCP_KEY].command;
+    expect(cmd).toEqual(["npx", "-y", "midbrain-memory-mcp@latest"]);
+  });
+
+  it("--dev flag writes absolute node + server.js paths (PRD-010 I-3)", async () => {
+    setupOpenCode({ $schema: "https://opencode.ai/config.json" });
+    const summary = [];
+    await installOpenCode(summary, { isDev: true });
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
     const written = JSON.parse(writeCall[1]);
@@ -469,11 +488,24 @@ describe("installClaudeJson", () => {
     );
   });
 
-  it("command is absolute node path, args contains server.js", async () => {
+  it("command defaults to npx -y midbrain-memory-mcp@latest (PRD-010 I-2)", async () => {
     readFileReturns({ [PATHS.claudeJson]: "{}" });
     existsFor(PATHS.claudeJson);
     const summary = [];
     await installClaudeJson(summary);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    const written = JSON.parse(writeCall[1]);
+    const srv = written.mcpServers[MCP_KEY];
+    expect(srv.command).toBe("npx");
+    expect(srv.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+  });
+
+  it("--dev flag writes absolute node + server.js paths (PRD-010 I-4)", async () => {
+    readFileReturns({ [PATHS.claudeJson]: "{}" });
+    existsFor(PATHS.claudeJson);
+    const summary = [];
+    await installClaudeJson(summary, { isDev: true });
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
     const written = JSON.parse(writeCall[1]);
@@ -1024,10 +1056,23 @@ describe("projectSetup", () => {
     expect(keyWrite[1]).toBe("env-fallback-key\n");
   });
 
-  it("command arrays use absolute paths", async () => {
+  it("command array defaults to npx -y @latest (PRD-010)", async () => {
     setupProjectMocks();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     await projectSetup(PROJECT_DIR);
+    logSpy.mockRestore();
+
+    const configPath = path.join(PROJECT_DIR, "opencode.json");
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === configPath);
+    const written = JSON.parse(writeCall[1]);
+    const cmd = written.mcp[MCP_KEY].command;
+    expect(cmd).toEqual(["npx", "-y", "midbrain-memory-mcp@latest"]);
+  });
+
+  it("--dev opt writes absolute paths in projectSetup (PRD-010)", async () => {
+    setupProjectMocks();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await projectSetup(PROJECT_DIR, { isDev: true });
     logSpy.mockRestore();
 
     const configPath = path.join(PROJECT_DIR, "opencode.json");
@@ -1059,12 +1104,10 @@ describe("projectSetup", () => {
 
 describe("installClaudeProjectLocal", () => {
   const PROJECT_DIR = "/home/testuser/myproject";
-  const NODE_PATH = "/usr/local/bin/node";
-  const SERVER_PATH = "/opt/midbrain/server.js";
 
   beforeEach(resetMocks);
 
-  it("patches ~/.claude.json with project-local mcpServers entry", async () => {
+  it("patches ~/.claude.json with project-local mcpServers entry (PRD-010: @latest)", async () => {
     readFileReturns({
       [PATHS.claudeJson]: JSON.stringify({
         mcpServers: {},
@@ -1072,7 +1115,7 @@ describe("installClaudeProjectLocal", () => {
       }),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1082,10 +1125,24 @@ describe("installClaudeProjectLocal", () => {
     const entry = written.projects[PROJECT_DIR].mcpServers[MCP_KEY];
     expect(entry).toBeDefined();
     expect(entry.type).toBe("stdio");
-    expect(entry.command).toBe(NODE_PATH);
-    expect(entry.args).toEqual([SERVER_PATH]);
+    expect(entry.command).toBe("npx");
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
     expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(PROJECT_DIR);
     expect(entry.env.MIDBRAIN_CONFIG_DIR).toContain("claude");
+  });
+
+  it("--dev writes absolute paths in project-local scope", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({ projects: {} }),
+    });
+
+    await installClaudeProjectLocal(PROJECT_DIR, { isDev: true });
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    const written = JSON.parse(writeCall[1]);
+    const entry = written.projects[PROJECT_DIR].mcpServers[MCP_KEY];
+    expect(path.isAbsolute(entry.command)).toBe(true);
+    expect(entry.args[0]).toContain("server.js");
   });
 
   it("preserves existing project entries and other mcpServers", async () => {
@@ -1101,7 +1158,7 @@ describe("installClaudeProjectLocal", () => {
       }),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1124,7 +1181,7 @@ describe("installClaudeProjectLocal", () => {
       [PATHS.claudeJson]: JSON.stringify({ mcpServers: {} }),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1134,13 +1191,8 @@ describe("installClaudeProjectLocal", () => {
   });
 
   it("skips gracefully when ~/.claude.json does not exist", async () => {
-    // patchJsonFile creates file from {} when ENOENT on readFile.
-    // But installClaudeProjectLocal wraps patchJsonFile and catches ENOENT.
-    // Simulate: readFile throws ENOENT for claudeJson (patchJsonFile starts from {}),
-    // then writeFile succeeds — the function should not throw.
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
-    // Should still write (patchJsonFile creates from {})
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
     );
@@ -1152,7 +1204,7 @@ describe("installClaudeProjectLocal", () => {
       [PATHS.claudeJson]: JSON.stringify({ projects: {} }),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const firstWrite = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1165,7 +1217,7 @@ describe("installClaudeProjectLocal", () => {
       [PATHS.claudeJson]: JSON.stringify(firstResult),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const secondWrite = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1185,7 +1237,7 @@ describe("installClaudeProjectLocal", () => {
       throw enoent(p);
     });
 
-    const result = await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    const result = await installClaudeProjectLocal(PROJECT_DIR);
 
     expect(result).toBe(false);
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
@@ -1203,8 +1255,28 @@ describe("installClaudeProjectLocal", () => {
     });
 
     await expect(
-      installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH)
+      installClaudeProjectLocal(PROJECT_DIR)
     ).rejects.toThrow("Disk I/O error");
+  });
+});
+
+// ===================================================================
+// --help output (PRD-010 I-12)
+// ===================================================================
+
+describe("printHelp (PRD-010 I-12)", () => {
+  it("includes --project, --dev, --help flags and marks --dev for contributors", async () => {
+    const { printHelp } = await import("../install.mjs");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    printHelp();
+    const out = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    logSpy.mockRestore();
+
+    expect(out).toContain("--project");
+    expect(out).toContain("--dev");
+    expect(out).toContain("--help");
+    expect(out.toLowerCase()).toContain("contributor");
+    expect(out).toContain("midbrain-memory-mcp@latest");
   });
 });
 

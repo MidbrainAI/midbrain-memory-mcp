@@ -26,6 +26,11 @@ import os from 'os';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { parse as jsoncParse, modify as jsoncModify, applyEdits } from 'jsonc-parser';
+import {
+  buildMcpCommandSpec,
+  toOpenCodeShape,
+  toClaudeShape,
+} from './shared/midbrain-common.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -276,8 +281,55 @@ async function writeKeys(keys, summary) {
 // ---------------------------------------------------------------------------
 // Step 4: OpenCode installation
 // ---------------------------------------------------------------------------
-async function installOpenCode(summary) {
-  // Copy plugin files
+
+/**
+ * Builds the OpenCode MCP entry for install.mjs.
+ * Default: npx -y midbrain-memory-mcp@latest (auto-updating).
+ * When isDev is true: absolute paths to local clone (for contributors).
+ * @param {{isDev?: boolean, projectDir?: string}} [opts]
+ */
+function buildOpenCodeMcpEntry({ isDev = false, projectDir } = {}) {
+  const configDir = path.join(HOME, '.config', 'opencode');
+  if (isDev) {
+    const environment = { MIDBRAIN_CONFIG_DIR: configDir };
+    if (projectDir) environment.MIDBRAIN_PROJECT_DIR = projectDir;
+    return {
+      type: 'local',
+      command: [process.execPath, path.join(SCRIPT_DIR, 'server.js')],
+      environment,
+      enabled: true,
+    };
+  }
+  return toOpenCodeShape(buildMcpCommandSpec({ configDir, projectDir }));
+}
+
+/**
+ * Builds the Claude Code MCP entry for install.mjs.
+ * Default: npx -y midbrain-memory-mcp@latest. isDev: absolute paths.
+ * @param {{isDev?: boolean, projectDir?: string}} [opts]
+ */
+function buildClaudeMcpEntry({ isDev = false, projectDir } = {}) {
+  const configDir = path.join(HOME, '.config', 'claude');
+  if (isDev) {
+    const env = { MIDBRAIN_CONFIG_DIR: configDir };
+    if (projectDir) env.MIDBRAIN_PROJECT_DIR = projectDir;
+    return {
+      type: 'stdio',
+      command: process.execPath,
+      args: [path.join(SCRIPT_DIR, 'server.js')],
+      env,
+    };
+  }
+  return toClaudeShape(buildMcpCommandSpec({ configDir, projectDir }));
+}
+
+async function installOpenCode(summary, opts = {}) {
+  const { isDev = false } = opts;
+
+  // Copy plugin files (dev contributors reference the clone; @latest users
+  // get the plugin bundled inside npx's cached package on first run — but
+  // the Bun plugin still needs to live in the user's OpenCode plugins dir
+  // to be loaded. We always copy so the plugin is available for both modes.)
   await fs.mkdir(PATHS.opencodePlugins, { recursive: true });
 
   const pluginDst = path.join(PATHS.opencodePlugins, 'midbrain-memory.ts');
@@ -290,9 +342,12 @@ async function installOpenCode(summary) {
   // Patch opencode config (.json or .jsonc) — preserves comments
   const opencodeConfigPath = resolveOpencodeConfig(PATHS.opencodeDir);
   const configBasename = path.basename(opencodeConfigPath);
-  const config = await readJson(opencodeConfigPath);
-  if (!config) throw new Error(`Cannot read ${opencodeConfigPath}`);
-  await backup(opencodeConfigPath);
+  // readJson returns null when the file does not exist; treat that as a
+  // fresh install and start from an empty object with $schema.
+  const config = (await readJson(opencodeConfigPath)) || {};
+  if (existsSync(opencodeConfigPath)) {
+    await backup(opencodeConfigPath);
+  }
 
   if (config.mcp && config.mcp[MCP_KEY]) {
     console.log(`[OpenCode] MCP entry already present — updating`);
@@ -303,6 +358,11 @@ async function installOpenCode(summary) {
 
   const modifications = [];
 
+  // Ensure $schema on fresh configs (AC-8: I-11)
+  if (!config['$schema']) {
+    modifications.push({ path: ['$schema'], value: 'https://opencode.ai/config.json' });
+  }
+
   // Remove invalid key that older OpenCode versions or other tools may have written
   if (config.mcpServers) {
     modifications.push({ path: ['mcpServers'], value: undefined });
@@ -311,14 +371,7 @@ async function installOpenCode(summary) {
 
   modifications.push({
     path: ['mcp', MCP_KEY],
-    value: {
-      type: 'local',
-      command: [process.execPath, path.join(SCRIPT_DIR, 'server.js')],
-      environment: {
-        MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'opencode'),
-      },
-      enabled: true,
-    },
+    value: buildOpenCodeMcpEntry({ isDev }),
   });
 
   await patchJsonFile(opencodeConfigPath, modifications);
@@ -329,20 +382,14 @@ async function installOpenCode(summary) {
 // ---------------------------------------------------------------------------
 // Step 5a: Claude Code — ~/.claude.json
 // ---------------------------------------------------------------------------
-async function installClaudeJson(summary) {
+async function installClaudeJson(summary, opts = {}) {
+  const { isDev = false } = opts;
   const data = (await readJson(PATHS.claudeJson)) || {};
   await backup(PATHS.claudeJson);
 
   const existed = data.mcpServers && data.mcpServers[MCP_KEY];
   data.mcpServers = data.mcpServers || {};
-  data.mcpServers[MCP_KEY] = {
-    type: 'stdio',
-    command: process.execPath,
-    args: [path.join(SCRIPT_DIR, 'server.js')],
-    env: {
-      MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'claude'),
-    },
-  };
+  data.mcpServers[MCP_KEY] = buildClaudeMcpEntry({ isDev });
   await writeJson(PATHS.claudeJson, data);
 
   if (existed) {
@@ -406,9 +453,9 @@ async function installClaudeSettings(summary) {
   await writeJson(PATHS.claudeSettings, data);
 }
 
-async function installClaudeCode(summary) {
+async function installClaudeCode(summary, opts = {}) {
   if (existsSync(PATHS.claudeJson)) {
-    await installClaudeJson(summary);
+    await installClaudeJson(summary, opts);
   }
   await installClaudeSettings(summary);
   summary.push(`  -> Restart Claude Code to apply changes`);
@@ -445,7 +492,8 @@ function printSummary(tools, keyLines, opencodeLines, claudeLines) {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-async function main() {
+async function main(opts = {}) {
+  const { isDev = false } = opts;
   const tools = detectTools();
 
   if (!tools.opencode && !tools.claudeCode) {
@@ -464,7 +512,7 @@ async function main() {
 
   if (tools.opencode) {
     try {
-      await installOpenCode(opencodeLines);
+      await installOpenCode(opencodeLines, { isDev });
     } catch (err) {
       opencodeLines.push(`  ! OpenCode install error: ${err.message}`);
     }
@@ -472,7 +520,7 @@ async function main() {
 
   if (tools.claudeCode) {
     try {
-      await installClaudeCode(claudeLines);
+      await installClaudeCode(claudeLines, { isDev });
     } catch (err) {
       claudeLines.push(`  ! Claude Code install error: ${err.message}`);
     }
@@ -532,7 +580,8 @@ async function resolveProjectKey(projectDir) {
  * project-level MCP configs for each detected client.
  * Outputs JSON result to stdout; all other output to stderr.
  */
-async function projectSetup(rawPath) {
+async function projectSetup(rawPath, opts = {}) {
+  const { isDev = false } = opts;
   const warnings = [];
   const configsWritten = [];
 
@@ -586,8 +635,6 @@ async function projectSetup(rawPath) {
 
   // --- Detect clients and write project-level configs ---
   const tools = detectTools();
-  const serverPath = path.join(SCRIPT_DIR, 'server.js'); // C-7: import.meta.url
-  const nodePath = process.execPath; // C-3: absolute node path
 
   if (tools.opencode) {
     const configPath = resolveOpencodeConfig(projectDir);
@@ -609,15 +656,7 @@ async function projectSetup(rawPath) {
 
     modifications.push({
       path: ['mcp', MCP_KEY],
-      value: {
-        type: 'local',
-        command: [nodePath, serverPath],
-        environment: {
-          MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'opencode'),
-          MIDBRAIN_PROJECT_DIR: projectDir,
-        },
-        enabled: true,
-      },
+      value: buildOpenCodeMcpEntry({ isDev, projectDir }),
     });
 
     await patchJsonFile(configPath, modifications);
@@ -630,20 +669,13 @@ async function projectSetup(rawPath) {
     const config = (await readJson(configPath)) || {};
 
     config.mcpServers = config.mcpServers || {};
-    config.mcpServers[MCP_KEY] = {
-      command: nodePath,
-      args: [serverPath],
-      env: {
-        MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'claude'),
-        MIDBRAIN_PROJECT_DIR: projectDir,
-      },
-    };
+    config.mcpServers[MCP_KEY] = buildClaudeMcpEntry({ isDev, projectDir });
     await writeJson(configPath, config);
     configsWritten.push('.mcp.json');
     console.error(`[project] wrote: ${configPath}`);
 
     // Also patch ~/.claude.json project-local scope (PRD-009: bypass trust gate)
-    const patched = await installClaudeProjectLocal(projectDir, nodePath, serverPath);
+    const patched = await installClaudeProjectLocal(projectDir, { isDev });
     if (patched) {
       console.error(`[project] patched: ${PATHS.claudeJson} (project-local mcpServers)`);
     }
@@ -672,20 +704,17 @@ async function projectSetup(rawPath) {
 // ---------------------------------------------------------------------------
 // installClaudeProjectLocal — PRD-009: bypass Claude Code .mcp.json trust gate
 // Patches ~/.claude.json project-local scope so MCP server loads immediately.
+//
+// Entry shape comes from buildClaudeMcpEntry (PRD-010): defaults to
+// `npx -y midbrain-memory-mcp@latest`; pass `{ isDev: true }` for
+// absolute-path form.
 // ---------------------------------------------------------------------------
-async function installClaudeProjectLocal(projectDir, nodePath, serverPath) {
+async function installClaudeProjectLocal(projectDir, opts = {}) {
+  const { isDev = false } = opts;
   try {
     await patchJsonFile(PATHS.claudeJson, [{
       path: ['projects', projectDir, 'mcpServers', MCP_KEY],
-      value: {
-        type: 'stdio',
-        command: nodePath,
-        args: [serverPath],
-        env: {
-          MIDBRAIN_CONFIG_DIR: path.join(HOME, '.config', 'claude'),
-          MIDBRAIN_PROJECT_DIR: projectDir,
-        },
-      },
+      value: buildClaudeMcpEntry({ isDev, projectDir }),
     }]);
     return true;
   } catch (err) {
@@ -696,6 +725,35 @@ async function installClaudeProjectLocal(projectDir, nodePath, serverPath) {
     }
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// CLI help
+// ---------------------------------------------------------------------------
+
+const HELP_TEXT = `\
+MidBrain Memory MCP — installer
+
+Usage:
+  node install.mjs                              Interactive install (OpenCode/Claude Code)
+  node install.mjs --project <absolute-path>    Set up per-project memory (non-interactive)
+  node install.mjs --help                       Show this help
+
+Flags:
+  --project <path>    Absolute path to the project root directory.
+  --dev               Write absolute-path configs pointing at this clone.
+                      (For repository contributors. Default is npx @latest,
+                      which is auto-updating and portable across machines.)
+  --help, -h          Show this help text.
+
+By default, the installer writes 'npx -y midbrain-memory-mcp@latest' as the
+MCP command, so every MCP client cold-start re-resolves @latest against the
+npm registry. This gives non-technical users a self-updating install with
+zero maintenance.
+`;
+
+function printHelp() {
+  console.log(HELP_TEXT);
 }
 
 // ---------------------------------------------------------------------------
@@ -712,6 +770,9 @@ export {
   installClaudeJson,
   installClaudeSettings,
   installClaudeProjectLocal,
+  buildOpenCodeMcpEntry,
+  buildClaudeMcpEntry,
+  printHelp,
   PATHS,
   MCP_KEY,
 };
@@ -724,6 +785,11 @@ const isMain = process.argv[1] &&
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 
 if (isMain) {
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    printHelp();
+    process.exit(0);
+  }
+  const isDev = process.argv.includes('--dev');
   const projectFlagIdx = process.argv.indexOf('--project');
   if (projectFlagIdx !== -1) {
     // C-12: validate arg
@@ -737,12 +803,12 @@ if (isMain) {
       console.error('Error: --project path cannot be empty.');
       process.exit(1);
     }
-    projectSetup(projectArg).catch((err) => {
+    projectSetup(projectArg, { isDev }).catch((err) => {
       console.error(`Fatal error: ${err.message}`);
       process.exit(1);
     });
   } else {
-    main().catch((err) => {
+    main({ isDev }).catch((err) => {
       console.error('Fatal error:', err.message);
       process.exit(1);
     });
