@@ -23,6 +23,11 @@ import {
   KEY_FILENAME,
   DEFAULT_SEARCH_LIMIT,
   GLOBAL_KEY_PATH,
+  buildMcpCommandSpec,
+  toOpenCodeShape,
+  toClaudeShape,
+  normalizeMcpEntry,
+  detectMcpSpecShape,
 } from "../shared/midbrain-common.mjs";
 
 // ---------------------------------------------------------------------------
@@ -392,5 +397,183 @@ describe("storeEpisodic", () => {
     storeEpisodic("test-key", "msg", "user", log);
 
     await vi.waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR")));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildMcpCommandSpec (PRD-010 AC-1 / U-1..U-3)
+// ---------------------------------------------------------------------------
+
+describe("buildMcpCommandSpec", () => {
+  it("U-1: returns canonical spec with configDir only", () => {
+    const spec = buildMcpCommandSpec({ configDir: "/x" });
+    expect(spec).toEqual({
+      command: "npx",
+      args: ["-y", "midbrain-memory-mcp@latest"],
+      env: { MIDBRAIN_CONFIG_DIR: "/x" },
+    });
+  });
+
+  it("U-2: adds MIDBRAIN_PROJECT_DIR when projectDir provided", () => {
+    const spec = buildMcpCommandSpec({ configDir: "/x", projectDir: "/p" });
+    expect(spec.env).toEqual({
+      MIDBRAIN_CONFIG_DIR: "/x",
+      MIDBRAIN_PROJECT_DIR: "/p",
+    });
+  });
+
+  it("U-3: returns spec with empty env when no args", () => {
+    const spec = buildMcpCommandSpec();
+    expect(spec.command).toBe("npx");
+    expect(spec.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    expect(spec.env).toEqual({});
+    // Serializes as {} not null
+    expect(JSON.stringify(spec.env)).toBe("{}");
+  });
+
+  it("U-3b: does not throw when called with undefined", () => {
+    expect(() => buildMcpCommandSpec(undefined)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toOpenCodeShape / toClaudeShape (U-4, U-5)
+// ---------------------------------------------------------------------------
+
+describe("toOpenCodeShape", () => {
+  it("U-4: wraps spec in OpenCode's array-command shape", () => {
+    const spec = buildMcpCommandSpec({ configDir: "/x" });
+    expect(toOpenCodeShape(spec)).toEqual({
+      type: "local",
+      command: ["npx", "-y", "midbrain-memory-mcp@latest"],
+      environment: { MIDBRAIN_CONFIG_DIR: "/x" },
+      enabled: true,
+    });
+  });
+
+  it("returns fresh environment object (not aliased)", () => {
+    const spec = buildMcpCommandSpec({ configDir: "/x" });
+    const out = toOpenCodeShape(spec);
+    out.environment.EXTRA = "added";
+    expect(spec.env.EXTRA).toBeUndefined();
+  });
+});
+
+describe("toClaudeShape", () => {
+  it("U-5: wraps spec in Claude's split command/args shape", () => {
+    const spec = buildMcpCommandSpec({ configDir: "/x", projectDir: "/p" });
+    expect(toClaudeShape(spec)).toEqual({
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "midbrain-memory-mcp@latest"],
+      env: { MIDBRAIN_CONFIG_DIR: "/x", MIDBRAIN_PROJECT_DIR: "/p" },
+    });
+  });
+
+  it("returns fresh env object (not aliased)", () => {
+    const spec = buildMcpCommandSpec({ configDir: "/x" });
+    const out = toClaudeShape(spec);
+    out.env.EXTRA = "added";
+    expect(spec.env.EXTRA).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeMcpEntry (U-6a, U-6b)
+// ---------------------------------------------------------------------------
+
+describe("normalizeMcpEntry", () => {
+  it("U-6a: OpenCode array command -> {command, args}", () => {
+    const entry = { command: ["npx", "-y", "midbrain-memory-mcp@latest"] };
+    expect(normalizeMcpEntry(entry, "opencode")).toEqual({
+      command: "npx",
+      args: ["-y", "midbrain-memory-mcp@latest"],
+    });
+  });
+
+  it("U-6b: Claude split shape -> {command, args}", () => {
+    const entry = { command: "npx", args: ["-y", "midbrain-memory-mcp@latest"] };
+    expect(normalizeMcpEntry(entry, "claude")).toEqual({
+      command: "npx",
+      args: ["-y", "midbrain-memory-mcp@latest"],
+    });
+  });
+
+  it("OpenCode non-array command returns empty", () => {
+    expect(normalizeMcpEntry({ command: "npx" }, "opencode")).toEqual({
+      command: "",
+      args: [],
+    });
+  });
+
+  it("Claude missing args returns []", () => {
+    expect(normalizeMcpEntry({ command: "npx" }, "claude")).toEqual({
+      command: "npx",
+      args: [],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectMcpSpecShape (U-7..U-13)
+// ---------------------------------------------------------------------------
+
+describe("detectMcpSpecShape", () => {
+  it("U-7: absolute path to global-install server.js -> stale/absolute-path-server-js", () => {
+    const result = detectMcpSpecShape({
+      command: "/usr/local/Cellar/node/bin/node",
+      args: ["/usr/local/lib/node_modules/midbrain-memory-mcp/server.js"],
+    });
+    expect(result).toEqual({ stale: true, reason: "absolute-path-server-js" });
+  });
+
+  it("U-8: absolute path to git-clone server.js -> stale/absolute-path-server-js", () => {
+    const result = detectMcpSpecShape({
+      command: "/usr/local/Cellar/node/bin/node",
+      args: ["/Users/me/midbrain-memory-mcp/server.js"],
+    });
+    expect(result).toEqual({ stale: true, reason: "absolute-path-server-js" });
+  });
+
+  it("U-9: unpinned npx spec -> stale/unpinned-npx", () => {
+    const result = detectMcpSpecShape({
+      command: "npx",
+      args: ["-y", "midbrain-memory-mcp"],
+    });
+    expect(result).toEqual({ stale: true, reason: "unpinned-npx" });
+  });
+
+  it("U-10: global-installed bin -> stale/global-installed-bin", () => {
+    const result = detectMcpSpecShape({ command: "midbrain-memory-mcp", args: [] });
+    expect(result).toEqual({ stale: true, reason: "global-installed-bin" });
+  });
+
+  it("U-11: @latest pinned npx -> not stale/at-latest", () => {
+    const result = detectMcpSpecShape({
+      command: "npx",
+      args: ["-y", "midbrain-memory-mcp@latest"],
+    });
+    expect(result).toEqual({ stale: false, reason: "at-latest" });
+  });
+
+  it("U-12: explicit version pinned -> not stale/pinned", () => {
+    const result = detectMcpSpecShape({
+      command: "npx",
+      args: ["-y", "midbrain-memory-mcp@0.3.1"],
+    });
+    expect(result).toEqual({ stale: false, reason: "pinned" });
+  });
+
+  it("U-13: unknown shape -> not stale/unknown", () => {
+    const result = detectMcpSpecShape({
+      command: "something-else",
+      args: ["weird"],
+    });
+    expect(result).toEqual({ stale: false, reason: "unknown" });
+  });
+
+  it("handles empty args gracefully", () => {
+    const result = detectMcpSpecShape({ command: "", args: [] });
+    expect(result.stale).toBe(false);
   });
 });

@@ -220,3 +220,106 @@ export function makeDebugLogger(logPath) {
     }
   };
 }
+
+// --- MCP command spec builders (PRD-010) ---
+
+export const NPM_PACKAGE_NAME = "midbrain-memory-mcp";
+export const NPM_PACKAGE_LATEST_SPEC = `${NPM_PACKAGE_NAME}@latest`;
+const PINNED_VERSION_RE = new RegExp(`^${NPM_PACKAGE_NAME}@\\d+\\.\\d+\\.\\d+`);
+const ABSOLUTE_SERVER_JS_RE = new RegExp(`/${NPM_PACKAGE_NAME}/server\\.js$`);
+
+/**
+ * Canonical client-agnostic spec for launching the MCP server via npx @latest.
+ * Consumed by installer + memory_setup_project; adapted by client-specific
+ * shapers (toOpenCodeShape, toClaudeShape).
+ *
+ * @param {{configDir?: string, projectDir?: string}} [opts]
+ * @returns {{command: string, args: string[], env: Record<string, string>}}
+ */
+export function buildMcpCommandSpec({ configDir, projectDir } = {}) {
+  const env = {};
+  if (configDir) env.MIDBRAIN_CONFIG_DIR = configDir;
+  if (projectDir) env.MIDBRAIN_PROJECT_DIR = projectDir;
+  return {
+    command: "npx",
+    args: ["-y", NPM_PACKAGE_LATEST_SPEC],
+    env,
+  };
+}
+
+/**
+ * OpenCode-specific MCP entry shape: array command, `environment` key,
+ * `type: "local"`, `enabled: true`.
+ * @param {{command: string, args: string[], env: Record<string, string>}} spec
+ */
+export function toOpenCodeShape(spec) {
+  return {
+    type: "local",
+    command: [spec.command, ...spec.args],
+    environment: { ...spec.env },
+    enabled: true,
+  };
+}
+
+/**
+ * Claude Code MCP entry shape: split command/args, `env` key, `type: "stdio"`.
+ * Used for both `.mcp.json` and `~/.claude.json` project-local scope.
+ * @param {{command: string, args: string[], env: Record<string, string>}} spec
+ */
+export function toClaudeShape(spec) {
+  return {
+    type: "stdio",
+    command: spec.command,
+    args: [...spec.args],
+    env: { ...spec.env },
+  };
+}
+
+/**
+ * Normalize an MCP entry (in its client-specific shape) to a canonical
+ * `{command: string, args: string[]}` for detectMcpSpecShape input.
+ * @param {object} entry - Raw MCP config entry.
+ * @param {"opencode"|"claude"} clientShape - Source client shape.
+ * @returns {{command: string, args: string[]}}
+ */
+export function normalizeMcpEntry(entry, clientShape) {
+  if (clientShape === "opencode") {
+    const arr = Array.isArray(entry.command) ? entry.command : [];
+    return { command: arr[0] || "", args: arr.slice(1) };
+  }
+  return {
+    command: typeof entry.command === "string" ? entry.command : "",
+    args: Array.isArray(entry.args) ? entry.args : [],
+  };
+}
+
+/**
+ * Detect whether a normalized MCP entry is a stale install pattern that
+ * should be migrated to `npx -y midbrain-memory-mcp@latest`.
+ *
+ * Returns `{stale: boolean, reason: string}` where reason is one of:
+ *   "at-latest", "pinned", "global-installed-bin", "absolute-path-server-js",
+ *   "unpinned-npx", "unknown"
+ *
+ * @param {{command: string, args: string[]}} normalized
+ */
+export function detectMcpSpecShape({ command, args }) {
+  const safeArgs = Array.isArray(args) ? args : [];
+  if (safeArgs.includes(NPM_PACKAGE_LATEST_SPEC)) {
+    return { stale: false, reason: "at-latest" };
+  }
+  if (safeArgs.some((a) => typeof a === "string" && PINNED_VERSION_RE.test(a))) {
+    return { stale: false, reason: "pinned" };
+  }
+  if (command === NPM_PACKAGE_NAME) {
+    return { stale: true, reason: "global-installed-bin" };
+  }
+  const allParts = [command, ...safeArgs];
+  if (allParts.some((p) => typeof p === "string" && ABSOLUTE_SERVER_JS_RE.test(p))) {
+    return { stale: true, reason: "absolute-path-server-js" };
+  }
+  if (command === "npx" && safeArgs.includes(NPM_PACKAGE_NAME)) {
+    return { stale: true, reason: "unpinned-npx" };
+  }
+  return { stale: false, reason: "unknown" };
+}

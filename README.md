@@ -22,13 +22,15 @@ API: https://memory.midbrain.ai
 
 ### Install
 
-```bash
-# Option 1: npm (recommended)
-npm install -g midbrain-memory-mcp
+The recommended install is a single-line `npx` command that auto-updates on
+every MCP client cold start:
 
-# Option 2: npx (no install, always latest)
-npx -y midbrain-memory-mcp
+```bash
+npx -y midbrain-memory-mcp@latest
 ```
+
+You don't run this directly — your MCP client (OpenCode / Claude Code) runs
+it. The configuration examples below embed that exact command.
 
 ### Get Your API Key
 
@@ -38,7 +40,7 @@ npx -y midbrain-memory-mcp
 
 ### Configure MCP
 
-**OpenCode** (`opencode.json` or `~/.config/opencode/opencode.json`):
+**OpenCode** (`~/.config/opencode/opencode.json`):
 
 ```json
 {
@@ -46,10 +48,9 @@ npx -y midbrain-memory-mcp
   "mcp": {
     "midbrain-memory": {
       "type": "local",
-      "command": ["npx", "-y", "midbrain-memory-mcp"],
+      "command": ["npx", "-y", "midbrain-memory-mcp@latest"],
       "environment": {
-        "MIDBRAIN_CONFIG_DIR": "~/.config/opencode",
-        "MIDBRAIN_PROJECT_DIR": "/path/to/project"
+        "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/opencode"
       },
       "enabled": true
     }
@@ -57,29 +58,57 @@ npx -y midbrain-memory-mcp
 }
 ```
 
-**Claude Code** (`.mcp.json`):
+**Claude Code** (`~/.claude.json`):
 
 ```json
 {
   "mcpServers": {
     "midbrain-memory": {
+      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "midbrain-memory-mcp"],
+      "args": ["-y", "midbrain-memory-mcp@latest"],
       "env": {
-        "MIDBRAIN_CONFIG_DIR": "~/.config/claude",
-        "MIDBRAIN_PROJECT_DIR": "/path/to/project"
+        "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/claude"
       }
     }
   }
 }
 ```
 
+Replace `<absolute-path>` with your home directory (e.g.
+`/Users/alice/.config/opencode`). JSON values do not expand `~`.
+
 ### Run Setup
 
+The automated installer detects both clients, prompts for your API key,
+writes per-client key files (chmod 600), and patches the configs above for
+you:
+
 ```bash
-# Interactive setup (detects clients, prompts for API key, patches configs)
-npx midbrain-memory-setup
+npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup                     # interactive install
+npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup --project /abs/path # per-project setup
 ```
+
+### How auto-update works
+
+Pinning the spec to `@latest` changes how `npx` resolves the package:
+
+- **`npx -y midbrain-memory-mcp@latest`** (recommended) — resolves the
+  latest published version from the npm registry on every cold start. When
+  a new version ships, your next restart of OpenCode / Claude Code picks it
+  up automatically.
+- **Unpinned package name (no `@latest`, no version)** — looks
+  auto-updating but is actually sticky. `npx` caches the first resolved
+  version under a hash keyed by the full spec string and reuses the cache
+  until npm's own staleness heuristic triggers. That heuristic is
+  unreliable and you can end up stuck on an old version for weeks without
+  noticing. Always pin to `@latest` or a specific version.
+- **`npx -y midbrain-memory-mcp@0.3.1`** — pinned to an exact version for
+  reproducibility. You are responsible for bumping the version yourself.
+
+Run `npx -y midbrain-memory-mcp@latest --version` to print the resolved
+version, or watch the MCP server stderr on startup — it logs its name
+and version in the format `MCP server running (<package> v<version>)`.
 
 ### Verify
 
@@ -92,20 +121,6 @@ curl https://memory.midbrain.ai/health
 # 3. The memory_search tool should be available
 # 4. Send a few messages, then search — your messages should appear
 ```
-
-### Alternative: Install from Source
-
-```sh
-git clone https://github.com/MidbrainAI/midbrain-memory-mcp.git
-cd midbrain-memory-mcp
-npm run bootstrap
-node install.mjs
-```
-
-The installer auto-detects OpenCode and Claude Code, prompts for your API
-key(s), writes per-client key files (`chmod 600`), copies the plugin and shared
-lib, patches all config files, and sets MCP tool permissions. Running it again
-is safe (idempotent).
 
 ---
 
@@ -122,7 +137,7 @@ isolated memory space.
 mkdir -p .midbrain && echo "sk-your-key-here" > .midbrain/.midbrain-key && chmod 600 .midbrain/.midbrain-key
 
 # 2. Run project setup
-npx midbrain-memory-setup --project /absolute/path/to/your/project
+npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup --project /absolute/path/to/your/project
 ```
 
 Non-interactive. Resolves the API key from existing key files (no prompts),
@@ -290,7 +305,7 @@ Keys are stored in files with `chmod 600`. The resolution chain (in order):
   "mcp": {
     "midbrain-memory": {
       "type": "local",
-      "command": ["<absolute-node-path>", "<absolute-path-to>/server.js"],
+      "command": ["npx", "-y", "midbrain-memory-mcp@latest"],
       "environment": {
         "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/opencode",
         "MIDBRAIN_PROJECT_DIR": "<absolute-project-dir>"
@@ -307,8 +322,8 @@ Keys are stored in files with `chmod 600`. The resolution chain (in order):
 {
   "mcpServers": {
     "midbrain-memory": {
-      "command": "<absolute-node-path>",
-      "args": ["<absolute-path-to>/server.js"],
+      "command": "npx",
+      "args": ["-y", "midbrain-memory-mcp@latest"],
       "env": {
         "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/claude",
         "MIDBRAIN_PROJECT_DIR": "<absolute-project-dir>"
@@ -320,9 +335,11 @@ Keys are stored in files with `chmod 600`. The resolution chain (in order):
 
 **Important:**
 - All paths must be absolute. JSON does not expand `~`.
-- Use the absolute path to the `node` binary (not bare `node`).
-- OpenCode uses the `mcp` key. Claude Code uses `mcpServers`. Using the wrong
-  key for either client will silently fail.
+- Pin the spec to `@latest` for auto-updates, or `@X.Y.Z` for a frozen
+  version. Never use the bare, unpinned package-name form — it looks
+  auto-updating but is actually sticky on the first resolved version.
+- OpenCode uses the `mcp` key. Claude Code uses `mcpServers`. Using the
+  wrong key for either client will silently fail.
 
 ---
 
@@ -425,6 +442,7 @@ All endpoints use `Authorization: Bearer <key>` (except `/health`).
 ## Manual Setup
 
 If you prefer not to use the automated installer, follow these steps.
+All paths below must be absolute — JSON values do not expand `~`.
 
 ### Global API Key
 
@@ -436,14 +454,6 @@ chmod 600 ~/.config/midbrain/.midbrain-key
 
 ### OpenCode
 
-#### 1. Install dependencies
-
-```sh
-cd /path/to/midbrain-memory-mcp && npm install
-```
-
-#### 2. Register the MCP server
-
 Add to `~/.config/opencode/opencode.json`:
 
 ```json
@@ -451,7 +461,7 @@ Add to `~/.config/opencode/opencode.json`:
   "mcp": {
     "midbrain-memory": {
       "type": "local",
-      "command": ["<absolute-node-path>", "<absolute-path-to>/server.js"],
+      "command": ["npx", "-y", "midbrain-memory-mcp@latest"],
       "environment": {
         "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/opencode"
       },
@@ -461,33 +471,23 @@ Add to `~/.config/opencode/opencode.json`:
 }
 ```
 
-#### 3. Install the plugin and shared lib
-
-```sh
-cp shared/midbrain-common.mjs ~/.config/opencode/plugins/midbrain-common.mjs
-cp plugin/midbrain-memory.ts  ~/.config/opencode/plugins/midbrain-memory.ts
-```
-
-Both files must live in the same directory -- the plugin imports from
-`./midbrain-common.mjs` at runtime.
+The OpenCode episodic-capture plugin is delivered as a separate bundled
+file; the automated installer (`npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup`) copies it
+into `~/.config/opencode/plugins/` for you. Manual-setup users who want
+episodic capture should run the installer once or follow the
+[Development](#development) section to copy the plugin files by hand.
 
 ### Claude Code
 
-#### 1. Install dependencies
-
-```sh
-cd /path/to/midbrain-memory-mcp && npm install
-```
-
-#### 2. Register MCP server in `~/.claude.json`
+Register the MCP server in `~/.claude.json`:
 
 ```json
 {
   "mcpServers": {
     "midbrain-memory": {
       "type": "stdio",
-      "command": "<absolute-node-path>",
-      "args": ["<absolute-path-to>/server.js"],
+      "command": "npx",
+      "args": ["-y", "midbrain-memory-mcp@latest"],
       "env": {
         "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/claude"
       }
@@ -496,51 +496,15 @@ cd /path/to/midbrain-memory-mcp && npm install
 }
 ```
 
-**Note:** MCP servers must be in `~/.claude.json`, not `~/.claude/settings.json`.
-Entries in `settings.json` are silently ignored for MCP server registration.
+**Note:** MCP servers must be in `~/.claude.json`, not
+`~/.claude/settings.json`. Entries in `settings.json` are silently
+ignored for MCP server registration.
 
-#### 3. Add hooks and permissions to `~/.claude/settings.json`
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "MIDBRAIN_CONFIG_DIR=<absolute-path>/.config/claude <absolute-node-path> <absolute-path-to>/claude-code/capture-user.mjs",
-            "timeout": 10,
-            "async": true
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "MIDBRAIN_CONFIG_DIR=<absolute-path>/.config/claude <absolute-node-path> <absolute-path-to>/claude-code/capture-assistant.mjs",
-            "timeout": 10,
-            "async": true
-          }
-        ]
-      }
-    ]
-  },
-  "permissions": {
-    "allow": [
-      "mcp__midbrain-memory__memory_search",
-      "mcp__midbrain-memory__grep",
-      "mcp__midbrain-memory__get_episodic_memories_by_date",
-      "mcp__midbrain-memory__list_files",
-      "mcp__midbrain-memory__read_file",
-      "mcp__midbrain-memory__memory_setup_project"
-    ]
-  }
-}
-```
+Add hooks and permissions to `~/.claude/settings.json`. The hook
+commands need an absolute path to the hook scripts — use the installer
+(`npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup`) to emit these automatically, or follow the
+[Development](#development) section below if you want to point at a
+local clone.
 
 ---
 
@@ -575,12 +539,42 @@ midbrain-memory-mcp/
 
 ```sh
 git clone https://github.com/MidbrainAI/midbrain-memory-mcp.git
-cd midbrain-memory-mcp
+cd midbrain-memory-mcp/
 npm run bootstrap   # installs deps + sets up git hooks
 ```
 
 `npm run bootstrap` is a one-time command. It runs `npm install` to fetch
 dependencies, then `husky` to install pre-commit hooks.
+
+### Install from a local clone
+
+Regular users should install via `npx @latest` (above). If you are hacking
+on this repo and want your MCP clients to run your working tree, pass
+`--dev` to the installer. It will write absolute paths into the configs
+instead of `npx @latest`:
+
+```sh
+node install.mjs --dev                               # interactive
+node install.mjs --project /abs/path/to/project --dev  # per-project
+```
+
+Run `node install.mjs --help` for the full flag reference.
+
+Manual dev setup without the installer:
+
+```sh
+cp shared/midbrain-common.mjs ~/.config/opencode/plugins/midbrain-common.mjs
+cp plugin/midbrain-memory.ts  ~/.config/opencode/plugins/midbrain-memory.ts
+```
+
+Then in any MCP config, replace the `npx -y midbrain-memory-mcp@latest`
+command with an absolute path:
+
+- OpenCode: `"command": ["<absolute-node>", "<abs>/server.js"]`
+- Claude: `"command": "<absolute-node>", "args": ["<abs>/server.js"]`
+
+Use `process.execPath` as the node path — bare `node` fails when MCP
+clients spawn the server without a PATH export.
 
 ### Commands
 

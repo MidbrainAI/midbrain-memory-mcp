@@ -50,6 +50,7 @@ const {
   installOpenCode,
   installClaudeJson,
   installClaudeSettings,
+  installClaudeCode,
   installClaudeProjectLocal,
   PATHS,
   MCP_KEY,
@@ -207,6 +208,15 @@ describe("detectTools", () => {
     expect(tools.opencode).toBe(false);
   });
 
+  it("detects OpenCode when config dir exists but config file is missing (PRD-010 I-13a)", () => {
+    // Fresh-install scenario: ~/.config/opencode/ exists but opencode.json
+    // has not been created yet. Previously detectTools returned false here,
+    // so main() never reached installOpenCode's starter-config path.
+    existsFor(PATHS.opencodeDir);
+    const tools = detectTools();
+    expect(tools.opencode).toBe(true);
+  });
+
   it("detects Claude Code via .claude.json", () => {
     existsFor(PATHS.claudeJson);
     const tools = detectTools();
@@ -357,12 +367,20 @@ describe("installOpenCode", () => {
   });
 
   it("throws when config file cannot be read", async () => {
-    // readJson returns null for nonexistent config
+    // PRD-010 AC-8 I-11: missing ~/.config/opencode/opencode.json is no longer
+    // a hard error. installOpenCode now creates a minimal starter config with
+    // $schema and the MCP entry.
     const summary = [];
-    await expect(installOpenCode(summary)).rejects.toThrow(/Cannot read/);
+    await installOpenCode(summary);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
+    expect(writeCall).toBeDefined();
+    const written = JSON.parse(writeCall[1]);
+    expect(written.$schema).toBe("https://opencode.ai/config.json");
+    expect(written.mcp[MCP_KEY]).toBeDefined();
   });
 
-  it("command array contains absolute node path and server.js path", async () => {
+  it("command array defaults to npx -y midbrain-memory-mcp@latest (PRD-010 I-1)", async () => {
     setupOpenCode({ $schema: "https://opencode.ai/config.json" });
     const summary = [];
     await installOpenCode(summary);
@@ -370,9 +388,46 @@ describe("installOpenCode", () => {
     const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
     const written = JSON.parse(writeCall[1]);
     const cmd = written.mcp[MCP_KEY].command;
+    expect(cmd).toEqual(["npx", "-y", "midbrain-memory-mcp@latest"]);
+  });
+
+  it("--dev flag writes absolute node + server.js paths (PRD-010 I-3)", async () => {
+    setupOpenCode({ $schema: "https://opencode.ai/config.json" });
+    const summary = [];
+    await installOpenCode(summary, { isDev: true });
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
+    const written = JSON.parse(writeCall[1]);
+    const cmd = written.mcp[MCP_KEY].command;
     expect(cmd).toHaveLength(2);
     expect(path.isAbsolute(cmd[0])).toBe(true); // node path
     expect(cmd[1]).toContain("server.js");
+  });
+
+  it("preserves custom env vars on existing midbrain entry (PRD-010 AC-3)", async () => {
+    setupOpenCode({
+      $schema: "https://opencode.ai/config.json",
+      mcp: {
+        [MCP_KEY]: {
+          type: "local",
+          command: ["/old/node", "/old/server.js"],
+          environment: {
+            MIDBRAIN_CONFIG_DIR: "/old/cfg",
+            CUSTOM_OC: "keep-me",
+          },
+          enabled: true,
+        },
+      },
+    });
+    const summary = [];
+    await installOpenCode(summary);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === OPENCODE_CONFIG);
+    const written = JSON.parse(writeCall[1]);
+    const env = written.mcp[MCP_KEY].environment;
+    expect(env.CUSTOM_OC).toBe("keep-me");
+    expect(env.MIDBRAIN_CONFIG_DIR).toContain("opencode");
+    expect(env.MIDBRAIN_CONFIG_DIR).not.toBe("/old/cfg");
   });
 
   it("summary reports addition for new MCP entry", async () => {
@@ -469,7 +524,7 @@ describe("installClaudeJson", () => {
     );
   });
 
-  it("command is absolute node path, args contains server.js", async () => {
+  it("command defaults to npx -y midbrain-memory-mcp@latest (PRD-010 I-2)", async () => {
     readFileReturns({ [PATHS.claudeJson]: "{}" });
     existsFor(PATHS.claudeJson);
     const summary = [];
@@ -478,8 +533,49 @@ describe("installClaudeJson", () => {
     const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
     const written = JSON.parse(writeCall[1]);
     const srv = written.mcpServers[MCP_KEY];
+    expect(srv.command).toBe("npx");
+    expect(srv.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+  });
+
+  it("--dev flag writes absolute node + server.js paths (PRD-010 I-4)", async () => {
+    readFileReturns({ [PATHS.claudeJson]: "{}" });
+    existsFor(PATHS.claudeJson);
+    const summary = [];
+    await installClaudeJson(summary, { isDev: true });
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    const written = JSON.parse(writeCall[1]);
+    const srv = written.mcpServers[MCP_KEY];
     expect(path.isAbsolute(srv.command)).toBe(true);
     expect(srv.args[0]).toContain("server.js");
+  });
+
+  it("preserves custom env vars on existing midbrain entry (PRD-010 AC-3)", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({
+        mcpServers: {
+          [MCP_KEY]: {
+            type: "stdio",
+            command: "/old/node",
+            args: ["/old/server.js"],
+            env: {
+              MIDBRAIN_CONFIG_DIR: "/old/cfg",
+              CUSTOM_CC: "keep-me",
+            },
+          },
+        },
+      }),
+    });
+    existsFor(PATHS.claudeJson);
+    const summary = [];
+    await installClaudeJson(summary);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    const written = JSON.parse(writeCall[1]);
+    const env = written.mcpServers[MCP_KEY].env;
+    expect(env.CUSTOM_CC).toBe("keep-me");
+    expect(env.MIDBRAIN_CONFIG_DIR).toContain("claude");
+    expect(env.MIDBRAIN_CONFIG_DIR).not.toBe("/old/cfg");
   });
 
   it("preserves non-mcpServers keys in .claude.json", async () => {
@@ -640,6 +736,49 @@ describe("installClaudeSettings", () => {
     const userHook = written.hooks.UserPromptSubmit[0].hooks[0];
     expect(userHook.command).toContain("MIDBRAIN_CONFIG_DIR=");
     expect(userHook.command).toContain(".config/claude");
+  });
+});
+
+// ===================================================================
+// installClaudeCode — PRD-010 I-13b: fresh-install dead-path
+// ===================================================================
+
+describe("installClaudeCode (PRD-010 I-13b)", () => {
+  beforeEach(resetMocks);
+
+  it("calls installClaudeJson even when ~/.claude.json does not exist (fresh install)", async () => {
+    // Fresh-install scenario: Claude Code installed, ~/.claude/settings.json
+    // exists (so detectTools returns claudeCode: true), but ~/.claude.json
+    // does not. Previously installClaudeCode gated installClaudeJson on
+    // existsSync(PATHS.claudeJson), so the MCP entry was silently skipped.
+    // Now installClaudeJson runs unconditionally; readJson() || {} handles
+    // the missing-file case and creates the file with the MCP entry.
+
+    // Only settings.json exists, NOT .claude.json
+    existsFor(PATHS.claudeSettings);
+
+    // readFile returns ENOENT for .claude.json AND for settings.json
+    // (installClaudeSettings also uses readJson()||{} for missing files)
+    fs.readFile.mockImplementation(async () => { throw enoent("default"); });
+
+    const summary = [];
+    await installClaudeCode(summary, { isDev: false });
+
+    // installClaudeJson must have been called -> writes to ~/.claude.json
+    const claudeWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    expect(claudeWrite).toBeDefined();
+
+    const written = JSON.parse(claudeWrite[1]);
+    expect(written.mcpServers).toBeDefined();
+    expect(written.mcpServers[MCP_KEY]).toBeDefined();
+    expect(written.mcpServers[MCP_KEY].command).toBe("npx");
+    expect(written.mcpServers[MCP_KEY].args).toEqual([
+      "-y", "midbrain-memory-mcp@latest",
+    ]);
+
+    // Summary should show the "+ added" line (not the "~ updated" line)
+    const added = summary.find((l) => l.includes("+ MCP server added to ~/.claude.json"));
+    expect(added).toBeDefined();
   });
 });
 
@@ -1024,10 +1163,23 @@ describe("projectSetup", () => {
     expect(keyWrite[1]).toBe("env-fallback-key\n");
   });
 
-  it("command arrays use absolute paths", async () => {
+  it("command array defaults to npx -y @latest (PRD-010)", async () => {
     setupProjectMocks();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     await projectSetup(PROJECT_DIR);
+    logSpy.mockRestore();
+
+    const configPath = path.join(PROJECT_DIR, "opencode.json");
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === configPath);
+    const written = JSON.parse(writeCall[1]);
+    const cmd = written.mcp[MCP_KEY].command;
+    expect(cmd).toEqual(["npx", "-y", "midbrain-memory-mcp@latest"]);
+  });
+
+  it("--dev opt writes absolute paths in projectSetup (PRD-010)", async () => {
+    setupProjectMocks();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await projectSetup(PROJECT_DIR, { isDev: true });
     logSpy.mockRestore();
 
     const configPath = path.join(PROJECT_DIR, "opencode.json");
@@ -1059,12 +1211,10 @@ describe("projectSetup", () => {
 
 describe("installClaudeProjectLocal", () => {
   const PROJECT_DIR = "/home/testuser/myproject";
-  const NODE_PATH = "/usr/local/bin/node";
-  const SERVER_PATH = "/opt/midbrain/server.js";
 
   beforeEach(resetMocks);
 
-  it("patches ~/.claude.json with project-local mcpServers entry", async () => {
+  it("patches ~/.claude.json with project-local mcpServers entry (PRD-010: @latest)", async () => {
     readFileReturns({
       [PATHS.claudeJson]: JSON.stringify({
         mcpServers: {},
@@ -1072,7 +1222,7 @@ describe("installClaudeProjectLocal", () => {
       }),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1082,10 +1232,24 @@ describe("installClaudeProjectLocal", () => {
     const entry = written.projects[PROJECT_DIR].mcpServers[MCP_KEY];
     expect(entry).toBeDefined();
     expect(entry.type).toBe("stdio");
-    expect(entry.command).toBe(NODE_PATH);
-    expect(entry.args).toEqual([SERVER_PATH]);
+    expect(entry.command).toBe("npx");
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
     expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(PROJECT_DIR);
     expect(entry.env.MIDBRAIN_CONFIG_DIR).toContain("claude");
+  });
+
+  it("--dev writes absolute paths in project-local scope", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({ projects: {} }),
+    });
+
+    await installClaudeProjectLocal(PROJECT_DIR, { isDev: true });
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    const written = JSON.parse(writeCall[1]);
+    const entry = written.projects[PROJECT_DIR].mcpServers[MCP_KEY];
+    expect(path.isAbsolute(entry.command)).toBe(true);
+    expect(entry.args[0]).toContain("server.js");
   });
 
   it("preserves existing project entries and other mcpServers", async () => {
@@ -1101,7 +1265,7 @@ describe("installClaudeProjectLocal", () => {
       }),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1124,7 +1288,7 @@ describe("installClaudeProjectLocal", () => {
       [PATHS.claudeJson]: JSON.stringify({ mcpServers: {} }),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1134,13 +1298,8 @@ describe("installClaudeProjectLocal", () => {
   });
 
   it("skips gracefully when ~/.claude.json does not exist", async () => {
-    // patchJsonFile creates file from {} when ENOENT on readFile.
-    // But installClaudeProjectLocal wraps patchJsonFile and catches ENOENT.
-    // Simulate: readFile throws ENOENT for claudeJson (patchJsonFile starts from {}),
-    // then writeFile succeeds — the function should not throw.
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
-    // Should still write (patchJsonFile creates from {})
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
     );
@@ -1152,7 +1311,7 @@ describe("installClaudeProjectLocal", () => {
       [PATHS.claudeJson]: JSON.stringify({ projects: {} }),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const firstWrite = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1165,7 +1324,7 @@ describe("installClaudeProjectLocal", () => {
       [PATHS.claudeJson]: JSON.stringify(firstResult),
     });
 
-    await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    await installClaudeProjectLocal(PROJECT_DIR);
 
     const secondWrite = fs.writeFile.mock.calls.find(([p]) =>
       p === PATHS.claudeJson
@@ -1185,7 +1344,7 @@ describe("installClaudeProjectLocal", () => {
       throw enoent(p);
     });
 
-    const result = await installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH);
+    const result = await installClaudeProjectLocal(PROJECT_DIR);
 
     expect(result).toBe(false);
     const writeCall = fs.writeFile.mock.calls.find(([p]) =>
@@ -1203,8 +1362,60 @@ describe("installClaudeProjectLocal", () => {
     });
 
     await expect(
-      installClaudeProjectLocal(PROJECT_DIR, NODE_PATH, SERVER_PATH)
+      installClaudeProjectLocal(PROJECT_DIR)
     ).rejects.toThrow("Disk I/O error");
+  });
+
+  it("preserves custom env vars on existing project-local midbrain entry (PRD-010 AC-3)", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: JSON.stringify({
+        projects: {
+          [PROJECT_DIR]: {
+            mcpServers: {
+              [MCP_KEY]: {
+                type: "stdio",
+                command: "npx",
+                args: ["-y", "midbrain-memory-mcp"],
+                env: {
+                  MIDBRAIN_CONFIG_DIR: "/old/path",
+                  CUSTOM_VAR: "keep-me",
+                },
+              },
+            },
+          },
+        },
+      }),
+    });
+
+    await installClaudeProjectLocal(PROJECT_DIR);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    const written = JSON.parse(writeCall[1]);
+    const entry = written.projects[PROJECT_DIR].mcpServers[MCP_KEY];
+    expect(entry.env.CUSTOM_VAR).toBe("keep-me");
+    // Reserved keys get rewritten to the new canonical values, not preserved.
+    expect(entry.env.MIDBRAIN_CONFIG_DIR).toContain("claude");
+    expect(entry.env.MIDBRAIN_CONFIG_DIR).not.toBe("/old/path");
+  });
+});
+
+// ===================================================================
+// --help output (PRD-010 I-12)
+// ===================================================================
+
+describe("printHelp (PRD-010 I-12)", () => {
+  it("includes --project, --dev, --help flags and marks --dev for contributors", async () => {
+    const { printHelp } = await import("../install.mjs");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    printHelp();
+    const out = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    logSpy.mockRestore();
+
+    expect(out).toContain("--project");
+    expect(out).toContain("--dev");
+    expect(out).toContain("--help");
+    expect(out.toLowerCase()).toContain("contributor");
+    expect(out).toContain("midbrain-memory-mcp@latest");
   });
 });
 
@@ -1495,5 +1706,42 @@ describe("projectSetup — JSONC support", () => {
   it("readJson still throws on invalid content", async () => {
     fs.readFile.mockResolvedValue("not json at all");
     await expect(readJson("/bad.json")).rejects.toThrow(/Failed to parse/);
+  });
+});
+
+// ===================================================================
+// Doc-regression: PRD-010 I-14
+// ===================================================================
+// Ensures no bare `npx midbrain-memory-setup` invocation lands in
+// user-facing docs. midbrain-memory-setup is not a published package
+// (E404); it is a second bin inside midbrain-memory-mcp. The correct
+// invocation is:
+//   npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup
+
+describe("docs regression (PRD-010 I-14)", () => {
+  it("README.md and AGENTS.md do not contain bare `npx midbrain-memory-setup`", async () => {
+    // Bypass vi.mock('fs/promises') by using the real fs via vi.importActual.
+    const actualFs = await vi.importActual("fs/promises");
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+    const readme = await actualFs.readFile(path.join(repoRoot, "README.md"), "utf8");
+    const agents = await actualFs.readFile(path.join(repoRoot, "AGENTS.md"), "utf8");
+
+    // The broken form: `npx midbrain-memory-setup` NOT preceded by
+    // `--package=midbrain-memory-mcp@latest `. Regex uses a negative
+    // lookbehind so legitimate `--package=...` invocations pass.
+    const bareForm = /(?<!--package=midbrain-memory-mcp@latest )\bnpx midbrain-memory-setup\b/;
+
+    expect(readme).not.toMatch(bareForm);
+    expect(agents).not.toMatch(bareForm);
+  });
+
+  it("README.md does not point `--help` at the midbrain-memory-mcp bin (PRD-010 I-14b)", async () => {
+    // The server bin (midbrain-memory-mcp) handles only --version / -v.
+    // --help falls through to the MCP stdio loop. Never document it.
+    const actualFs = await vi.importActual("fs/promises");
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+    const readme = await actualFs.readFile(path.join(repoRoot, "README.md"), "utf8");
+    expect(readme).not.toMatch(/midbrain-memory-mcp@latest --help/);
+    expect(readme).not.toMatch(/\bmidbrain-memory-mcp --help\b/);
   });
 });
