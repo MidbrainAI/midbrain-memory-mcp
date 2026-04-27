@@ -192,7 +192,11 @@ async function promptYesNo(question) {
 function detectTools() {
   const opencodeConfig = resolveOpencodeConfig(PATHS.opencodeDir);
   return {
-    opencode: existsSync(opencodeConfig),
+    // PRD-010 fresh-install: detect OpenCode via config dir existence
+    // too, so the starter-config path in installOpenCode is reachable
+    // when ~/.config/opencode/ exists but opencode.json has not been
+    // created yet.
+    opencode: existsSync(opencodeConfig) || existsSync(PATHS.opencodeDir),
     claudeCode: existsSync(PATHS.claudeJson) || existsSync(PATHS.claudeSettings),
   };
 }
@@ -484,9 +488,14 @@ async function installClaudeSettings(summary) {
 }
 
 async function installClaudeCode(summary, opts = {}) {
-  if (existsSync(PATHS.claudeJson)) {
-    await installClaudeJson(summary, opts);
-  }
+  // PRD-010 fresh-install: do NOT gate installClaudeJson on
+  // existsSync(~/.claude.json). detectTools detects Claude via EITHER
+  // ~/.claude.json OR ~/.claude/settings.json; a settings-only
+  // detection previously wrote hooks + permissions but silently
+  // skipped the MCP server entry. installClaudeJson handles the
+  // missing-file case via `readJson() || {}` and backup() is a no-op
+  // on missing source files.
+  await installClaudeJson(summary, opts);
   await installClaudeSettings(summary);
   summary.push(`  -> Restart Claude Code to apply changes`);
 }
@@ -829,6 +838,7 @@ export {
   installOpenCode,
   installClaudeJson,
   installClaudeSettings,
+  installClaudeCode,
   installClaudeProjectLocal,
   buildOpenCodeMcpEntry,
   buildClaudeMcpEntry,

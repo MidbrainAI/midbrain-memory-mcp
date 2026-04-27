@@ -13,7 +13,7 @@ Supports **OpenCode** (plugin) and **Claude Code** (hook scripts).
 API: https://memory.midbrain.ai
 Published on npm as midbrain-memory-mcp. Version 0.1.0+.
 Install: `npx -y midbrain-memory-mcp@latest` (MCP config command) or
-`npx midbrain-memory-setup` (interactive automated installer). Pin the
+`npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup` (interactive automated installer). Pin the
 spec to `@latest` for auto-updates on every cold start; use `@X.Y.Z`
 to freeze a specific version. Never use the bare unpinned form — it
 looks auto-updating but is sticky on the first resolved version.

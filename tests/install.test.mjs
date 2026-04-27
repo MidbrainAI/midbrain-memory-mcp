@@ -50,6 +50,7 @@ const {
   installOpenCode,
   installClaudeJson,
   installClaudeSettings,
+  installClaudeCode,
   installClaudeProjectLocal,
   PATHS,
   MCP_KEY,
@@ -205,6 +206,15 @@ describe("detectTools", () => {
     // existsSync returns false for everything (default)
     const tools = detectTools();
     expect(tools.opencode).toBe(false);
+  });
+
+  it("detects OpenCode when config dir exists but config file is missing (PRD-010 I-13a)", () => {
+    // Fresh-install scenario: ~/.config/opencode/ exists but opencode.json
+    // has not been created yet. Previously detectTools returned false here,
+    // so main() never reached installOpenCode's starter-config path.
+    existsFor(PATHS.opencodeDir);
+    const tools = detectTools();
+    expect(tools.opencode).toBe(true);
   });
 
   it("detects Claude Code via .claude.json", () => {
@@ -726,6 +736,49 @@ describe("installClaudeSettings", () => {
     const userHook = written.hooks.UserPromptSubmit[0].hooks[0];
     expect(userHook.command).toContain("MIDBRAIN_CONFIG_DIR=");
     expect(userHook.command).toContain(".config/claude");
+  });
+});
+
+// ===================================================================
+// installClaudeCode — PRD-010 I-13b: fresh-install dead-path
+// ===================================================================
+
+describe("installClaudeCode (PRD-010 I-13b)", () => {
+  beforeEach(resetMocks);
+
+  it("calls installClaudeJson even when ~/.claude.json does not exist (fresh install)", async () => {
+    // Fresh-install scenario: Claude Code installed, ~/.claude/settings.json
+    // exists (so detectTools returns claudeCode: true), but ~/.claude.json
+    // does not. Previously installClaudeCode gated installClaudeJson on
+    // existsSync(PATHS.claudeJson), so the MCP entry was silently skipped.
+    // Now installClaudeJson runs unconditionally; readJson() || {} handles
+    // the missing-file case and creates the file with the MCP entry.
+
+    // Only settings.json exists, NOT .claude.json
+    existsFor(PATHS.claudeSettings);
+
+    // readFile returns ENOENT for .claude.json AND for settings.json
+    // (installClaudeSettings also uses readJson()||{} for missing files)
+    fs.readFile.mockImplementation(async () => { throw enoent("default"); });
+
+    const summary = [];
+    await installClaudeCode(summary, { isDev: false });
+
+    // installClaudeJson must have been called -> writes to ~/.claude.json
+    const claudeWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeJson);
+    expect(claudeWrite).toBeDefined();
+
+    const written = JSON.parse(claudeWrite[1]);
+    expect(written.mcpServers).toBeDefined();
+    expect(written.mcpServers[MCP_KEY]).toBeDefined();
+    expect(written.mcpServers[MCP_KEY].command).toBe("npx");
+    expect(written.mcpServers[MCP_KEY].args).toEqual([
+      "-y", "midbrain-memory-mcp@latest",
+    ]);
+
+    // Summary should show the "+ added" line (not the "~ updated" line)
+    const added = summary.find((l) => l.includes("+ MCP server added to ~/.claude.json"));
+    expect(added).toBeDefined();
   });
 });
 
@@ -1653,5 +1706,42 @@ describe("projectSetup — JSONC support", () => {
   it("readJson still throws on invalid content", async () => {
     fs.readFile.mockResolvedValue("not json at all");
     await expect(readJson("/bad.json")).rejects.toThrow(/Failed to parse/);
+  });
+});
+
+// ===================================================================
+// Doc-regression: PRD-010 I-14
+// ===================================================================
+// Ensures no bare `npx midbrain-memory-setup` invocation lands in
+// user-facing docs. midbrain-memory-setup is not a published package
+// (E404); it is a second bin inside midbrain-memory-mcp. The correct
+// invocation is:
+//   npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup
+
+describe("docs regression (PRD-010 I-14)", () => {
+  it("README.md and AGENTS.md do not contain bare `npx midbrain-memory-setup`", async () => {
+    // Bypass vi.mock('fs/promises') by using the real fs via vi.importActual.
+    const actualFs = await vi.importActual("fs/promises");
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+    const readme = await actualFs.readFile(path.join(repoRoot, "README.md"), "utf8");
+    const agents = await actualFs.readFile(path.join(repoRoot, "AGENTS.md"), "utf8");
+
+    // The broken form: `npx midbrain-memory-setup` NOT preceded by
+    // `--package=midbrain-memory-mcp@latest `. Regex uses a negative
+    // lookbehind so legitimate `--package=...` invocations pass.
+    const bareForm = /(?<!--package=midbrain-memory-mcp@latest )\bnpx midbrain-memory-setup\b/;
+
+    expect(readme).not.toMatch(bareForm);
+    expect(agents).not.toMatch(bareForm);
+  });
+
+  it("README.md does not point `--help` at the midbrain-memory-mcp bin (PRD-010 I-14b)", async () => {
+    // The server bin (midbrain-memory-mcp) handles only --version / -v.
+    // --help falls through to the MCP stdio loop. Never document it.
+    const actualFs = await vi.importActual("fs/promises");
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+    const readme = await actualFs.readFile(path.join(repoRoot, "README.md"), "utf8");
+    expect(readme).not.toMatch(/midbrain-memory-mcp@latest --help/);
+    expect(readme).not.toMatch(/\bmidbrain-memory-mcp --help\b/);
   });
 });

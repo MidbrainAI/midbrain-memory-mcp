@@ -1168,6 +1168,67 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
     fs.rmSync(ocConfigDir, { recursive: true, force: true });
   });
 
+  it("G-9: surfaces per-client error without discarding other client's success (PRD-010 P2a)", async () => {
+    // Verifies PRD-010 AC-3 "partial failure surfaces per-file error;
+    // no rollback" end-to-end across both clients. OpenCode migration
+    // succeeds (rewrites a stale absolute-path entry to @latest) and
+    // then Claude migration throws a non-EACCES JSON parse error on
+    // <project>/.mcp.json. Before the per-client try/catch landed,
+    // the outer catch in setupProject would have returned only the
+    // Claude error message, silently discarding the OpenCode summary
+    // even though opencode.json was already mutated on disk.
+
+    const ocConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-cfg-"));
+    fs.writeFileSync(path.join(ocConfigDir, ".midbrain-key"), "k\n", "utf8");
+    process.env.MIDBRAIN_CONFIG_DIR = ocConfigDir;
+
+    // 1. Seed OpenCode config with a stale absolute-path entry that WILL migrate
+    fs.writeFileSync(
+      path.join(tmpProjectDir, "opencode.json"),
+      JSON.stringify({
+        $schema: "https://opencode.ai/config.json",
+        mcp: {
+          "midbrain-memory": {
+            type: "local",
+            command: [
+              "/usr/local/Cellar/node@20/20.19.2/bin/node",
+              "/usr/local/lib/node_modules/midbrain-memory-mcp/server.js",
+            ],
+            environment: {},
+            enabled: true,
+          },
+        },
+      }, null, 2),
+      "utf8",
+    );
+
+    // 2. Seed <project>/.mcp.json with INVALID JSON so readJson throws
+    //    a non-ENOENT, non-EACCES parse error inside migrateClaudeConfigs.
+    fs.writeFileSync(
+      path.join(tmpProjectDir, ".mcp.json"),
+      "{ this is not valid json ",
+      "utf8",
+    );
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "new-key" },
+    });
+    const text = result.content[0].text;
+
+    // 3a. OpenCode migration summary line present
+    expect(text.toLowerCase()).toMatch(/migrat/);
+
+    // 3b. Claude error line present, scoped to Claude (not the generic outer catch)
+    expect(text).toMatch(/Error migrating Claude config:/);
+
+    // 4. OpenCode config actually rewritten on disk (no rollback)
+    const updated = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
+    expect(updated.mcp["midbrain-memory"].command).toEqual(["npx", "-y", "midbrain-memory-mcp@latest"]);
+
+    fs.rmSync(ocConfigDir, { recursive: true, force: true });
+  });
+
   it("G-4b: migrates stale entry in ~/.claude.json project-local scope", async () => {
     const ccConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-cfg-"));
     fs.writeFileSync(path.join(ccConfigDir, ".midbrain-key"), "k\n", "utf8");

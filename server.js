@@ -227,13 +227,24 @@ async function setupProject(projectDir, apiKeyParam) {
     const hasClaude = existsSync(path.join(HOME, ".claude.json"));
 
     if (hasOpenCode) {
-      const ocResult = await migrateOpenCodeConfig(resolvedDir, HOME);
-      lines.push(...ocResult);
+      try {
+        const ocResult = await migrateOpenCodeConfig(resolvedDir, HOME);
+        lines.push(...ocResult);
+      } catch (err) {
+        // PRD-010 AC-3: partial failure surfaces per-file error with
+        // no rollback. Do NOT let a Claude-side failure later in this
+        // function discard an already-successful OpenCode summary.
+        lines.push(`Error migrating OpenCode config: ${err.message}`);
+      }
     }
 
     if (hasClaude) {
-      const ccResult = await migrateClaudeConfigs(resolvedDir, HOME);
-      lines.push(...ccResult);
+      try {
+        const ccResult = await migrateClaudeConfigs(resolvedDir, HOME);
+        lines.push(...ccResult);
+      } catch (err) {
+        lines.push(`Error migrating Claude config: ${err.message}`);
+      }
     }
 
     if (!hasOpenCode && !hasClaude) {
