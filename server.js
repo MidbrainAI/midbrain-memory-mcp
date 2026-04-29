@@ -732,10 +732,20 @@ if (isMain) {
     // JSON-RPC pipe is live.
     console.log(PKG_VERSION);
     process.exit(0);
+  } else if (process.argv[2] === "install") {
+    // PRD-011: install subcommand dispatch.
+    // Dynamic import keeps install.mjs (with its 22 console.log calls
+    // and readline prompts) OFF the normal MCP server module graph.
+    // install.mjs loads only when the user typed `install` as argv[2],
+    // so normal MCP startup never touches the installer and stdout
+    // corruption is structurally prevented.
+    const { runInstallerCli } = await import("./install.mjs");
+    await runInstallerCli(process.argv.slice(3));
+  } else {
+    const server = createServer();
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error(`MCP server running (midbrain-memory-mcp v${PKG_VERSION})`);
+    checkForUpdate(); // fire-and-forget -- no await (PRD-005)
   }
-  const server = createServer();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error(`MCP server running (midbrain-memory-mcp v${PKG_VERSION})`);
-  checkForUpdate(); // fire-and-forget -- no await (PRD-005)
 }

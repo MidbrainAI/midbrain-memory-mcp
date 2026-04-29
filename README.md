@@ -85,8 +85,8 @@ writes per-client key files (chmod 600), and patches the configs above for
 you:
 
 ```bash
-npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup                     # interactive install
-npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup --project /abs/path # per-project setup
+npx midbrain-memory-mcp install                     # interactive install
+npx midbrain-memory-mcp install --project /abs/path # per-project setup
 ```
 
 ### How auto-update works
@@ -137,7 +137,7 @@ isolated memory space.
 mkdir -p .midbrain && echo "sk-your-key-here" > .midbrain/.midbrain-key && chmod 600 .midbrain/.midbrain-key
 
 # 2. Run project setup
-npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup --project /absolute/path/to/your/project
+npx midbrain-memory-mcp install --project /absolute/path/to/your/project
 ```
 
 Non-interactive. Resolves the API key from existing key files (no prompts),
@@ -472,7 +472,7 @@ Add to `~/.config/opencode/opencode.json`:
 ```
 
 The OpenCode episodic-capture plugin is delivered as a separate bundled
-file; the automated installer (`npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup`) copies it
+file; the automated installer (`npx midbrain-memory-mcp install`) copies it
 into `~/.config/opencode/plugins/` for you. Manual-setup users who want
 episodic capture should run the installer once or follow the
 [Development](#development) section to copy the plugin files by hand.
@@ -502,7 +502,7 @@ ignored for MCP server registration.
 
 Add hooks and permissions to `~/.claude/settings.json`. The hook
 commands need an absolute path to the hook scripts — use the installer
-(`npx -y --package=midbrain-memory-mcp@latest midbrain-memory-setup`) to emit these automatically, or follow the
+(`npx midbrain-memory-mcp install`) to emit these automatically, or follow the
 [Development](#development) section below if you want to point at a
 local clone.
 

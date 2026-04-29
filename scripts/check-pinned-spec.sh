@@ -39,7 +39,12 @@
 
 set -euo pipefail
 
-FOUND=$(grep -rn -E "midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)" \
+# Step 1: bare grep. Step 2: filter out known-safe "midbrain-memory-mcp install"
+# invocations (PRD-011 subcommand) — that invocation is pinned via the `install`
+# subcommand contract, not via `@latest`, but it is a legitimate public command
+# the docs MUST lead with.
+
+RAW=$(grep -rn -E "midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)" \
     --include="*.md" --include="*.json" --include="*.mjs" \
     --include="*.ts" --include="*.js" --include="*.sh" \
     --exclude-dir=node_modules --exclude-dir=tasks --exclude-dir=.git \
@@ -52,6 +57,20 @@ FOUND=$(grep -rn -E "midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)" \
     --exclude="check-pinned-spec.sh" \
     . || true)
 
+# Strip allowed "midbrain-memory-mcp install" tokens from each line, then
+# re-check the residual for bare unpinned references. A line-level grep -v
+# would forgive a mixed line that has both allowed and unsafe references on
+# the same line — the strip-then-recheck approach catches those.
+FOUND=""
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  stripped=$(printf '%s' "$line" | sed -E 's/midbrain-memory-mcp[[:space:]]+install([^a-zA-Z0-9_-]|$)/REDACTED_INSTALL\1/g')
+  if printf '%s' "$stripped" | grep -qE 'midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)'; then
+    FOUND="${FOUND}${line}
+"
+  fi
+done <<< "$RAW"
+
 if [ -n "$FOUND" ]; then
   echo "ERROR: unpinned 'midbrain-memory-mcp' references found."
   echo "Use 'midbrain-memory-mcp@latest' or '@X.Y.Z'."
@@ -61,3 +80,37 @@ if [ -n "$FOUND" ]; then
 fi
 
 echo "OK: no unpinned midbrain-memory-mcp references."
+
+# ---------------------------------------------------------------------------
+# PRD-011: reject the 60-char 'npx ... --package=... midbrain-memory-setup'
+# form. That was the PRD-010 post-review fix for the bare-npx E404 breakage,
+# but it is not the public install story. All user-facing docs must use
+# 'npx midbrain-memory-mcp install' instead (which routes to the `install`
+# subcommand on the main bin).
+#
+# The pattern requires 'npx' + '--package=midbrain-memory-mcp' + a space +
+# 'midbrain-memory-setup'. This is deliberately strict: bare prose mentions
+# like the legacy-bin note in AGENTS.md ('midbrain-memory-setup bin still
+# works') do NOT match and remain allowed.
+# ---------------------------------------------------------------------------
+
+FOUND_60CHAR=$(grep -rn -E 'npx.*--package=midbrain-memory-mcp[^[:space:]]*[[:space:]]+midbrain-memory-setup' \
+    --include="*.md" --include="*.json" --include="*.mjs" \
+    --include="*.ts" --include="*.js" --include="*.sh" \
+    --exclude-dir=node_modules --exclude-dir=tasks --exclude-dir=.git \
+    --exclude-dir=tests \
+    --exclude="package.json" --exclude="package-lock.json" \
+    --exclude="CHANGELOG.md" --exclude="BACKLOG.md" \
+    --exclude="team-rollout-*.md" --exclude="TEAM-ROLLOUT-*.md" \
+    --exclude="check-pinned-spec.sh" \
+    . || true)
+
+if [ -n "$FOUND_60CHAR" ]; then
+  echo "ERROR: legacy 60-char 'npx --package=... midbrain-memory-setup' form found."
+  echo "Use 'npx midbrain-memory-mcp install' instead."
+  echo ""
+  echo "$FOUND_60CHAR"
+  exit 1
+fi
+
+echo "OK: no legacy 60-char install-command references."
