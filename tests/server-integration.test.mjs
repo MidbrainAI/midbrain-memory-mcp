@@ -1384,6 +1384,7 @@ describe("server.js CLI — install subcommand (PRD-011)", () => {
     expect(out).toContain("--project");
     expect(out).toContain("--dev");
     expect(out).toContain("--help");
+    expect(out).toContain("npx midbrain-memory-mcp install");
     // MCP server must NOT have started
     expect(result.stderr).not.toMatch(/MCP server running/);
   });

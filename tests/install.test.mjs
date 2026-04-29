@@ -1788,6 +1788,7 @@ describe("runInstallerCli (PRD-011)", () => {
     const out = logSpy.mock.calls.map((c) => c[0]).join("\n");
     expect(out).toContain("--project");
     expect(out).toContain("--dev");
+    expect(out).toContain("npx midbrain-memory-mcp install");
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 

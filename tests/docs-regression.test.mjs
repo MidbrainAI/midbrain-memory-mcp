@@ -63,4 +63,21 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(agents).toContain("midbrain-memory-setup");
     expect(agents).not.toMatch(SIXTY_CHAR_FORM);
   });
+
+  it("D-6: mixed line with allowed install form + bare unpinned reference is detected", () => {
+    // A line containing the allowed "midbrain-memory-mcp install" form AND an
+    // unsafe bare "midbrain-memory-mcp" reference. The guard must catch the
+    // unsafe part — it must not forgive the whole line.
+    const mixed =
+      'Run `npx midbrain-memory-mcp install`; MCP config: `npx -y midbrain-memory-mcp`';
+
+    // Strip the allowed install tokens (mirrors check-pinned-spec.sh logic).
+    const stripped = mixed.replace(
+      /midbrain-memory-mcp\s+install([^a-zA-Z0-9_-]|$)/g,
+      "REDACTED_INSTALL$1",
+    );
+    // The residual must still match the bare-package regex.
+    const bareRegex = /midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)/;
+    expect(stripped).toMatch(bareRegex);
+  });
 });

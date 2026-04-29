@@ -57,11 +57,19 @@ RAW=$(grep -rn -E "midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)" \
     --exclude="check-pinned-spec.sh" \
     . || true)
 
-# Drop lines whose only un-pinned reference is the PRD-011 subcommand form:
-#   npx midbrain-memory-mcp install [...]
-# Anything with `midbrain-memory-mcp` followed by whitespace but NOT by
-# `install` still fails.
-FOUND=$(echo "$RAW" | grep -vE 'midbrain-memory-mcp[[:space:]]+install(\b|$)' || true)
+# Strip allowed "midbrain-memory-mcp install" tokens from each line, then
+# re-check the residual for bare unpinned references. A line-level grep -v
+# would forgive a mixed line that has both allowed and unsafe references on
+# the same line — the strip-then-recheck approach catches those.
+FOUND=""
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  stripped=$(printf '%s' "$line" | sed -E 's/midbrain-memory-mcp[[:space:]]+install([^a-zA-Z0-9_-]|$)/REDACTED_INSTALL\1/g')
+  if printf '%s' "$stripped" | grep -qE 'midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)'; then
+    FOUND="${FOUND}${line}
+"
+  fi
+done <<< "$RAW"
 
 if [ -n "$FOUND" ]; then
   echo "ERROR: unpinned 'midbrain-memory-mcp' references found."

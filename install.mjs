@@ -804,9 +804,12 @@ const HELP_TEXT = `\
 MidBrain Memory MCP — installer
 
 Usage:
-  node install.mjs                              Interactive install (OpenCode/Claude Code)
-  node install.mjs --project <absolute-path>    Set up per-project memory (non-interactive)
-  node install.mjs --help                       Show this help
+  npx midbrain-memory-mcp install                            Interactive install (OpenCode/Claude Code)
+  npx midbrain-memory-mcp install --project <absolute-path>  Per-project setup (non-interactive)
+  npx midbrain-memory-mcp install --help                     Show this help
+
+Development (clone-local):
+  node install.mjs [--help | --project <path> | --dev]
 
 Flags:
   --project <path>    Absolute path to the project root directory.
