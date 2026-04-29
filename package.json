@@ -1,6 +1,6 @@
 {
   "name": "midbrain-memory-mcp",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Persistent AI memory for coding agents (MCP server) — episodic capture and semantic search",
   "author": "MidBrain AI",
   "license": "MIT",
