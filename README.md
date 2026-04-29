@@ -1,257 +1,144 @@
 # MidBrain Memory MCP
 
-Persistent AI memory for coding agents. An MCP server exposes
-`memory_search`, `grep`, `get_episodic_memories_by_date`, `list_files`,
-`read_file`, and `memory_setup_project` for context retrieval and project
-configuration; companion hooks auto-capture every message as episodic memory.
-Works with **OpenCode** and **Claude Code**.
+Persistent AI memory for long running agents. An MCP server that gives LLMs
+long-term memory — semantic search, episodic recall, and per-project
+scoping — with automatic capture of every conversation.
 
-API: https://memory.midbrain.ai
+Works with [OpenCode](https://opencode.ai) and
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
----
-
-## Prerequisites
-
-- Node >= 20
-- [OpenCode](https://opencode.ai) and/or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- A MidBrain API key (get one at https://memory.midbrain.ai)
+[![npm version](https://img.shields.io/npm/v/midbrain-memory-mcp.svg?style=flat-square)](https://www.npmjs.com/package/midbrain-memory-mcp)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-brightgreen?style=flat-square)](#prerequisites)
 
 ---
 
 ## Quick Start
 
-### Install
+### 1. Get your API key
 
-The recommended install is a single-line `npx` command that auto-updates on
-every MCP client cold start:
+Sign up at [memory.midbrain.ai](https://memory.midbrain.ai), create an
+agent, and generate an API key.
 
-```bash
-npx -y midbrain-memory-mcp@latest
-```
-
-You don't run this directly — your MCP client (OpenCode / Claude Code) runs
-it. The configuration examples below embed that exact command.
-
-### Get Your API Key
-
-1. Sign up at [memory.midbrain.ai](https://memory.midbrain.ai)
-2. Create an agent in the dashboard
-3. Generate an API key for the agent
-
-### Configure MCP
-
-**OpenCode** (`~/.config/opencode/opencode.json`):
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "midbrain-memory": {
-      "type": "local",
-      "command": ["npx", "-y", "midbrain-memory-mcp@latest"],
-      "environment": {
-        "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/opencode"
-      },
-      "enabled": true
-    }
-  }
-}
-```
-
-**Claude Code** (`~/.claude.json`):
-
-```json
-{
-  "mcpServers": {
-    "midbrain-memory": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "midbrain-memory-mcp@latest"],
-      "env": {
-        "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/claude"
-      }
-    }
-  }
-}
-```
-
-Replace `<absolute-path>` with your home directory (e.g.
-`/Users/alice/.config/opencode`). JSON values do not expand `~`.
-
-### Run Setup
-
-The automated installer detects both clients, prompts for your API key,
-writes per-client key files (chmod 600), and patches the configs above for
-you:
+### 2. Install
 
 ```bash
-npx midbrain-memory-mcp install                     # interactive install
-npx midbrain-memory-mcp install --project /abs/path # per-project setup
+npx midbrain-memory-mcp install
 ```
 
-### How auto-update works
+The installer detects OpenCode and/or Claude Code on your machine, prompts
+for your API key, writes per-client key files (chmod 600), patches MCP
+configs, and copies plugin files. One command, done.
 
-Pinning the spec to `@latest` changes how `npx` resolves the package:
+### 3. Restart and verify
 
-- **`npx -y midbrain-memory-mcp@latest`** (recommended) — resolves the
-  latest published version from the npm registry on every cold start. When
-  a new version ships, your next restart of OpenCode / Claude Code picks it
-  up automatically.
-- **Unpinned package name (no `@latest`, no version)** — looks
-  auto-updating but is actually sticky. `npx` caches the first resolved
-  version under a hash keyed by the full spec string and reuses the cache
-  until npm's own staleness heuristic triggers. That heuristic is
-  unreliable and you can end up stuck on an old version for weeks without
-  noticing. Always pin to `@latest` or a specific version.
-- **`npx -y midbrain-memory-mcp@0.3.1`** — pinned to an exact version for
-  reproducibility. You are responsible for bumping the version yourself.
-
-Run `npx -y midbrain-memory-mcp@latest --version` to print the resolved
-version, or watch the MCP server stderr on startup — it logs its name
-and version in the format `MCP server running (<package> v<version>)`.
-
-### Verify
+Restart OpenCode or Claude Code. The `memory_search` tool should be
+available. Send a few messages, then search — your messages should appear.
 
 ```sh
-# 1. Health check
-curl https://memory.midbrain.ai/health
-# Expected: {"status":"ok"}
-
-# 2. Start a session in OpenCode or Claude Code
-# 3. The memory_search tool should be available
-# 4. Send a few messages, then search — your messages should appear
+# Quick version check (optional)
+npx -y midbrain-memory-mcp@latest --version
 ```
-
----
-
-## Per-Project Setup
-
-By default, all memory goes to a single agent (your global key). Per-project
-setup scopes memory to a project-specific agent, so each project has its own
-isolated memory space.
-
-### Option A: CLI (Recommended)
-
-```sh
-# 1. Place your API key
-mkdir -p .midbrain && echo "sk-your-key-here" > .midbrain/.midbrain-key && chmod 600 .midbrain/.midbrain-key
-
-# 2. Run project setup
-npx midbrain-memory-mcp install --project /absolute/path/to/your/project
-```
-
-Non-interactive. Resolves the API key from existing key files (no prompts),
-creates the key file and MCP configs for all detected clients, outputs JSON
-to stdout. All progress goes to stderr.
-
-```sh
-# Example output (stdout)
-{
-  "success": true,
-  "project_dir": "/Users/you/myproject",
-  "key_file": "/Users/you/myproject/.midbrain/.midbrain-key",
-  "key_created": true,
-  "key_source": "/Users/you/.config/opencode/.midbrain-key",
-  "configs_written": ["opencode.json", ".mcp.json"],
-  "restart_required": true,
-  "warnings": []
-}
-```
-
-### Option B: MCP Tool
-
-> **Warning:** Never include your API key in a chat prompt. API keys in prompts
-> are sent to the model provider (Anthropic, OpenAI, etc.) and may be logged,
-> stored in conversation history, or leaked. Always place the key in a file
-> first (step 1 below), then call the tool without the key.
-
-1. First, place your API key in the project:
-   ```bash
-   mkdir -p .midbrain && echo "sk-your-key-here" > .midbrain/.midbrain-key && chmod 600 .midbrain/.midbrain-key
-   ```
-
-2. Then tell the AI assistant to configure the project:
-
-   **OpenCode:**
-   ```
-   Set up midbrain memory for this project
-   ```
-
-   **Claude Code** (name the tool explicitly due to lazy tool loading):
-   ```
-   Use the memory_setup_project tool to configure this project
-   ```
-
-The tool creates:
-- `opencode.json` or `.mcp.json` — project-level MCP config with `MIDBRAIN_PROJECT_DIR`
-
-After setup, restart the application for the project memory to take effect.
-
-### Option C: Manual
-
-```sh
-# 1. Create the key file
-mkdir -p /path/to/project/.midbrain
-echo "sk-your-key" > /path/to/project/.midbrain/.midbrain-key
-chmod 600 /path/to/project/.midbrain/.midbrain-key
-
-# 2. Add .midbrain-key to .gitignore
-echo ".midbrain-key" >> /path/to/project/.gitignore
-```
-
-Then create a project-level MCP config (see [Configuration Reference](#configuration-reference) below).
-
-**Important:** Always use absolute paths for the node binary and `server.js` in
-MCP configs. Bare `node` fails when the client's shell environment doesn't
-include PATH.
-
----
-
-## Architecture
-
-```
-OpenCode session
-  |
-  |-- MCP stdio -----> server.js ----> POST /api/v1/memories/search
-  |                                        memory.midbrain.ai
-  |-- Plugin hook ---> midbrain-memory.ts -> POST /api/v1/memories/episodic
-                                               memory.midbrain.ai
-
-Claude Code session
-  |
-  |-- MCP stdio -----> server.js ----> POST /api/v1/memories/search
-  |                                        memory.midbrain.ai
-  |-- Hook scripts --> capture-user.mjs -----> POST /api/v1/memories/episodic
-  |                    capture-assistant.mjs      memory.midbrain.ai
-```
-
-- **server.js** -- MCP server (Node 20, stdio transport). Exposes six tools:
-  `memory_search`, `grep`, `get_episodic_memories_by_date`, `list_files`,
-  `read_file`, and `memory_setup_project`. Plain JavaScript, no build step.
-- **plugin/midbrain-memory.ts** -- OpenCode plugin (Bun/TS). Hooks into
-  `chat.message` and `message.updated` events. POSTs every message to the
-  episodic endpoint. Fire-and-forget, never blocks.
-- **claude-code/** -- Standalone Node 20 scripts wired to Claude Code's hook
-  system. Same episodic capture, no dependencies beyond Node builtins.
-- **shared/midbrain-common.mjs** -- Shared utilities (`loadApiKey`,
-  `storeEpisodic`, `makeDebugLogger`) consumed by all components. Single source
-  of truth for key resolution, API endpoints, and constants.
 
 ---
 
 ## How It Works
 
-1. **Search** -- The LLM invokes `memory_search` via MCP. The server queries
-   the search API and returns scored results as formatted text.
-2. **Capture (OpenCode)** -- The plugin hooks into OpenCode's message lifecycle.
-   User messages are captured from `chat.message`; assistant messages from
-   `message.updated` after completion. Each is POSTed to the episodic endpoint.
-3. **Capture (Claude Code)** -- Hook scripts fire on `UserPromptSubmit` and
-   `Stop` events. Each reads the message from stdin JSON and POSTs to the same
-   episodic endpoint. Async, fire-and-forget.
-4. **Project Setup** -- The LLM invokes `memory_setup_project` via MCP. The
-   server creates the key file and project-level MCP config, then instructs
-   the LLM to tell the user to restart.
+```
+OpenCode / Claude Code session
+  |
+  |-- MCP stdio -----> server.js -------> memory.midbrain.ai
+  |                    (search, browse)    /api/v1/memories/search
+  |
+  |-- Hooks ----------> capture hooks --> memory.midbrain.ai
+                       (auto-capture)     /api/v1/memories/episodic
+```
+
+**Search** — The LLM calls `memory_search` via MCP. The server queries the
+API and returns scored results as formatted text.
+
+**Capture** — Companion hooks fire on every message and POST to the
+episodic endpoint. Fire-and-forget, never blocks. OpenCode uses a Bun/TS
+plugin; Claude Code uses standalone Node scripts wired to its hook system.
+
+**Project Setup** — The LLM calls `memory_setup_project` via MCP to scope
+memory to a specific project, then tells the user to restart.
+
+### MCP Tools
+
+| Tool | Purpose |
+|---|---|
+| `memory_search` | Semantic search across all memories |
+| `grep` | Exact pattern matching (names, IDs, code, URLs) |
+| `get_episodic_memories_by_date` | Conversation history by date range |
+| `list_files` | Browse semantic memory documents |
+| `read_file` | Read a semantic memory document by line range |
+| `memory_setup_project` | Configure per-project memory scoping |
+
+---
+
+## Per-Project Memory
+
+By default, all memory goes to a single agent (your global key).
+Per-project setup scopes memory to a project-specific agent so each
+project has its own isolated memory space.
+
+### Option A: CLI (recommended)
+
+```sh
+# 1. Place your project API key
+mkdir -p .midbrain
+echo "sk-your-project-key" > .midbrain/.midbrain-key
+chmod 600 .midbrain/.midbrain-key
+
+# 2. Run project setup
+npx midbrain-memory-mcp install --project /absolute/path/to/project
+```
+
+Non-interactive. Resolves the API key from existing files, creates per-client
+MCP configs, outputs JSON to stdout. All progress goes to stderr.
+
+### Option B: MCP Tool
+
+> **Warning:** Never paste your API key into a chat prompt. Place the key
+> in a file first (step 1 above), then ask the assistant to configure the
+> project.
+
+**OpenCode:**
+```
+Set up midbrain memory for this project
+```
+
+**Claude Code** (name the tool — lazy loading):
+```
+Use the memory_setup_project tool to configure this project
+```
+
+Restart after setup for the project memory to take effect.
+
+### Option C: Manual
+
+See [Configuration Reference](#configuration-reference) below for the
+full config format. Create the key file, add a project-level MCP config
+with `MIDBRAIN_PROJECT_DIR`, and restart.
+
+---
+
+## Auto-Update
+
+The installer writes `npx -y midbrain-memory-mcp@latest` as the MCP
+command. This re-resolves the latest published version from the npm
+registry on every client cold start — when a new version ships, your
+next restart picks it up automatically.
+
+| Spec form | Behavior |
+|---|---|
+| `midbrain-memory-mcp@latest` | Auto-updates on every cold start (recommended) |
+| `midbrain-memory-mcp@0.3.2` | Pinned — you are responsible for bumping |
+| `midbrain-memory-mcp` (bare) | Looks auto-updating but is sticky on first resolved version — avoid |
+
+Run `npx -y midbrain-memory-mcp@latest --version` to check your resolved
+version. The MCP server also logs its version to stderr on startup:
+`MCP server running (midbrain-memory-mcp v0.3.2)`.
 
 ---
 
@@ -261,13 +148,13 @@ Claude Code session
 
 | Variable | Purpose | Set by |
 |---|---|---|
-| `MIDBRAIN_CONFIG_DIR` | Client config directory for key resolution | MCP config `environment`/`env` block |
-| `MIDBRAIN_PROJECT_DIR` | Project directory for per-project key resolution | Project-level MCP config |
+| `MIDBRAIN_CONFIG_DIR` | Client config dir for key resolution | MCP config `environment`/`env` block |
+| `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution | Project-level MCP config |
 | `MIDBRAIN_API_KEY` | API key (CI/debug fallback only) | User environment |
 
 ### API Key Resolution
 
-Keys are stored in files with `chmod 600`. The resolution chain (in order):
+Keys are stored in files with `chmod 600`. Resolution order:
 
 | # | Location | Source |
 |---|---|---|
@@ -280,24 +167,14 @@ Keys are stored in files with `chmod 600`. The resolution chain (in order):
 | 5 | `$MIDBRAIN_API_KEY` | Environment variable (CI only) |
 | 6 | `~/.config/midbrain/.midbrain-key` | Global default |
 
-**Rules:**
-- Permission denied (`EACCES`) on any key file is a hard error (not silent fallthrough)
+- `EACCES` on any key file is a hard error (not silent fallthrough)
 - Empty key files are a hard error naming the file path
-- When a project dir is specified but no project key found, a warning is emitted if resolution falls through to the global key
+- Fallthrough from project to global key emits a warning to stderr
 
-### Key File Locations
+### MCP Config Examples
 
-| Purpose | Path |
-|---|---|
-| Global default | `~/.config/midbrain/.midbrain-key` |
-| OpenCode client | `~/.config/opencode/.midbrain-key` |
-| Claude Code client | `~/.config/claude/.midbrain-key` |
-| Project (flat) | `<projectDir>/.midbrain-key` |
-| Project (recommended) | `<projectDir>/.midbrain/.midbrain-key` |
-
-### Project-Level MCP Configs
-
-**OpenCode** -- `<project>/opencode.json`:
+**OpenCode** — `~/.config/opencode/opencode.json` (global) or
+`<project>/opencode.json` (per-project):
 
 ```json
 {
@@ -307,8 +184,7 @@ Keys are stored in files with `chmod 600`. The resolution chain (in order):
       "type": "local",
       "command": ["npx", "-y", "midbrain-memory-mcp@latest"],
       "environment": {
-        "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/opencode",
-        "MIDBRAIN_PROJECT_DIR": "<absolute-project-dir>"
+        "MIDBRAIN_CONFIG_DIR": "/Users/you/.config/opencode"
       },
       "enabled": true
     }
@@ -316,37 +192,36 @@ Keys are stored in files with `chmod 600`. The resolution chain (in order):
 }
 ```
 
-**Claude Code** -- `<project>/.mcp.json`:
+**Claude Code** — `~/.claude.json` (global) or `<project>/.mcp.json`
+(per-project):
 
 ```json
 {
   "mcpServers": {
     "midbrain-memory": {
+      "type": "stdio",
       "command": "npx",
       "args": ["-y", "midbrain-memory-mcp@latest"],
       "env": {
-        "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/claude",
-        "MIDBRAIN_PROJECT_DIR": "<absolute-project-dir>"
+        "MIDBRAIN_CONFIG_DIR": "/Users/you/.config/claude"
       }
     }
   }
 }
 ```
 
+For per-project configs, add `"MIDBRAIN_PROJECT_DIR": "/absolute/path/to/project"` to the environment/env block.
+
 **Important:**
 - All paths must be absolute. JSON does not expand `~`.
-- Pin the spec to `@latest` for auto-updates, or `@X.Y.Z` for a frozen
-  version. Never use the bare, unpinned package-name form — it looks
-  auto-updating but is actually sticky on the first resolved version.
-- OpenCode uses the `mcp` key. Claude Code uses `mcpServers`. Using the
-  wrong key for either client will silently fail.
+- OpenCode uses `mcp`. Claude Code uses `mcpServers`. Wrong key = silent failure.
+- MCP servers in `~/.claude/settings.json` are silently ignored — use `~/.claude.json`.
 
 ---
 
-## LLM Rules for Your Project
+## LLM Rules
 
-Add these rules to your project's `AGENTS.md` (or `CLAUDE.md` for Claude Code)
-so the AI assistant uses memory correctly:
+Add to your project's `AGENTS.md` or `CLAUDE.md`:
 
 ```markdown
 ## MidBrain Memory Rules
@@ -357,266 +232,153 @@ so the AI assistant uses memory correctly:
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
 - The only memory tools available are search and setup. Use them proactively.
-- When the user asks to set up, configure, or initialize MidBrain memory for a
-  project, ALWAYS use the memory_setup_project tool. NEVER manually create
-  .midbrain-key files, .mcp.json, or opencode.json with shell commands.
-  The tool handles permissions, config merging, and path resolution correctly.
-  Manual setup will break.
+- When the user asks to set up MidBrain memory for a project, ALWAYS use the
+  memory_setup_project tool. NEVER manually create key files or configs.
 ```
 
 ---
 
 ## Troubleshooting
 
+### Version check
+
+```sh
+npx -y midbrain-memory-mcp@latest --version
+# Expected: 0.3.2
+```
+
+If it shows an old version, your npx cache is stale:
+
+```sh
+npx_cache=$(npm config get cache)/_npx
+find "$npx_cache" -type d -name "midbrain-memory-mcp" -exec rm -rf {} + 2>/dev/null
+npx -y midbrain-memory-mcp@latest --version
+```
+
 ### MCP server not connecting
 
-**Symptom:** `memory_search` tool not available in your session.
+**Symptom:** `memory_search` not available in your session.
 
 **Check:**
 ```sh
-# Verify the server starts
-node /path/to/midbrain-memory-mcp/server.js
-# Should print "MCP server running" to stderr
+npx -y midbrain-memory-mcp@latest --version   # Does the package resolve?
+curl https://memory.midbrain.ai/health         # Is the API reachable?
 ```
 
 **Common causes:**
-- Bare `node` in MCP config instead of absolute path (e.g., `/usr/local/bin/node`)
-- `server.js` path is relative instead of absolute
-- Missing `npm install` (MCP SDK not installed)
-- Claude Code: check `~/.claude.json` for the MCP entry (NOT `~/.claude/settings.json` -- MCP servers in settings.json are silently ignored)
+- Stale npx cache (see version check above)
+- `MIDBRAIN_CONFIG_DIR` not set or pointing to wrong directory
+- Key file missing or wrong permissions (`chmod 600`)
+- Claude Code: MCP entry in `~/.claude/settings.json` instead of `~/.claude.json`
 
 ### Memory going to wrong agent
 
-**Symptom:** Messages appear in the global agent dashboard instead of the project agent.
+**Cause:** Session started before the project key was created. The key is
+resolved at init time and cached.
 
-**Cause:** The session started before the project key was created. The plugin/hooks resolve the API key at init time and cache it.
+**Fix:** Restart the client after running project setup.
 
-**Fix:** Restart the application after running project setup. The restart message from `memory_setup_project` reminds you of this.
+### Claude Code ignores the setup tool
 
-### Claude Code doesn't use the setup tool
-
-**Symptom:** Claude Code web-searches for "Midbrain" instead of calling `memory_setup_project`.
-
-**Cause:** Claude Code lazy-loads MCP tools. If your message doesn't trigger tool loading, it doesn't know the tool exists.
-
-**Fix:** Name the tool explicitly:
+**Cause:** Lazy tool loading. Name the tool explicitly:
 ```
 Use the memory_setup_project tool to configure this project
 ```
 
-### Permission denied on key file
+### Permission denied / empty key file
 
-**Symptom:** `EACCES` error when the server starts or searches.
-
-**Fix:**
 ```sh
-chmod 600 /path/to/.midbrain-key
+chmod 600 /path/to/.midbrain-key   # Fix permissions
+# Or remove an empty key file so resolution falls through
 ```
-
-### Empty key file error
-
-**Symptom:** Error message naming a specific key file as empty.
-
-**Fix:** Either add a valid key to the file or remove it so the resolution chain falls through to the next source.
 
 ---
 
 ## API Reference
 
 Base URL: `https://memory.midbrain.ai`
+Auth: `Authorization: Bearer <key>` (except `/health`)
 
-All endpoints use `Authorization: Bearer <key>` (except `/health`).
-
-| Method | Endpoint | Body / Params | Returns |
+| Method | Endpoint | Params / Body | Returns |
 |---|---|---|---|
-| GET | `/api/v1/memories/search/semantic` | `?query=...&limit=10` | `[{role, text, memory_metadata, score, occurred_at}]` |
+| GET | `/api/v1/memories/search/semantic` | `?query=...&limit=10` | `[{role, text, score, occurred_at}]` |
 | GET | `/api/v1/memories/search/lexical` | `?pattern=...&source=...&limit=50` | `[{source, line_number, text}]` |
 | GET | `/api/v1/memories/episodic` | `?page=1&limit=100&start_date=...&end_date=...` | `{items, total, page, limit}` |
 | GET | `/api/v1/memories/semantic/files` | -- | `[{source, chunk_count}]` |
 | GET | `/api/v1/memories/semantic/files/{path}` | `?start_line=1&num_lines=200` | `{path, start_line, content}` |
-| POST | `/api/v1/memories/episodic` | `{"text": "...", "role": "user\|assistant"}` | Created memory object |
+| POST | `/api/v1/memories/episodic` | `{"text": "...", "role": "user\|assistant"}` | Created memory |
 | GET | `/health` | -- | `{"status": "ok"}` |
-
----
-
-## Manual Setup
-
-If you prefer not to use the automated installer, follow these steps.
-All paths below must be absolute — JSON values do not expand `~`.
-
-### Global API Key
-
-```sh
-mkdir -p ~/.config/midbrain
-echo "sk-your-api-key" > ~/.config/midbrain/.midbrain-key
-chmod 600 ~/.config/midbrain/.midbrain-key
-```
-
-### OpenCode
-
-Add to `~/.config/opencode/opencode.json`:
-
-```json
-{
-  "mcp": {
-    "midbrain-memory": {
-      "type": "local",
-      "command": ["npx", "-y", "midbrain-memory-mcp@latest"],
-      "environment": {
-        "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/opencode"
-      },
-      "enabled": true
-    }
-  }
-}
-```
-
-The OpenCode episodic-capture plugin is delivered as a separate bundled
-file; the automated installer (`npx midbrain-memory-mcp install`) copies it
-into `~/.config/opencode/plugins/` for you. Manual-setup users who want
-episodic capture should run the installer once or follow the
-[Development](#development) section to copy the plugin files by hand.
-
-### Claude Code
-
-Register the MCP server in `~/.claude.json`:
-
-```json
-{
-  "mcpServers": {
-    "midbrain-memory": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "midbrain-memory-mcp@latest"],
-      "env": {
-        "MIDBRAIN_CONFIG_DIR": "<absolute-path>/.config/claude"
-      }
-    }
-  }
-}
-```
-
-**Note:** MCP servers must be in `~/.claude.json`, not
-`~/.claude/settings.json`. Entries in `settings.json` are silently
-ignored for MCP server registration.
-
-Add hooks and permissions to `~/.claude/settings.json`. The hook
-commands need an absolute path to the hook scripts — use the installer
-(`npx midbrain-memory-mcp install`) to emit these automatically, or follow the
-[Development](#development) section below if you want to point at a
-local clone.
-
----
-
-## File Structure
-
-```
-midbrain-memory-mcp/
-  server.js                  MCP server (Node 20, plain JS, 6 tools)
-  install.mjs                Automated installer + --project CLI mode
-  shared/
-    midbrain-common.mjs      Shared utilities: key loading, store, logging
-  plugin/
-    midbrain-memory.ts       OpenCode plugin (Bun/TS)
-  claude-code/
-    common.mjs               Re-exports shared utils + readStdinJSON
-    capture-user.mjs         UserPromptSubmit hook
-    capture-assistant.mjs    Stop hook
-  tests/
-    midbrain-common.test.mjs Unit tests for shared utilities
-    server-integration.test.mjs  Integration tests for MCP tools
-  eslint.config.js           ESLint flat config (ESM)
-  package.json
-  AGENTS.md                  LLM project instructions
-  README.md
-```
 
 ---
 
 ## Development
 
-### Getting Started
+### Setup
 
 ```sh
 git clone https://github.com/MidbrainAI/midbrain-memory-mcp.git
-cd midbrain-memory-mcp/
-npm run bootstrap   # installs deps + sets up git hooks
+cd midbrain-memory-mcp
+npm run bootstrap   # install deps + git hooks (one-time)
 ```
 
-`npm run bootstrap` is a one-time command. It runs `npm install` to fetch
-dependencies, then `husky` to install pre-commit hooks.
+### Dev install
 
-### Install from a local clone
-
-Regular users should install via `npx @latest` (above). If you are hacking
-on this repo and want your MCP clients to run your working tree, pass
-`--dev` to the installer. It will write absolute paths into the configs
-instead of `npx @latest`:
+To point your MCP clients at your working tree instead of `@latest`,
+run the installer directly from the cloned repo with `--dev`:
 
 ```sh
 node install.mjs --dev                               # interactive
 node install.mjs --project /abs/path/to/project --dev  # per-project
 ```
 
-Run `node install.mjs --help` for the full flag reference.
-
-Manual dev setup without the installer:
-
-```sh
-cp shared/midbrain-common.mjs ~/.config/opencode/plugins/midbrain-common.mjs
-cp plugin/midbrain-memory.ts  ~/.config/opencode/plugins/midbrain-memory.ts
-```
-
-Then in any MCP config, replace the `npx -y midbrain-memory-mcp@latest`
-command with an absolute path:
-
-- OpenCode: `"command": ["<absolute-node>", "<abs>/server.js"]`
-- Claude: `"command": "<absolute-node>", "args": ["<abs>/server.js"]`
-
-Use `process.execPath` as the node path — bare `node` fails when MCP
-clients spawn the server without a PATH export.
+This writes absolute paths into configs instead of `npx @latest`.
 
 ### Commands
 
 | Command | Purpose |
 |---|---|
-| `npm run bootstrap` | First-time setup: install deps + git hooks |
-| `npm test` | Run full test suite (vitest) |
-| `npm run test:watch` | Run tests in watch mode |
-| `npm run lint` | Run ESLint |
-| `npm run lint:fix` | Auto-fix ESLint issues |
-| `npm run check` | Lint + test in one command |
+| `npm run bootstrap` | First-time setup: deps + git hooks |
+| `npm test` | Full test suite (vitest) |
+| `npm run test:watch` | Watch mode |
+| `npm run lint` | ESLint |
+| `npm run lint:fix` | Auto-fix lint issues |
+| `npm run check` | Lint + tests + doc-regression checks |
 
-### Pre-commit Hook
+### Pre-commit hook
 
-Every `git commit` automatically runs:
+Every `git commit` runs lint-staged (ESLint, zero warnings) and the full
+test suite. Commit is rejected if either fails.
 
-1. **lint-staged** -- ESLint on staged `.js`/`.mjs` files (zero warnings)
-2. **npm test** -- full test suite (52 tests)
+### Architecture
 
-If either step fails, the commit is rejected. Fix the issues and commit again.
-
-### Test Architecture
-
-Tests use vitest (ESM) and live in `tests/`:
-
-- **Unit tests** (`midbrain-common.test.mjs`) -- pure function tests for
-  `loadApiKey`, `isNewerVersion`, `storeEpisodic`, and constants. Uses temp
-  directories and `vi.spyOn(globalThis, "fetch")` for mocking.
-
-- **Integration tests** (`server-integration.test.mjs`) -- self-contained,
-  in-process. Imports `createServer()` directly, connects via MCP SDK
-  `InMemoryTransport.createLinkedPair()`, and mocks `globalThis.fetch` to
-  simulate API responses. No child process, no stdio, no network.
+```
+server.js                  MCP server (Node 20, plain JS, stdio)
+install.mjs                Installer CLI + --project mode
+shared/midbrain-common.mjs Shared: key loading, API helpers, constants
+plugin/midbrain-memory.ts  OpenCode plugin (Bun/TS, episodic capture)
+claude-code/               Claude Code hook scripts (episodic capture)
+scripts/                   CI guards (pinned-spec regression)
+tests/                     vitest (unit, integration, installer, doc-regression)
+```
 
 ### Dependencies
-
-Production dependencies are kept minimal (only what ships to users):
 
 | Package | Purpose |
 |---|---|
 | `@modelcontextprotocol/sdk` | MCP protocol |
+| `jsonc-parser` | JSONC parsing with comment preservation |
 | `zod` | Schema validation |
 
-Everything else (eslint, vitest, husky, lint-staged) is in `devDependencies`
-and is not installed by end users.
+Dev: eslint, vitest, husky, lint-staged. Not shipped to users.
+
+---
+
+## Prerequisites
+
+- Node >= 20
+- [OpenCode](https://opencode.ai) and/or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- A MidBrain API key ([memory.midbrain.ai](https://memory.midbrain.ai))
+
+## License
+
+MIT

@@ -61,10 +61,23 @@ RAW=$(grep -rn -E "midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)" \
 # re-check the residual for bare unpinned references. A line-level grep -v
 # would forgive a mixed line that has both allowed and unsafe references on
 # the same line — the strip-then-recheck approach catches those.
+#
+# Additional safe patterns stripped (documentation, not config examples):
+#   - `midbrain-memory-mcp`  (backtick-quoted package name in prose)
+#   - "midbrain-memory-mcp"  (double-quoted, e.g. find -name)
+#   - midbrain-memory-mcp)   (URL suffix in badge/link markup)
+#   - midbrain-memory-mcp v  (startup log message format)
+#   - cd midbrain-memory-mcp (directory name after git clone)
 FOUND=""
 while IFS= read -r line; do
   [ -z "$line" ] && continue
-  stripped=$(printf '%s' "$line" | sed -E 's/midbrain-memory-mcp[[:space:]]+install([^a-zA-Z0-9_-]|$)/REDACTED_INSTALL\1/g')
+  stripped=$(printf '%s' "$line" | sed -E \
+    -e 's/midbrain-memory-mcp[[:space:]]+install([^a-zA-Z0-9_-]|$)/REDACTED_INSTALL\1/g' \
+    -e 's/`midbrain-memory-mcp`/REDACTED_PROSE/g' \
+    -e 's/"midbrain-memory-mcp"/REDACTED_PROSE/g' \
+    -e 's/midbrain-memory-mcp\)/REDACTED_URL)/g' \
+    -e 's/midbrain-memory-mcp v[0-9]/REDACTED_LOG/g' \
+    -e 's/(cd|clone) midbrain-memory-mcp/\1 REDACTED_DIR/g')
   if printf '%s' "$stripped" | grep -qE 'midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)'; then
     FOUND="${FOUND}${line}
 "
