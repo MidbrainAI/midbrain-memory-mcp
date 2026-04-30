@@ -1,5 +1,5 @@
 /**
- * Integration tests for the MCP server (server.js).
+ * Integration tests for the MCP server (index.js).
  *
  * Self-contained: creates an in-process MCP server via createServer(),
  * connects a Client through InMemoryTransport (no child process, no stdio),
@@ -16,10 +16,10 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-import { createServer } from "../server.js";
+import { createServer } from "../index.js";
 
 const __filename = fileURLToPath(import.meta.url);
-const SERVER_PATH = path.resolve(path.dirname(__filename), "..", "server.js");
+const SERVER_PATH = path.resolve(path.dirname(__filename), "..", "index.js");
 
 // ---------------------------------------------------------------------------
 // Mock API response data
@@ -171,10 +171,10 @@ beforeAll(async () => {
   fs.chmodSync(keyPath, 0o600);
 
   // Set env vars for the in-process server
-  for (const k of ["MIDBRAIN_CONFIG_DIR", "MIDBRAIN_PROJECT_DIR"]) {
+  for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
     savedEnv[k] = process.env[k];
   }
-  process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
+  process.env.MIDBRAIN_API_KEY = "test-key-for-mcp-tests";
   process.env.MIDBRAIN_PROJECT_DIR = "";
 
   // Create linked in-memory transport pair
@@ -472,12 +472,12 @@ describe("memory_setup_project — config file integration", () => {
     savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
 
     // Isolate HOME so tests never touch the real ~/.claude.json or ~/.config/opencode.
-    // server.js reads os.homedir() inside setupProject, which on POSIX honors $HOME.
+    // index.js reads os.homedir() inside setupProject, which on POSIX honors $HOME.
     savedHome = process.env.HOME;
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fake-home-"));
     process.env.HOME = fakeHome;
 
-    // Seed fake HOME so existsSync-based client detection in server.js succeeds
+    // Seed fake HOME so existsSync-based client detection in index.js succeeds
     // for both OpenCode and Claude Code by default. Individual tests can override.
     fs.mkdirSync(path.join(fakeHome, ".config", "opencode"), { recursive: true });
     fs.writeFileSync(path.join(fakeHome, ".claude.json"), JSON.stringify({ projects: {} }, null, 2), "utf8");
@@ -727,7 +727,6 @@ describe("memory_setup_project — config file integration", () => {
   });
 
   it("falls back to server key when api_key not provided", async () => {
-    process.env.MIDBRAIN_CONFIG_DIR = tmpKeyDir;
     const result = await client.callTool({
       name: "memory_setup_project",
       arguments: { project_dir: tmpProjectDir },
@@ -928,7 +927,7 @@ describe("memory_setup_project — config file integration", () => {
       arguments: { project_dir: tmpProjectDir, api_key: "no-client-key" },
     });
     const text = result.content[0].text;
-    expect(text).toContain("could not detect any installed clients");
+    expect(text).toContain("no supported AI clients detected");
     // No project configs should have been written
     expect(fs.existsSync(path.join(tmpProjectDir, "opencode.json"))).toBe(false);
     expect(fs.existsSync(path.join(tmpProjectDir, ".mcp.json"))).toBe(false);
@@ -976,7 +975,7 @@ describe("memory_setup_project — config file integration", () => {
       expect(entry).toBeDefined();
       expect(entry.type).toBe("stdio");
       expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
-      expect(entry.env.MIDBRAIN_CONFIG_DIR).toContain("claude");
+      expect(entry.env.MIDBRAIN_CLIENT).toBe("claude");
       expect(entry.command).toBe("npx");
       expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
     } finally {
@@ -1027,7 +1026,7 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
           type: "local",
           command: [
             "/usr/local/Cellar/node@20/20.19.2/bin/node",
-            "/usr/local/lib/node_modules/midbrain-memory-mcp/server.js",
+            "/usr/local/lib/node_modules/midbrain-memory-mcp/index.js",
           ],
           environment: {
             MIDBRAIN_CONFIG_DIR: "/old/config/opencode",
@@ -1059,14 +1058,14 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
     expect(updated.mcp["midbrain-memory"].command).toEqual(["npx", "-y", "midbrain-memory-mcp@latest"]);
     // Custom env var preserved
     expect(updated.mcp["midbrain-memory"].environment.CUSTOM_VAR).toBe("custom-value");
-    // MIDBRAIN_CONFIG_DIR updated to new client-based value
-    expect(updated.mcp["midbrain-memory"].environment.MIDBRAIN_CONFIG_DIR).toContain("opencode");
+    // MIDBRAIN_CONFIG_DIR no longer set (replaced by MIDBRAIN_CLIENT)
+    expect(updated.mcp["midbrain-memory"].environment.MIDBRAIN_CLIENT).toBe("opencode");
     // MIDBRAIN_PROJECT_DIR set
     expect(updated.mcp["midbrain-memory"].environment.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
     // Sibling preserved byte-for-byte
     expect(updated.mcp.notion).toEqual(stale.mcp.notion);
-    // Summary mentions migration
-    expect(text.toLowerCase()).toMatch(/migrat/);
+    // Summary mentions the entry was updated
+    expect(text.toLowerCase()).toMatch(/updated|added/);
 
     fs.rmSync(ocConfigDir, { recursive: true, force: true });
   });
@@ -1129,7 +1128,7 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
       arguments: { project_dir: tmpProjectDir, api_key: "new-key" },
     });
     const text = result.content[0].text;
-    expect(text).toMatch(/global-installed-bin|migrated|migration/i);
+    expect(text).toMatch(/midbrain-memory updated|midbrain-memory entry added/i);
 
     fs.rmSync(ocConfigDir, { recursive: true, force: true });
   });
@@ -1192,7 +1191,7 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
             type: "local",
             command: [
               "/usr/local/Cellar/node@20/20.19.2/bin/node",
-              "/usr/local/lib/node_modules/midbrain-memory-mcp/server.js",
+              "/usr/local/lib/node_modules/midbrain-memory-mcp/index.js",
             ],
             environment: {},
             enabled: true,
@@ -1216,11 +1215,11 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
     });
     const text = result.content[0].text;
 
-    // 3a. OpenCode migration summary line present
-    expect(text.toLowerCase()).toMatch(/migrat/);
+    // 3a. OpenCode summary line present (entry overwritten)
+    expect(text.toLowerCase()).toMatch(/updated|added/);
 
     // 3b. Claude error line present, scoped to Claude (not the generic outer catch)
-    expect(text).toMatch(/Error migrating Claude config:/);
+    expect(text).toMatch(/Error.*Claude/i);
 
     // 4. OpenCode config actually rewritten on disk (no rollback)
     const updated = JSON.parse(fs.readFileSync(path.join(tmpProjectDir, "opencode.json"), "utf8"));
@@ -1245,7 +1244,7 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
               "midbrain-memory": {
                 type: "stdio",
                 command: "/usr/local/bin/node",
-                args: ["/Users/me/midbrain-memory-mcp/server.js"],
+                args: ["/Users/me/midbrain-memory-mcp/index.js"],
                 env: { MIDBRAIN_CONFIG_DIR: "/old", KEEP: "me" },
               },
             },
@@ -1287,7 +1286,7 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
         mcpServers: {
           "midbrain-memory": {
             command: "/usr/local/bin/node",
-            args: ["/Users/me/midbrain-memory-mcp/server.js"],
+            args: ["/Users/me/midbrain-memory-mcp/index.js"],
             env: { MIDBRAIN_CONFIG_DIR: "/old", CUSTOM: "v" },
           },
           "sibling": { command: "other", args: [] },
@@ -1315,8 +1314,8 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
 // PRD-010: --version flag + startup version log (G-5..G-8)
 // ---------------------------------------------------------------------------
 
-describe("server.js CLI — --version flag (PRD-010)", () => {
-  /** Spawn `node server.js <args>` and return {status, stdout, stderr}. */
+describe("index.js CLI — --version flag (PRD-010)", () => {
+  /** Spawn `node index.js <args>` and return {status, stdout, stderr}. */
   function spawnServer(args, extraEnv = {}) {
     return spawnSync(process.execPath, [SERVER_PATH, ...args], {
       env: { ...process.env, ...extraEnv },
@@ -1353,8 +1352,8 @@ describe("server.js CLI — --version flag (PRD-010)", () => {
   });
 });
 
-describe("server.js startup — version log line (PRD-010 G-5)", () => {
-  it("G-8: importing server.js via createServer() does NOT trigger process.exit", () => {
+describe("index.js startup — version log line (PRD-010 G-5)", () => {
+  it("G-8: importing index.js via createServer() does NOT trigger process.exit", () => {
     // If --version short-circuit were at module-level instead of inside isMain,
     // this test file itself wouldn't have run. We've already imported
     // createServer at the top without process exiting; calling it again is
@@ -1368,7 +1367,7 @@ describe("server.js startup — version log line (PRD-010 G-5)", () => {
 // PRD-011: install subcommand dispatch (G-1..G-6 + R-1..R-4)
 // ---------------------------------------------------------------------------
 
-describe("server.js CLI — install subcommand (PRD-011)", () => {
+describe("index.js CLI — install subcommand (PRD-011)", () => {
   function spawnServer(args, extraEnv = {}) {
     return spawnSync(process.execPath, [SERVER_PATH, ...args], {
       env: { ...process.env, ...extraEnv },
@@ -1488,10 +1487,10 @@ describe("server.js CLI — install subcommand (PRD-011)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// PRD-011: server.js source-level invariants (R-1..R-4)
+// PRD-011: index.js source-level invariants (R-1..R-4)
 // ---------------------------------------------------------------------------
 
-describe("server.js source invariants (PRD-011 R-1..R-4)", () => {
+describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
   const serverSrc = fs.readFileSync(SERVER_PATH, "utf8");
 
   it("R-1: console.log appears on exactly one line (the --version short-circuit)", () => {
@@ -1518,15 +1517,21 @@ describe("server.js source invariants (PRD-011 R-1..R-4)", () => {
     expect(idxUpdate).toBeGreaterThan(idxCreate);
   });
 
-  it("R-3: no top-level static import of install.mjs", () => {
-    const regex = /^import\s.+from\s+['"]\.\/install\.mjs['"]/m;
-    expect(serverSrc).not.toMatch(regex);
+  it("R-3: setupProject is imported by mcp.mjs (not index.js entry point)", () => {
+    // index.js only imports PKG_VERSION and checkForUpdate from install.mjs
+    expect(serverSrc).not.toMatch(/setupProject/);
+    // mcp.mjs statically imports setupProject
+    const mcpSrc = fs.readFileSync(path.resolve(path.dirname(SERVER_PATH), "mcp.mjs"), "utf8");
+    expect(mcpSrc).toMatch(/^import\s.*setupProject.*from\s+['"]\.\/install\.mjs['"]/m);
   });
 
-  it("R-4: exactly one `await import(\"./install.mjs\")` expression", () => {
-    const matches =
+  it("R-4: index.js statically imports PKG_VERSION + checkForUpdate, dynamically imports runInstallerCli", () => {
+    // Static import for PKG_VERSION and checkForUpdate
+    expect(serverSrc).toMatch(/^import\s.*PKG_VERSION.*from\s+["']\.\/install\.mjs["']/m);
+    // Dynamic import for the interactive installer CLI
+    const dynamicMatches =
       serverSrc.match(/await\s+import\(["']\.\/install\.mjs["']\)/g) || [];
-    expect(matches.length).toBe(1);
+    expect(dynamicMatches.length).toBe(1);
   });
 });
 
@@ -1539,7 +1544,6 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
   let server;
   let projectTmpdir;
   let homeTmpdir;
-  let configTmpdir;
   let origHome;
   let origConfigDir;
   let origMidbrainProjectDir;
@@ -1547,18 +1551,16 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
   beforeEach(async () => {
     projectTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-mcp-proj-"));
     homeTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-mcp-home-"));
-    configTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-mcp-cfg-"));
 
     origHome = process.env.HOME;
     origConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
     origMidbrainProjectDir = process.env.MIDBRAIN_PROJECT_DIR;
     process.env.HOME = homeTmpdir;
-    process.env.MIDBRAIN_CONFIG_DIR = configTmpdir;
+    delete process.env.MIDBRAIN_CONFIG_DIR;
     delete process.env.MIDBRAIN_PROJECT_DIR;
 
-    // Put a key in MIDBRAIN_CONFIG_DIR so setupProject's loadApiKey resolves.
-    fs.writeFileSync(path.join(configTmpdir, ".midbrain-key"), "test-key-g8");
-    fs.chmodSync(path.join(configTmpdir, ".midbrain-key"), 0o600);
+    // Inject key via env var (no file needed).
+    process.env.MIDBRAIN_API_KEY = "test-key-g8";
 
     // Stub ~/.claude.json so setupProject's hasClaude branch runs and
     // writes <project>/.mcp.json. Without this the Claude migration
@@ -1584,9 +1586,9 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
     else process.env.MIDBRAIN_CONFIG_DIR = origConfigDir;
     if (origMidbrainProjectDir !== undefined)
       process.env.MIDBRAIN_PROJECT_DIR = origMidbrainProjectDir;
+    delete process.env.MIDBRAIN_API_KEY;
     fs.rmSync(projectTmpdir, { recursive: true, force: true });
     fs.rmSync(homeTmpdir, { recursive: true, force: true });
-    fs.rmSync(configTmpdir, { recursive: true, force: true });
   });
 
   it("G-8: memory_setup_project still writes key file + .mcp.json with @latest", async () => {

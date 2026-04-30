@@ -46,7 +46,7 @@ npx -y midbrain-memory-mcp@latest --version
 ```
 OpenCode / Claude Code session
   |
-  |-- MCP stdio -----> server.js -------> memory.midbrain.ai
+  |-- MCP stdio -----> index.js -------> memory.midbrain.ai
   |                    (search, browse)    /api/v1/memories/search
   |
   |-- Hooks ----------> capture hooks --> memory.midbrain.ai
@@ -148,24 +148,29 @@ version. The MCP server also logs its version to stderr on startup:
 
 | Variable | Purpose | Set by |
 |---|---|---|
-| `MIDBRAIN_CONFIG_DIR` | Client config dir for key resolution | MCP config `environment`/`env` block |
+| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode` or `claude`) | MCP config `environment`/`env` block |
 | `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution | Project-level MCP config |
 | `MIDBRAIN_API_KEY` | API key (CI/debug fallback only) | User environment |
 
 ### API Key Resolution
 
-Keys are stored in files with `chmod 600`. Resolution order:
+Keys are stored in files with `chmod 600`. The full resolution chain is
+owned by `BaseClient.resolveKey()` in `shared/clients/base.mjs`. All
+components — MCP server, OpenCode plugin, Claude Code hooks — obtain their
+key through `MidbrainApi.create(getClient(id), projectDir)`. Never read
+key files directly or implement resolution manually.
 
-| # | Location | Source |
+Resolution order:
+
+| # | Location | Notes |
 |---|---|---|
-| 1a | `<projectDir>/.midbrain-key` | Per-project (flat) |
-| 1b | `<projectDir>/.midbrain/.midbrain-key` | Per-project (recommended) |
-| 2a | `$MIDBRAIN_PROJECT_DIR/.midbrain-key` | Per-project via env (flat) |
-| 2b | `$MIDBRAIN_PROJECT_DIR/.midbrain/.midbrain-key` | Per-project via env |
-| 3 | `<configDir>/.midbrain-key` | Per-client config dir |
-| 4 | `$MIDBRAIN_CONFIG_DIR/.midbrain-key` | Per-client via env |
+| 1a | `<projectDir>/.midbrain/.midbrain-key` | Per-project (recommended) |
+| 1b | `<projectDir>/.midbrain-key` | Per-project (flat override) |
+| 2a | `$MIDBRAIN_PROJECT_DIR/.midbrain/.midbrain-key` | Per-project via env |
+| 2b | `$MIDBRAIN_PROJECT_DIR/.midbrain-key` | Per-project via env (flat) |
+| 3 | Client key file (e.g. `~/.config/opencode/.midbrain-key`) | Per-client adapter |
+| 4 | `~/.config/midbrain/.midbrain-key` | Global default |
 | 5 | `$MIDBRAIN_API_KEY` | Environment variable (CI only) |
-| 6 | `~/.config/midbrain/.midbrain-key` | Global default |
 
 - `EACCES` on any key file is a hard error (not silent fallthrough)
 - Empty key files are a hard error naming the file path
@@ -184,7 +189,7 @@ Keys are stored in files with `chmod 600`. Resolution order:
       "type": "local",
       "command": ["npx", "-y", "midbrain-memory-mcp@latest"],
       "environment": {
-        "MIDBRAIN_CONFIG_DIR": "/Users/you/.config/opencode"
+        "MIDBRAIN_CLIENT": "opencode"
       },
       "enabled": true
     }
@@ -203,7 +208,7 @@ Keys are stored in files with `chmod 600`. Resolution order:
       "command": "npx",
       "args": ["-y", "midbrain-memory-mcp@latest"],
       "env": {
-        "MIDBRAIN_CONFIG_DIR": "/Users/you/.config/claude"
+        "MIDBRAIN_CLIENT": "claude"
       }
     }
   }
@@ -267,7 +272,7 @@ curl https://memory.midbrain.ai/health         # Is the API reachable?
 
 **Common causes:**
 - Stale npx cache (see version check above)
-- `MIDBRAIN_CONFIG_DIR` not set or pointing to wrong directory
+- `MIDBRAIN_CLIENT` not set or set to wrong value (`opencode` or `claude`)
 - Key file missing or wrong permissions (`chmod 600`)
 - Claude Code: MCP entry in `~/.claude/settings.json` instead of `~/.claude.json`
 
@@ -352,14 +357,30 @@ test suite. Commit is rejected if either fails.
 ### Architecture
 
 ```
-server.js                  MCP server (Node 20, plain JS, stdio)
-install.mjs                Installer CLI + --project mode
-shared/midbrain-common.mjs Shared: key loading, API helpers, constants
-plugin/midbrain-memory.ts  OpenCode plugin (Bun/TS, episodic capture)
-claude-code/               Claude Code hook scripts (episodic capture)
-scripts/                   CI guards (pinned-spec regression)
-tests/                     vitest (unit, integration, installer, doc-regression)
+index.js                       MCP server (Node 20, plain JS, stdio)
+mcp.mjs                        MCP tool definitions (createServer factory)
+install.mjs                    Installer CLI + --project mode
+shared/
+  midbrain-api.mjs             MidbrainApi class — ALL API calls go here
+  logger.mjs                   makeDebugLogger()
+  clients/
+    base.mjs                   BaseClient — owns the full key resolution chain
+    opencode.mjs               OpenCode adapter (JSONC config, plugin copy)
+    claude.mjs                 Claude Code adapter (hooks, .mcp.json)
+    generic.mjs                Fallback adapter
+    registry.mjs               getClient(id), detectClients()
+plugins/
+  opencode/midbrain-memory.ts  OpenCode plugin (Bun/TS, episodic capture)
+  claude-code/                 Claude Code hook scripts (Node 20, episodic capture)
+scripts/                       CI guards (pinned-spec regression)
+tests/                         vitest (unit, integration, installer, doc-regression)
 ```
+
+**The shared client layer is the single source of truth** for key
+resolution and API access. Every component — MCP server tools, the
+OpenCode plugin, and the Claude Code hooks — must call
+`MidbrainApi.create(getClient(id), projectDir)`. Direct `fs.readFile`
+calls for key files or manual env var checks are forbidden.
 
 ### Dependencies
 

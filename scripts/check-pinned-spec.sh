@@ -12,7 +12,7 @@
 #   Matches the bare package name followed by anything NOT in the safe
 #   set, or by end-of-line. Safe set:
 #     @   permits "@latest", "@0.3.1", "@beta" etc.
-#     /   permits "midbrain-memory-mcp/server.js" paths (runtime
+#     /   permits "midbrain-memory-mcp/index.js" paths (runtime
 #         migration handles those cases)
 #     .   permits URL fragments like "midbrain-memory-mcp.git"
 #     -   permits hypothetical sibling packages like
@@ -26,10 +26,7 @@
 #                     contain historical bare references)
 #   - tests/          fixtures for stale-pattern detection contain the
 #                     bare form on purpose
-#   - shared/midbrain-common.mjs
-#                     defines NPM_PACKAGE_NAME = "midbrain-memory-mcp"
-#                     as the single source of truth
-#   - server.js       PRD-005 update hint string: "npm update -g ..."
+#   - index.js      PRD-005 update hint string: "npm update -g ..."
 #   - package.json / package-lock.json
 #                     self-referential (the package IS midbrain-memory-mcp)
 #   - CHANGELOG.md / BACKLOG.md
@@ -52,8 +49,7 @@ RAW=$(grep -rn -E "midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)" \
     --exclude="package.json" --exclude="package-lock.json" \
     --exclude="CHANGELOG.md" --exclude="BACKLOG.md" \
     --exclude="team-rollout-*.md" --exclude="TEAM-ROLLOUT-*.md" \
-    --exclude="midbrain-common.mjs" \
-    --exclude="server.js" \
+    --exclude="index.js" \
     --exclude="check-pinned-spec.sh" \
     . || true)
 
@@ -77,6 +73,7 @@ while IFS= read -r line; do
     -e 's/"midbrain-memory-mcp"/REDACTED_PROSE/g' \
     -e 's/midbrain-memory-mcp\)/REDACTED_URL)/g' \
     -e 's/midbrain-memory-mcp v[0-9]/REDACTED_LOG/g' \
+    -e 's/npm update -g midbrain-memory-mcp/REDACTED_UPDATE/g' \
     -e 's/(cd|clone) midbrain-memory-mcp/\1 REDACTED_DIR/g')
   if printf '%s' "$stripped" | grep -qE 'midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)'; then
     FOUND="${FOUND}${line}
