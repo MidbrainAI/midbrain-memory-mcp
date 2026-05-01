@@ -12,18 +12,18 @@
   "bugs": {
     "url": "https://github.com/MidbrainAI/midbrain-memory-mcp/issues"
   },
-  "main": "server.js",
+  "main": "index.js",
   "type": "module",
   "bin": {
-    "midbrain-memory-mcp": "server.js",
+    "midbrain-memory-mcp": "index.js",
     "midbrain-memory-setup": "install.mjs"
   },
   "files": [
-    "server.js",
+    "index.js",
+    "mcp.mjs",
     "install.mjs",
     "shared/",
-    "plugin/",
-    "claude-code/",
+    "plugins/",
     "README.md"
   ],
   "keywords": [
@@ -40,7 +40,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "node server.js",
+    "start": "node index.js",
     "setup": "node install.mjs",
     "bootstrap": "npm install && husky",
     "lint": "eslint .",

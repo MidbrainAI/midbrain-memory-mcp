@@ -7,21 +7,20 @@
  * Fails silently on any error.
  */
 
-import { readStdinJSON, loadApiKey, storeEpisodic, debugLog } from "./common.mjs";
+import { readStdinJSON, createApi, debugLog } from "./common.mjs";
 
 try {
   const input = await readStdinJSON();
   // input.cwd is confirmed present in Claude Desktop's UserPromptSubmit payload
   if (!input?.prompt) process.exit(0);
 
-  let apiKey;
+  let api;
   try {
-    const { key } = loadApiKey(input.cwd);
-    apiKey = key;
+    api = await createApi(input.cwd);
   } catch {
     debugLog("NO KEY");
     process.exit(0);
   }
 
-  storeEpisodic(apiKey, input.prompt, "user", debugLog);
+  api.storeEpisodic(input.prompt, "user", debugLog);
 } catch { /* fail silently */ }
