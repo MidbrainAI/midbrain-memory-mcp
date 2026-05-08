@@ -10,7 +10,7 @@
 
 import { readFileSync, appendFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
 
 // --- Constants ---
 
@@ -90,6 +90,19 @@ export function loadApiKey(projectDir, configDir) {
   if (projectDir) {
     const result = tryReadKey(join(projectDir, ".midbrain", KEY_FILENAME), `project-arg:${projectDir}/.midbrain`);
     if (result) return result;
+  }
+
+  // 1c. Walk ancestors of projectDir to find nearest .midbrain/.midbrain-key.
+  // Handles worktrees and subdirectories (e.g. cwd = /project/.claude/worktrees/xyz).
+  if (projectDir) {
+    let dir = dirname(projectDir);
+    while (dir !== dirname(dir)) { // stop at filesystem root
+      const result = tryReadKey(join(dir, ".midbrain", KEY_FILENAME), `project-ancestor:${dir}/.midbrain`);
+      if (result) return result;
+      const flatResult = tryReadKey(join(dir, KEY_FILENAME), `project-ancestor:${dir}`);
+      if (flatResult) return flatResult;
+      dir = dirname(dir);
+    }
   }
 
   // 2a. MIDBRAIN_PROJECT_DIR env — flat file (only when no explicit projectDir arg)

@@ -249,6 +249,33 @@ describe("loadApiKey", () => {
     expect(key).toBe("spaced-key");
   });
 
+  it("step 1c: walks ancestors to find .midbrain/.midbrain-key from worktree cwd", () => {
+    // Simulate: project at /tmp/xxx/proj with key, cwd = /tmp/xxx/proj/.claude/worktrees/abc
+    const projDir = path.join(tmpDir, "proj-ancestor");
+    fs.mkdirSync(projDir, { recursive: true });
+    writeKey(path.join(projDir, ".midbrain", KEY_FILENAME), "ancestor-key");
+
+    const worktreeCwd = path.join(projDir, ".claude", "worktrees", "abc");
+    fs.mkdirSync(worktreeCwd, { recursive: true });
+
+    const { key, source } = loadApiKey(worktreeCwd, undefined);
+    expect(key).toBe("ancestor-key");
+    expect(source).toContain("project-ancestor");
+  });
+
+  it("step 1c: ancestor walk finds flat .midbrain-key too", () => {
+    const projDir = path.join(tmpDir, "proj-ancestor-flat");
+    fs.mkdirSync(projDir, { recursive: true });
+    writeKey(path.join(projDir, KEY_FILENAME), "ancestor-flat-key");
+
+    const subDir = path.join(projDir, "deep", "nested", "sub");
+    fs.mkdirSync(subDir, { recursive: true });
+
+    const { key, source } = loadApiKey(subDir, undefined);
+    expect(key).toBe("ancestor-flat-key");
+    expect(source).toContain("project-ancestor");
+  });
+
   it("ignores whitespace-only projectDir arg", () => {
     const cfgDir = path.join(tmpDir, "config");
     fs.mkdirSync(cfgDir);
