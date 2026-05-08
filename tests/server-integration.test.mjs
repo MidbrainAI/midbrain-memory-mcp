@@ -1616,3 +1616,104 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
     expect(text).toMatch(/key|Key|midbrain/);
   });
 });
+
+// ===================================================================
+// memory_setup_project — Codex branch (PRD-008)
+// ===================================================================
+
+describe("memory_setup_project — Codex config integration (PRD-008)", () => {
+  let tmpProjectDir;
+  let savedConfigDir;
+  let savedHome;
+  let fakeHome;
+
+  beforeEach(() => {
+    tmpProjectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-proj-")));
+    savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
+    savedHome = process.env.HOME;
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-home-"));
+    process.env.HOME = fakeHome;
+
+    // Seed Codex detection: create ~/.codex dir
+    fs.mkdirSync(path.join(fakeHome, ".codex"), { recursive: true });
+  });
+
+  afterEach(() => {
+    if (savedConfigDir === undefined) delete process.env.MIDBRAIN_CONFIG_DIR;
+    else process.env.MIDBRAIN_CONFIG_DIR = savedConfigDir;
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    try { fs.rmSync(tmpProjectDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("writes .codex/config.toml with MCP entry when Codex detected", async () => {
+    // Seed a key so setup doesn't fail
+    const keyDir = path.join(fakeHome, ".config", "midbrain");
+    fs.mkdirSync(keyDir, { recursive: true });
+    fs.writeFileSync(path.join(keyDir, ".midbrain-key"), "codex-test-key\n", "utf8");
+
+    process.env.MIDBRAIN_CONFIG_DIR = path.join(fakeHome, ".config", "codex");
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "codex-proj-key" },
+    });
+    const text = result.content[0].text;
+
+    const codexToml = path.join(tmpProjectDir, ".codex", "config.toml");
+    expect(fs.existsSync(codexToml)).toBe(true);
+
+    const TOML = (await import("@iarna/toml")).default;
+    const parsed = TOML.parse(fs.readFileSync(codexToml, "utf8"));
+    const entry = parsed.mcp_servers?.["midbrain-memory"];
+    expect(entry).toBeDefined();
+    expect(entry.command).toBe("npx");
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(tmpProjectDir);
+    expect(entry.env.MIDBRAIN_CONFIG_DIR).toContain("codex");
+  });
+
+  it("output includes ACTION REQUIRED trust message", async () => {
+    process.env.MIDBRAIN_CONFIG_DIR = path.join(fakeHome, ".config", "codex");
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "codex-proj-key" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("ACTION REQUIRED");
+  });
+
+  it("merges into existing project .codex/config.toml", async () => {
+    const TOML = (await import("@iarna/toml")).default;
+    const projCodexDir = path.join(tmpProjectDir, ".codex");
+    fs.mkdirSync(projCodexDir, { recursive: true });
+    const existing = { other_section: { key: "value" } };
+    fs.writeFileSync(path.join(projCodexDir, "config.toml"), TOML.stringify(existing), "utf8");
+
+    process.env.MIDBRAIN_CONFIG_DIR = path.join(fakeHome, ".config", "codex");
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "codex-proj-key" },
+    });
+
+    const codexToml = path.join(tmpProjectDir, ".codex", "config.toml");
+    const parsed = TOML.parse(fs.readFileSync(codexToml, "utf8"));
+    expect(parsed.other_section.key).toBe("value");
+    expect(parsed.mcp_servers["midbrain-memory"]).toBeDefined();
+  });
+
+  it("detects Codex via MIDBRAIN_CONFIG_DIR containing 'codex'", async () => {
+    // Remove ~/.codex dir so detection relies on config dir env
+    fs.rmSync(path.join(fakeHome, ".codex"), { recursive: true, force: true });
+    process.env.MIDBRAIN_CONFIG_DIR = path.join(fakeHome, ".config", "codex");
+
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "codex-proj-key" },
+    });
+    const text = result.content[0].text;
+
+    const codexToml = path.join(tmpProjectDir, ".codex", "config.toml");
+    expect(fs.existsSync(codexToml)).toBe(true);
+  });
+});

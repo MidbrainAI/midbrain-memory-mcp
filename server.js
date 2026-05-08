@@ -37,6 +37,7 @@ import os from "os";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { parse as jsoncParse, modify as jsoncModify, applyEdits } from "jsonc-parser";
+import TOML from "@iarna/toml";
 
 const require = createRequire(import.meta.url);
 // Read package.json version defensively (PRD-010 §3.4 / §10 edge case):
@@ -225,6 +226,7 @@ async function setupProject(projectDir, apiKeyParam) {
     const configDir = process.env[CONFIG_DIR_ENV_VAR] || "";
     const hasOpenCode = configDir.includes("opencode") || existsSync(path.join(HOME, ".config", "opencode"));
     const hasClaude = existsSync(path.join(HOME, ".claude.json"));
+    const hasCodex = configDir.includes("codex") || existsSync(path.join(HOME, ".codex"));
 
     if (hasOpenCode) {
       try {
@@ -247,7 +249,16 @@ async function setupProject(projectDir, apiKeyParam) {
       }
     }
 
-    if (!hasOpenCode && !hasClaude) {
+    if (hasCodex) {
+      try {
+        const cxResult = await writeCodexProjectToml(resolvedDir, HOME);
+        lines.push(...cxResult);
+      } catch (err) {
+        lines.push(`Error writing Codex project config: ${err.message}`);
+      }
+    }
+
+    if (!hasOpenCode && !hasClaude && !hasCodex) {
       lines.push("Warning: could not detect any installed clients. No config written.");
     }
 
@@ -429,6 +440,49 @@ function formatMigrationLine(label, reason) {
       return `${label}: midbrain-memory migrated from ${reason} to @latest`;
     default: return `${label}: ${reason}`;
   }
+}
+
+/**
+ * Write <project>/.codex/config.toml with MCP entry + MIDBRAIN_PROJECT_DIR.
+ * Does NOT write project-level hooks.json (duplicate-write avoidance).
+ * Returns summary lines.
+ */
+async function writeCodexProjectToml(resolvedDir, HOME) {
+  const out = [];
+  const projCodexDir = path.join(resolvedDir, ".codex");
+  const projCodexToml = path.join(projCodexDir, "config.toml");
+  await fs.mkdir(projCodexDir, { recursive: true });
+
+  let obj = {};
+  if (existsSync(projCodexToml)) {
+    try {
+      obj = TOML.parse(await fs.readFile(projCodexToml, "utf8"));
+    } catch (err) {
+      throw new Error(
+        `Failed to parse ${projCodexToml}: ${err.message}. Original NOT modified.`,
+      );
+    }
+  }
+
+  const spec = buildMcpCommandSpec({
+    configDir: path.join(HOME, ".config", "codex"),
+    projectDir: resolvedDir,
+  });
+  obj.mcp_servers = obj.mcp_servers || {};
+  obj.mcp_servers[MCP_KEY] = {
+    command: spec.command,
+    args: [...spec.args],
+    env: { ...spec.env },
+  };
+
+  await fs.writeFile(projCodexToml, TOML.stringify(obj), "utf8");
+  out.push(`${projCodexToml}: midbrain-memory entry added (@latest)`);
+  out.push("");
+  out.push(
+    "ACTION REQUIRED: Run `codex` in this directory and accept the trust prompt, " +
+    "or project memory will NOT load.",
+  );
+  return out;
 }
 
 // ---------------------------------------------------------------------------
