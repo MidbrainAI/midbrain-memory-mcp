@@ -4,8 +4,9 @@ Persistent AI memory for long running agents. An MCP server that gives LLMs
 long-term memory — semantic search, episodic recall, and per-project
 scoping — with automatic capture of every conversation.
 
-Works with [OpenCode](https://opencode.ai) and
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+Works with [OpenCode](https://opencode.ai),
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code), and
+[OpenAI Codex](https://openai.com/index/introducing-codex/).
 
 [![npm version](https://img.shields.io/npm/v/midbrain-memory-mcp.svg?style=flat-square)](https://www.npmjs.com/package/midbrain-memory-mcp)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-brightgreen?style=flat-square)](#prerequisites)
@@ -25,13 +26,13 @@ agent, and generate an API key.
 npx midbrain-memory-mcp install
 ```
 
-The installer detects OpenCode and/or Claude Code on your machine, prompts
-for your API key, writes per-client key files (chmod 600), patches MCP
-configs, and copies plugin files. One command, done.
+The installer detects OpenCode, Claude Code, and/or Codex on your machine,
+prompts for your API key, writes per-client key files (chmod 600), patches
+MCP configs, and copies plugin files. One command, done.
 
 ### 3. Restart and verify
 
-Restart OpenCode or Claude Code. The `memory_search` tool should be
+Restart your AI client (OpenCode / Claude Code / Codex). The `memory_search` tool should be
 available. Send a few messages, then search — your messages should appear.
 
 ```sh
@@ -44,7 +45,7 @@ npx -y midbrain-memory-mcp@latest --version
 ## How It Works
 
 ```
-OpenCode / Claude Code session
+OpenCode / Claude Code / Codex session
   |
   |-- MCP stdio -----> server.js -------> memory.midbrain.ai
   |                    (search, browse)    /api/v1/memories/search
@@ -58,7 +59,8 @@ API and returns scored results as formatted text.
 
 **Capture** — Companion hooks fire on every message and POST to the
 episodic endpoint. Fire-and-forget, never blocks. OpenCode uses a Bun/TS
-plugin; Claude Code uses standalone Node scripts wired to its hook system.
+plugin; Claude Code and Codex use standalone Node scripts wired to their
+hook systems.
 
 **Project Setup** — The LLM calls `memory_setup_project` via MCP to scope
 memory to a specific project, then tells the user to restart.
@@ -357,6 +359,7 @@ install.mjs                Installer CLI + --project mode
 shared/midbrain-common.mjs Shared: key loading, API helpers, constants
 plugin/midbrain-memory.ts  OpenCode plugin (Bun/TS, episodic capture)
 claude-code/               Claude Code hook scripts (episodic capture)
+codex/                     Codex hook scripts (episodic capture)
 scripts/                   CI guards (pinned-spec regression)
 tests/                     vitest (unit, integration, installer, doc-regression)
 ```
@@ -366,6 +369,7 @@ tests/                     vitest (unit, integration, installer, doc-regression)
 | Package | Purpose |
 |---|---|
 | `@modelcontextprotocol/sdk` | MCP protocol |
+| `@iarna/toml` | TOML parsing for Codex config |
 | `jsonc-parser` | JSONC parsing with comment preservation |
 | `zod` | Schema validation |
 
@@ -376,7 +380,7 @@ Dev: eslint, vitest, husky, lint-staged. Not shipped to users.
 ## Prerequisites
 
 - Node >= 20
-- [OpenCode](https://opencode.ai) and/or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and/or [OpenAI Codex](https://openai.com/index/introducing-codex/)
 - A MidBrain API key ([memory.midbrain.ai](https://memory.midbrain.ai))
 
 ## License

@@ -1,15 +1,9 @@
 # MidBrain Memory MCP
 
-## Important: Deferred Codex work
-
-`tasks/PRD-010-npx-install-readiness/codex-followups.md` lists
-Codex-related work deferred from PRD-010 (npx install readiness).
-Before starting any Codex PRD, read that file. Remove this section
-from AGENTS.md when the Codex PRD closes.
-
 ## What This Is
 MCP server + episodic capture hooks for persistent AI memory.
-Supports **OpenCode** (plugin) and **Claude Code** (hook scripts).
+Supports **OpenCode** (plugin), **Claude Code** (hook scripts), and
+**OpenAI Codex** (hook scripts).
 API: https://memory.midbrain.ai
 Published on npm as midbrain-memory-mcp. Version 0.1.0+.
 Install: `npx -y midbrain-memory-mcp@latest` (MCP config command) or
@@ -31,8 +25,11 @@ looks auto-updating but is sticky on the first resolved version.
 - `claude-code/` — Standalone Node 20 scripts for Claude Code's hook system.
   `capture-user.mjs` (UserPromptSubmit) and `capture-assistant.mjs` (Stop).
   `common.mjs` re-exports from `../shared/midbrain-common.mjs`. No npm deps.
-- `install.mjs` — Automated installer. Detects OpenCode/Claude Code, writes
-  configs, copies plugin + shared lib, sets up API key file (chmod 600).
+- `codex/` — Standalone Node 20 scripts for Codex's hook system. Same DI
+  seam pattern as claude-code/. Stop hook writes `{}` to stdout (Codex
+  requires JSON on stdout for exit 0). Config: `~/.codex/config.toml` (TOML).
+- `install.mjs` — Automated installer. Detects OpenCode/Claude Code/Codex,
+  writes configs, copies plugin + shared lib, sets up API key file (chmod 600).
 
 ## API Reference
 - Auth: `Authorization: Bearer <key>` header
@@ -70,6 +67,7 @@ looks auto-updating but is sticky on the first resolved version.
   - Global default: ~/.config/midbrain/.midbrain-key
   - OpenCode client: ~/.config/opencode/.midbrain-key
   - Claude Code client: ~/.config/claude/.midbrain-key
+  - Codex client: ~/.config/codex/.midbrain-key
   - Project override (flat): <projectDir>/.midbrain-key
   - Project override (recommended): <projectDir>/.midbrain/.midbrain-key
 
@@ -79,7 +77,7 @@ To scope episodic memory to a project-specific agent:
   2. Place the API key: echo "your-key" > <project>/.midbrain/.midbrain-key
   3. Set permissions: chmod 600 <project>/.midbrain/.midbrain-key
   4. Add to .gitignore: .midbrain-key
-Both OpenCode and Claude Code will automatically detect the project key.
+All three clients (OpenCode, Claude Code, Codex) will automatically detect the project key.
 No hook reconfiguration, no env vars, no .mcp.json changes needed for the write path.
 
 ### Per-Project Search (MCP Server)
