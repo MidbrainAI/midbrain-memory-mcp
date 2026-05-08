@@ -82,6 +82,7 @@ describe("captureUser", () => {
     expect(args[1]).toBe("hi");
     expect(args[2]).toBe("user");
     expect(typeof args[3]).toBe("function");
+    expect(args[4]).toBe("codex");
   });
 
   it("does NOT POST when prompt is empty string", async () => {
@@ -157,6 +158,7 @@ describe("captureAssistant", () => {
     const args = deps.storeEpisodic.mock.calls[0];
     expect(args[1]).toBe("hello back");
     expect(args[2]).toBe("assistant");
+    expect(args[4]).toBe("codex");
   });
 
   it("does NOT POST when stop_hook_active is true", async () => {

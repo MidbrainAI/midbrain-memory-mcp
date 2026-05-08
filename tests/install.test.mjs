@@ -62,6 +62,7 @@ const {
   buildCodexHooks,
   shellQuote,
   writeCodexProjectConfig,
+  hasCodexBinary,
   PATHS,
   MCP_KEY,
 } = await import("../install.mjs");
@@ -2015,13 +2016,17 @@ describe("detectTools — Codex (PRD-008)", () => {
     expect(tools.codex).toBe(false);
   });
 
-  it("short-circuits Codex on Windows (process.platform)", () => {
+  it("short-circuits Codex on Windows (process.platform) with zero fs access", () => {
     const origPlatform = process.platform;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
     try {
       existsFor(PATHS.codexConfigToml, PATHS.codexDir);
       const tools = detectTools();
       expect(tools.codex).toBe(false);
+      const codexCalls = existsSync.mock.calls
+        .map(([p]) => p)
+        .filter((p) => p === PATHS.codexConfigToml || p === PATHS.codexDir);
+      expect(codexCalls).toHaveLength(0);
     } finally {
       Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
     }
@@ -2182,6 +2187,7 @@ describe("installCodex", () => {
     expect(summary.some((s) => s.includes("config.toml"))).toBe(true);
     expect(summary.some((s) => s.includes("hooks.json"))).toBe(true);
     expect(summary.some((s) => s.includes("Restart"))).toBe(true);
+    expect(summary.some((s) => s.includes("Enabled experimental Codex hooks feature"))).toBe(true);
   });
 
   it("backs up existing config.toml before overwriting", async () => {
@@ -2229,6 +2235,26 @@ describe("installCodex", () => {
     fs.readFile.mockResolvedValue("invalid toml = = =");
     const summary = [];
     await expect(installCodex(summary, "test-key")).rejects.toThrow(/Failed to parse/);
+  });
+});
+
+// ===================================================================
+// hasCodexBinary (AC-7b)
+// ===================================================================
+
+describe("hasCodexBinary", () => {
+  it("returns a boolean", () => {
+    expect(typeof hasCodexBinary()).toBe("boolean");
+  });
+
+  it("returns false on Windows", () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      expect(hasCodexBinary()).toBe(false);
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
   });
 });
 

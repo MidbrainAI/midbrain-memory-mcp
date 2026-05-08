@@ -417,6 +417,27 @@ describe("storeEpisodic", () => {
 
     await vi.waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR")));
   });
+
+  it("includes source field in body when provided", async () => {
+    const log = vi.fn();
+    storeEpisodic("test-key", "hi", "user", log, "codex");
+
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body).toEqual({ text: "hi", role: "user", source: "codex" });
+  });
+
+  it("omits source field when not provided", async () => {
+    const log = vi.fn();
+    storeEpisodic("test-key", "hi", "user", log);
+
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body).toEqual({ text: "hi", role: "user" });
+    expect(body).not.toHaveProperty("source");
+  });
 });
 
 // ---------------------------------------------------------------------------

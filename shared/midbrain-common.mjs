@@ -187,16 +187,19 @@ function tryReadKey(filePath, source) {
  * @param {string} text - The message text to store.
  * @param {"user"|"assistant"} role - The role of the message author.
  * @param {function(string): void} debugLogFn - A logging function for debug output.
+ * @param {string} [source] - Optional client identifier (e.g. "codex").
  */
-export function storeEpisodic(apiKey, text, role, debugLogFn) {
+export function storeEpisodic(apiKey, text, role, debugLogFn, source) {
   debugLogFn(`STORE: role=${role} textLen=${text.length}`);
+  const body = { text, role };
+  if (source) body.source = source;
   fetch(EPISODIC_ENDPOINT, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({ text, role }),
+    body: JSON.stringify(body),
   })
     .then((r) => debugLogFn(`STORED: status=${r.status}`))
     .catch((e) => debugLogFn(`STORE ERROR: ${e instanceof Error ? e.message : String(e)}`));

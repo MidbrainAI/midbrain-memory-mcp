@@ -21,6 +21,7 @@
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
+import { execFileSync } from 'child_process';
 import path from 'path';
 import os from 'os';
 import readline from 'readline';
@@ -266,6 +267,15 @@ function detectTools() {
     // PRD-008: Codex hooks are POSIX-only (shell commands). Windows short-circuit.
     codex: !isWin && (existsSync(PATHS.codexConfigToml) || existsSync(PATHS.codexDir)),
   };
+}
+
+/** AC-7b: check if codex binary is on PATH (POSIX only). */
+function hasCodexBinary() {
+  if (process.platform === 'win32') return false;
+  try {
+    execFileSync('/usr/bin/env', ['sh', '-c', 'command -v codex'], { stdio: 'pipe' });
+    return true;
+  } catch { return false; }
 }
 
 // ---------------------------------------------------------------------------
@@ -658,6 +668,7 @@ async function patchCodexConfigToml(summary, opts = {}) {
     : { command: 'npx', args: ['-y', 'midbrain-memory-mcp@latest'], env: { MIDBRAIN_CONFIG_DIR: PATHS.codexClientDir } };
 
   patchCodexMcpServer(obj, entry);
+  const wasEnabled = obj.features?.codex_hooks === true;
   patchCodexFeatures(obj);
   await writeCodexToml(PATHS.codexConfigToml, obj);
 
@@ -665,6 +676,11 @@ async function patchCodexConfigToml(summary, opts = {}) {
     existed
       ? `  ~ MCP server + codex_hooks: updated in ~/.codex/config.toml`
       : `  + MCP server + codex_hooks: written to ~/.codex/config.toml`,
+  );
+  summary.push(
+    wasEnabled
+      ? `  Enabled experimental Codex hooks feature (was already enabled)`
+      : `  Enabled experimental Codex hooks feature`,
   );
   if (existed) {
     summary.push(
@@ -724,7 +740,7 @@ function printSummary(tools, keyLines, opencodeLines, claudeLines, codexLines = 
     console.log('');
   }
 
-  if (tools.codex) {
+  if (tools.codex || codexLines.length > 0) {
     console.log('Codex:');
     codexLines.forEach((l) => console.log(l));
     console.log('');
@@ -780,6 +796,9 @@ async function main(opts = {}) {
     } catch (err) {
       codexLines.push(`  ! Codex install error: ${err.message}`);
     }
+  } else if (!tools.codex && hasCodexBinary()) {
+    codexLines.push(`  i Codex CLI found on PATH but ~/.codex/ does not exist.`);
+    codexLines.push(`    Run \`codex\` once to initialize, then re-run this installer.`);
   }
 
   printSummary(tools, keyLines, opencodeLines, claudeLines, codexLines);
@@ -1183,6 +1202,7 @@ export {
   buildCodexHooks,
   shellQuote,
   writeCodexProjectConfig,
+  hasCodexBinary,
   main,
   printHelp,
   runInstallerCli,

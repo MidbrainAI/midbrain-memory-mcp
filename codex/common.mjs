@@ -45,7 +45,7 @@ async function postEpisodic(text, role, cwd, deps) {
   try {
     const projectDir = typeof cwd === "string" && cwd.trim() ? cwd : undefined;
     const { key } = deps.loadApiKey(projectDir, CODEX_CONFIG_DIR);
-    deps.storeEpisodic(key, text, role, deps.debugLog);
+    deps.storeEpisodic(key, text, role, deps.debugLog, "codex");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     try { deps.debugLog(`CODEX CAPTURE ERROR (${role}): ${msg}`); } catch { /* swallow */ }
