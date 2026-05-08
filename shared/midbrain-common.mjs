@@ -127,7 +127,7 @@ export function loadApiKey(projectDir, configDir) {
     const result = tryReadKey(GLOBAL_KEY_PATH, `global:${GLOBAL_KEY_PATH}`);
     if (result) {
       // WARN: project-tier was specified but fell through to global
-      if (hadProjectDir) {
+      if (hadProjectDir && !process.env.MIDBRAIN_QUIET_FALLBACK) {
         console.error(
           `[midbrain] WARN: project dir "${projectDir}" has no .midbrain-key — ` +
           `using global key from ${GLOBAL_KEY_PATH}. ` +

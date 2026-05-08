@@ -314,6 +314,25 @@ describe("loadApiKey", () => {
     stderrSpy.mockRestore();
   });
 
+  it("suppresses WARN when MIDBRAIN_QUIET_FALLBACK is set", () => {
+    const projDir = path.join(tmpDir, "proj-quiet-fallback");
+    fs.mkdirSync(projDir);
+    writeKey(GLOBAL_KEY_PATH, "global-key");
+
+    process.env.MIDBRAIN_QUIET_FALLBACK = "1";
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      loadApiKey(projDir, undefined);
+      const warnCalls = stderrSpy.mock.calls.filter(
+        (args) => typeof args[0] === "string" && args[0].includes("WARN"),
+      );
+      expect(warnCalls).toHaveLength(0);
+    } finally {
+      delete process.env.MIDBRAIN_QUIET_FALLBACK;
+      stderrSpy.mockRestore();
+    }
+  });
+
   it("throws on EACCES (permission denied) for key file", () => {
     const projDir = path.join(tmpDir, "proj-perm");
     fs.mkdirSync(projDir);
