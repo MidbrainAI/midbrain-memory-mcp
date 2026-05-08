@@ -24,6 +24,7 @@
     "shared/",
     "plugin/",
     "claude-code/",
+    "codex/",
     "README.md"
   ],
   "keywords": [
@@ -34,7 +35,9 @@
     "opencode",
     "claude",
     "episodic",
-    "coding-agent"
+    "coding-agent",
+    "codex-cli",
+    "openai-codex"
   ],
   "engines": {
     "node": ">=20"
@@ -54,6 +57,7 @@
     "*.{js,mjs}": "eslint --max-warnings 0"
   },
   "dependencies": {
+    "@iarna/toml": "^2.2.5",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "jsonc-parser": "^3.3.1",
     "zod": "^3.23.8"
