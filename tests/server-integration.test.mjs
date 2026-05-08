@@ -1654,12 +1654,10 @@ describe("memory_setup_project — Codex config integration (PRD-008)", () => {
     fs.writeFileSync(path.join(keyDir, ".midbrain-key"), "codex-test-key\n", "utf8");
 
     process.env.MIDBRAIN_CONFIG_DIR = path.join(fakeHome, ".config", "codex");
-    const result = await client.callTool({
+    await client.callTool({
       name: "memory_setup_project",
       arguments: { project_dir: tmpProjectDir, api_key: "codex-proj-key" },
     });
-    const text = result.content[0].text;
-
     const codexToml = path.join(tmpProjectDir, ".codex", "config.toml");
     expect(fs.existsSync(codexToml)).toBe(true);
 
@@ -1707,12 +1705,10 @@ describe("memory_setup_project — Codex config integration (PRD-008)", () => {
     fs.rmSync(path.join(fakeHome, ".codex"), { recursive: true, force: true });
     process.env.MIDBRAIN_CONFIG_DIR = path.join(fakeHome, ".config", "codex");
 
-    const result = await client.callTool({
+    await client.callTool({
       name: "memory_setup_project",
       arguments: { project_dir: tmpProjectDir, api_key: "codex-proj-key" },
     });
-    const text = result.content[0].text;
-
     const codexToml = path.join(tmpProjectDir, ".codex", "config.toml");
     expect(fs.existsSync(codexToml)).toBe(true);
   });

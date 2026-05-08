@@ -460,6 +460,7 @@ async function writeCodexProjectToml(resolvedDir, HOME) {
     } catch (err) {
       throw new Error(
         `Failed to parse ${projCodexToml}: ${err.message}. Original NOT modified.`,
+        { cause: err },
       );
     }
   }
