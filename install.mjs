@@ -26,6 +26,7 @@ import os from 'os';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { parse as jsoncParse, modify as jsoncModify, applyEdits } from 'jsonc-parser';
+import TOML from '@iarna/toml';
 import {
   buildMcpCommandSpec,
   toOpenCodeShape,
@@ -80,6 +81,11 @@ const PATHS = {
   claudeKey:        path.join(HOME, '.config', 'claude', KEY_FILENAME),
   claudeJson:       path.join(HOME, '.claude.json'),
   claudeSettings:   path.join(HOME, '.claude', 'settings.json'),
+  codexKey:         path.join(HOME, '.config', 'codex', KEY_FILENAME),
+  codexClientDir:   path.join(HOME, '.config', 'codex'),
+  codexDir:         path.join(HOME, '.codex'),
+  codexConfigToml:  path.join(HOME, '.codex', 'config.toml'),
+  codexHooksJson:   path.join(HOME, '.codex', 'hooks.json'),
 };
 
 const JSONC_FORMAT = { tabSize: 2, insertSpaces: true, eol: '\n' };
@@ -152,6 +158,64 @@ async function backup(filePath) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Codex TOML patcher helpers (PRD-008)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure transform: ensure [mcp_servers.midbrain-memory] is set on a TOML object.
+ * Mutates and returns `obj`. No I/O.
+ * @param {object} obj - Parsed TOML object (or empty object).
+ * @param {object} entry - MCP entry: { command, args, env }.
+ * @returns {object} The same `obj`, mutated.
+ */
+function patchCodexMcpServer(obj, entry) {
+  obj.mcp_servers = obj.mcp_servers || {};
+  obj.mcp_servers[MCP_KEY] = entry;
+  return obj;
+}
+
+/**
+ * Pure transform: ensure [features].codex_hooks = true. Other features preserved.
+ * @param {object} obj - Parsed TOML object.
+ * @returns {object} The same `obj`, mutated.
+ */
+function patchCodexFeatures(obj) {
+  obj.features = obj.features || {};
+  obj.features.codex_hooks = true;
+  return obj;
+}
+
+/**
+ * Read and parse a Codex TOML config file. Returns {} when file does not exist.
+ * Throws a clear error on parse failure — caller must NOT overwrite the file.
+ * @param {string} filePath - Absolute path to the TOML file.
+ * @returns {Promise<object>}
+ */
+async function readCodexToml(filePath) {
+  if (!existsSync(filePath)) return {};
+  const raw = await fs.readFile(filePath, 'utf8');
+  try {
+    return TOML.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `Failed to parse ${filePath}: ${err.message}. ` +
+      `Original file NOT modified. No backup created (would overwrite good data).`,
+      { cause: err }
+    );
+  }
+}
+
+/**
+ * Stringify and write a TOML object to a file (creates dirs if needed).
+ * @param {string} filePath
+ * @param {object} obj
+ */
+async function writeCodexToml(filePath, obj) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, TOML.stringify(obj), 'utf8');
+}
+
 /** Write a key to a file with chmod 600 (creates dirs if needed). */
 async function writeKeyFile(filePath, key) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -191,6 +255,7 @@ async function promptYesNo(question) {
 // ---------------------------------------------------------------------------
 function detectTools() {
   const opencodeConfig = resolveOpencodeConfig(PATHS.opencodeDir);
+  const isWin = process.platform === 'win32';
   return {
     // PRD-010 fresh-install: detect OpenCode via config dir existence
     // too, so the starter-config path in installOpenCode is reachable
@@ -198,6 +263,8 @@ function detectTools() {
     // created yet.
     opencode: existsSync(opencodeConfig) || existsSync(PATHS.opencodeDir),
     claudeCode: existsSync(PATHS.claudeJson) || existsSync(PATHS.claudeSettings),
+    // PRD-008: Codex hooks are POSIX-only (shell commands). Windows short-circuit.
+    codex: !isWin && (existsSync(PATHS.codexConfigToml) || existsSync(PATHS.codexDir)),
   };
 }
 
@@ -278,8 +345,21 @@ async function resolveKeys(tools) {
     if (existing) console.log(`Found key: ${existing.source}`);
   }
 
+  // Codex reuses an existing key (any client) or prompts if sole client detected
+  if (tools.codex) {
+    const existingCx = await findExistingKey(PATHS.codexKey);
+    if (existingCx) {
+      keys.codex = existingCx.key;
+      console.log(`Found Codex key: ${existingCx.source}`);
+    } else {
+      const firstExisting = keys.opencode || keys.claudeCode;
+      keys.codex = firstExisting || await prompt('Enter your MidBrain API key: ');
+      if (!keys.codex) throw new Error('API key is required. Aborting.');
+    }
+  }
+
   // Global fallback uses the first available key
-  keys.global = keys.opencode || keys.claudeCode;
+  keys.global = keys.opencode || keys.claudeCode || keys.codex;
   return keys;
 }
 
@@ -501,9 +581,131 @@ async function installClaudeCode(summary, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 5c: Codex installation (PRD-008)
+// ---------------------------------------------------------------------------
+
+/** POSIX shell single-quote a value, escaping embedded single quotes. */
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Build the Codex hook command shell string.
+ * Format: `env MIDBRAIN_CONFIG_DIR=<q> MIDBRAIN_QUIET_FALLBACK=1 <q-node> <q-script>`
+ */
+function buildCodexHookCommand(scriptName) {
+  const scriptPath = path.join(SCRIPT_DIR, 'codex', scriptName);
+  return [
+    'env',
+    `MIDBRAIN_CONFIG_DIR=${shellQuote(PATHS.codexClientDir)}`,
+    'MIDBRAIN_QUIET_FALLBACK=1',
+    shellQuote(process.execPath),
+    shellQuote(scriptPath),
+  ].join(' ');
+}
+
+/**
+ * Build the ~/.codex/hooks.json object shape for UserPromptSubmit + Stop.
+ * Matches Codex hook schema (timeout in seconds).
+ */
+function buildCodexHooks() {
+  return {
+    hooks: {
+      UserPromptSubmit: [{
+        hooks: [{
+          type: 'command',
+          command: buildCodexHookCommand('capture-user.mjs'),
+          timeout: 10,
+        }],
+      }],
+      Stop: [{
+        hooks: [{
+          type: 'command',
+          command: buildCodexHookCommand('capture-assistant.mjs'),
+          timeout: 10,
+        }],
+      }],
+    },
+  };
+}
+
+/**
+ * Timestamped backup: copy existing config.toml and hooks.json to
+ * <path>.bak.<ISO-timestamp>. Never overwrites existing .bak files.
+ */
+async function backupCodexFiles() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  for (const f of [PATHS.codexConfigToml, PATHS.codexHooksJson]) {
+    if (existsSync(f)) {
+      await fs.copyFile(f, `${f}.bak.${stamp}`);
+    }
+  }
+}
+
+/**
+ * Read-parse-patch-write ~/.codex/config.toml:
+ *   - [mcp_servers.midbrain-memory] with npx @latest command
+ *   - [features] codex_hooks = true
+ * Corrupt TOML → hard error, no overwrite, no .bak of corrupt file.
+ */
+async function patchCodexConfigToml(summary, opts = {}) {
+  const { isDev = false } = opts;
+  const existed = existsSync(PATHS.codexConfigToml);
+  const obj = await readCodexToml(PATHS.codexConfigToml);
+
+  const entry = isDev
+    ? { command: process.execPath, args: [path.join(SCRIPT_DIR, 'server.js')], env: { MIDBRAIN_CONFIG_DIR: PATHS.codexClientDir } }
+    : { command: 'npx', args: ['-y', 'midbrain-memory-mcp@latest'], env: { MIDBRAIN_CONFIG_DIR: PATHS.codexClientDir } };
+
+  patchCodexMcpServer(obj, entry);
+  patchCodexFeatures(obj);
+  await writeCodexToml(PATHS.codexConfigToml, obj);
+
+  summary.push(
+    existed
+      ? `  ~ MCP server + codex_hooks: updated in ~/.codex/config.toml`
+      : `  + MCP server + codex_hooks: written to ~/.codex/config.toml`,
+  );
+  if (existed) {
+    summary.push(
+      `  ! Note: comments in ~/.codex/config.toml were NOT preserved on round-trip. See backup file.`,
+    );
+  }
+}
+
+/**
+ * Write ~/.codex/hooks.json with UserPromptSubmit + Stop handlers.
+ */
+async function writeCodexHooksJson(summary) {
+  await fs.mkdir(PATHS.codexDir, { recursive: true });
+  const data = buildCodexHooks();
+  await fs.writeFile(
+    PATHS.codexHooksJson,
+    JSON.stringify(data, null, 2) + '\n',
+    'utf8',
+  );
+  summary.push(`  + Hooks written to ~/.codex/hooks.json`);
+}
+
+/**
+ * Orchestrator: key → backup → config.toml → hooks.json.
+ * @param {string[]} summary - lines appended in place.
+ * @param {string} key - API key to write to the codex client key file.
+ * @param {{isDev?: boolean}} [opts]
+ */
+async function installCodex(summary, key, opts = {}) {
+  await writeKeyFile(PATHS.codexKey, key);
+  summary.push(`  + Key written to ~/.config/codex/${KEY_FILENAME} (chmod 600)`);
+  await backupCodexFiles();
+  await patchCodexConfigToml(summary, opts);
+  await writeCodexHooksJson(summary);
+  summary.push(`  -> Restart Codex CLI / IDE to apply changes`);
+}
+
+// ---------------------------------------------------------------------------
 // Step 6: Print summary
 // ---------------------------------------------------------------------------
-function printSummary(tools, keyLines, opencodeLines, claudeLines) {
+function printSummary(tools, keyLines, opencodeLines, claudeLines, codexLines = []) {
   console.log('');
   console.log('MidBrain Memory MCP — Installation Complete');
   console.log('');
@@ -522,9 +724,15 @@ function printSummary(tools, keyLines, opencodeLines, claudeLines) {
     console.log('');
   }
 
-  if (!tools.opencode && !tools.claudeCode) {
+  if (tools.codex) {
+    console.log('Codex:');
+    codexLines.forEach((l) => console.log(l));
+    console.log('');
+  }
+
+  if (!tools.opencode && !tools.claudeCode && !tools.codex) {
     console.log('No supported AI tools detected.');
-    console.log('  Install OpenCode or Claude Code, then re-run this script.');
+    console.log('  Install OpenCode, Claude Code, or OpenAI Codex, then re-run this script.');
   }
 }
 
@@ -535,8 +743,8 @@ async function main(opts = {}) {
   const { isDev = false } = opts;
   const tools = detectTools();
 
-  if (!tools.opencode && !tools.claudeCode) {
-    console.log('No supported AI tools detected (OpenCode or Claude Code).');
+  if (!tools.opencode && !tools.claudeCode && !tools.codex) {
+    console.log('No supported AI tools detected (OpenCode, Claude Code, or Codex).');
     console.log('Install one of them and re-run: node install.mjs');
     process.exit(0);
   }
@@ -548,6 +756,7 @@ async function main(opts = {}) {
 
   const opencodeLines = [];
   const claudeLines = [];
+  const codexLines = [];
 
   if (tools.opencode) {
     try {
@@ -565,7 +774,15 @@ async function main(opts = {}) {
     }
   }
 
-  printSummary(tools, keyLines, opencodeLines, claudeLines);
+  if (tools.codex) {
+    try {
+      await installCodex(codexLines, keys.codex, { isDev });
+    } catch (err) {
+      codexLines.push(`  ! Codex install error: ${err.message}`);
+    }
+  }
+
+  printSummary(tools, keyLines, opencodeLines, claudeLines, codexLines);
 }
 
 // ---------------------------------------------------------------------------
@@ -601,6 +818,10 @@ async function resolveProjectKey(projectDir) {
   const ccKey = await readKeyFile(PATHS.claudeKey);
   if (ccKey) return { key: ccKey, source: PATHS.claudeKey };
 
+  // Codex client key (PRD-008)
+  const cxKey = await readKeyFile(PATHS.codexKey);
+  if (cxKey) return { key: cxKey, source: PATHS.codexKey };
+
   // Global fallback
   const globalKey = await readKeyFile(PATHS.globalKey);
   if (globalKey) return { key: globalKey, source: PATHS.globalKey };
@@ -612,6 +833,50 @@ async function resolveProjectKey(projectDir) {
   }
 
   return null;
+}
+
+/**
+ * Write/merge <project>/.codex/config.toml with the MCP entry + MIDBRAIN_PROJECT_DIR.
+ * Does NOT write <project>/.codex/hooks.json (duplicate-write avoidance).
+ * Emits ACTION REQUIRED warning; sets exitCode=2 when trust unconfirmed.
+ *
+ * @param {string} projectDir - Already-realpathed project root.
+ * @param {string[]} warnings - Appended in place.
+ * @param {string[]} configsWritten - Appended in place.
+ * @param {{isDev?: boolean}} [opts]
+ */
+async function writeCodexProjectConfig(projectDir, warnings, configsWritten, opts = {}) {
+  const { isDev = false } = opts;
+  const projCodexDir = path.join(projectDir, '.codex');
+  const projCodexToml = path.join(projCodexDir, 'config.toml');
+  await fs.mkdir(projCodexDir, { recursive: true });
+
+  let obj = {};
+  if (existsSync(projCodexToml)) {
+    try {
+      obj = TOML.parse(await fs.readFile(projCodexToml, 'utf8'));
+    } catch (err) {
+      throw new Error(
+        `Failed to parse ${projCodexToml}: ${err.message}. Original NOT modified.`,
+        { cause: err },
+      );
+    }
+  }
+
+  const entry = isDev
+    ? { command: process.execPath, args: [path.join(SCRIPT_DIR, 'server.js')], env: { MIDBRAIN_CONFIG_DIR: PATHS.codexClientDir, MIDBRAIN_PROJECT_DIR: projectDir } }
+    : { command: 'npx', args: ['-y', 'midbrain-memory-mcp@latest'], env: { MIDBRAIN_CONFIG_DIR: PATHS.codexClientDir, MIDBRAIN_PROJECT_DIR: projectDir } };
+
+  patchCodexMcpServer(obj, entry);
+  await fs.writeFile(projCodexToml, TOML.stringify(obj), 'utf8');
+  configsWritten.push('.codex/config.toml');
+  console.error(`[project] wrote: ${projCodexToml}`);
+
+  warnings.push(
+    'ACTION REQUIRED: Run `codex` in this directory and accept the trust prompt, ' +
+    'or project memory will NOT load.',
+  );
+  process.exitCode = 2;
 }
 
 /**
@@ -730,8 +995,12 @@ async function projectSetup(rawPath, opts = {}) {
     }
   }
 
-  if (!tools.opencode && !tools.claudeCode) {
-    warnings.push('No supported AI clients detected (OpenCode or Claude Code). No configs written.');
+  if (tools.codex) {
+    await writeCodexProjectConfig(projectDir, warnings, configsWritten, { isDev });
+  }
+
+  if (!tools.opencode && !tools.claudeCode && !tools.codex) {
+    warnings.push('No supported AI clients detected (OpenCode, Claude Code, or Codex). No configs written.');
     console.error('[project] WARN: no clients detected');
   }
 
@@ -746,7 +1015,7 @@ async function projectSetup(rawPath, opts = {}) {
     restart_required: true,
     warnings,
   };
-  console.error('[project] Setup complete. Restart OpenCode / Claude Code for the new project memory to take effect.');
+  console.error('[project] Setup complete. Restart your AI client for the new project memory to take effect.');
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -904,6 +1173,16 @@ export {
   installClaudeProjectLocal,
   buildOpenCodeMcpEntry,
   buildClaudeMcpEntry,
+  // Codex (PRD-008)
+  installCodex,
+  patchCodexMcpServer,
+  patchCodexFeatures,
+  readCodexToml,
+  writeCodexToml,
+  buildCodexHookCommand,
+  buildCodexHooks,
+  shellQuote,
+  writeCodexProjectConfig,
   main,
   printHelp,
   runInstallerCli,

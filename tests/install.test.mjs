@@ -52,6 +52,16 @@ const {
   installClaudeSettings,
   installClaudeCode,
   installClaudeProjectLocal,
+  // Codex (PRD-008)
+  installCodex,
+  patchCodexMcpServer,
+  patchCodexFeatures,
+  readCodexToml,
+  writeCodexToml,
+  buildCodexHookCommand,
+  buildCodexHooks,
+  shellQuote,
+  writeCodexProjectConfig,
   PATHS,
   MCP_KEY,
 } = await import("../install.mjs");
@@ -1880,5 +1890,502 @@ describe("runInstallerCli (PRD-011)", () => {
   it("exports main from install.mjs (PRD-011 AC-1 sub-item)", async () => {
     const mod = await import("../install.mjs");
     expect(typeof mod.main).toBe("function");
+  });
+});
+
+// ===================================================================
+// Codex TOML patcher helpers (PRD-008)
+// ===================================================================
+
+describe("patchCodexMcpServer", () => {
+  it("sets mcp_servers.midbrain-memory on empty object", () => {
+    const obj = {};
+    const entry = { command: "npx", args: ["-y", "midbrain-memory-mcp@latest"], env: {} };
+    const result = patchCodexMcpServer(obj, entry);
+    expect(result.mcp_servers["midbrain-memory"]).toEqual(entry);
+    expect(result).toBe(obj);
+  });
+
+  it("preserves existing mcp_servers entries", () => {
+    const obj = { mcp_servers: { other: { command: "other" } } };
+    const entry = { command: "npx", args: ["-y", "midbrain-memory-mcp@latest"], env: {} };
+    patchCodexMcpServer(obj, entry);
+    expect(obj.mcp_servers.other).toEqual({ command: "other" });
+    expect(obj.mcp_servers["midbrain-memory"]).toEqual(entry);
+  });
+
+  it("overwrites existing midbrain-memory entry", () => {
+    const obj = { mcp_servers: { "midbrain-memory": { command: "old" } } };
+    const entry = { command: "new" };
+    patchCodexMcpServer(obj, entry);
+    expect(obj.mcp_servers["midbrain-memory"]).toEqual({ command: "new" });
+  });
+});
+
+describe("patchCodexFeatures", () => {
+  it("sets codex_hooks = true on empty object", () => {
+    const obj = {};
+    const result = patchCodexFeatures(obj);
+    expect(result.features.codex_hooks).toBe(true);
+    expect(result).toBe(obj);
+  });
+
+  it("preserves existing features", () => {
+    const obj = { features: { other_feature: false } };
+    patchCodexFeatures(obj);
+    expect(obj.features.other_feature).toBe(false);
+    expect(obj.features.codex_hooks).toBe(true);
+  });
+});
+
+describe("readCodexToml", () => {
+  beforeEach(resetMocks);
+
+  it("returns {} when file does not exist", async () => {
+    existsSync.mockReturnValue(false);
+    const result = await readCodexToml("/nonexistent/config.toml");
+    expect(result).toEqual({});
+  });
+
+  it("parses valid TOML content", async () => {
+    existsFor(PATHS.codexConfigToml);
+    fs.readFile.mockResolvedValue('[features]\ncodex_hooks = true\n');
+    const result = await readCodexToml(PATHS.codexConfigToml);
+    expect(result.features.codex_hooks).toBe(true);
+  });
+
+  it("throws on corrupt TOML with clear error", async () => {
+    existsFor(PATHS.codexConfigToml);
+    fs.readFile.mockResolvedValue("not valid toml = = =");
+    await expect(readCodexToml(PATHS.codexConfigToml)).rejects.toThrow(/Failed to parse/);
+  });
+
+  it("does NOT overwrite file on corrupt TOML", async () => {
+    existsFor(PATHS.codexConfigToml);
+    fs.readFile.mockResolvedValue("not valid toml = = =");
+    try { await readCodexToml(PATHS.codexConfigToml); } catch { /* expected */ }
+    expect(fs.writeFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("writeCodexToml", () => {
+  beforeEach(resetMocks);
+
+  it("creates parent dirs and writes TOML content", async () => {
+    await writeCodexToml("/path/to/config.toml", { features: { codex_hooks: true } });
+    expect(fs.mkdir).toHaveBeenCalledWith("/path/to", { recursive: true });
+    const writeCall = fs.writeFile.mock.calls[0];
+    expect(writeCall[0]).toBe("/path/to/config.toml");
+    expect(writeCall[1]).toContain("codex_hooks = true");
+    expect(writeCall[2]).toBe("utf8");
+  });
+
+  it("idempotent: write then read produces same object", async () => {
+    const original = { mcp_servers: { "midbrain-memory": { command: "npx" } }, features: { codex_hooks: true } };
+    await writeCodexToml("/tmp/test.toml", original);
+    const written = fs.writeFile.mock.calls[0][1];
+    const TOML = (await import("@iarna/toml")).default;
+    const parsed = TOML.parse(written);
+    expect(parsed.features.codex_hooks).toBe(true);
+    expect(parsed.mcp_servers["midbrain-memory"].command).toBe("npx");
+  });
+});
+
+// ===================================================================
+// Codex detection in detectTools (PRD-008)
+// ===================================================================
+
+describe("detectTools — Codex (PRD-008)", () => {
+  beforeEach(resetMocks);
+
+  it("detects Codex when ~/.codex/config.toml exists", () => {
+    existsFor(PATHS.codexConfigToml);
+    const tools = detectTools();
+    expect(tools.codex).toBe(true);
+  });
+
+  it("detects Codex when ~/.codex dir exists", () => {
+    existsFor(PATHS.codexDir);
+    const tools = detectTools();
+    expect(tools.codex).toBe(true);
+  });
+
+  it("does not detect Codex when neither exists", () => {
+    const tools = detectTools();
+    expect(tools.codex).toBe(false);
+  });
+
+  it("short-circuits Codex on Windows (process.platform)", () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      existsFor(PATHS.codexConfigToml, PATHS.codexDir);
+      const tools = detectTools();
+      expect(tools.codex).toBe(false);
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
+
+  it("detects all three clients when all exist", () => {
+    existsFor(
+      path.join(PATHS.opencodeDir, "opencode.json"),
+      PATHS.claudeJson,
+      PATHS.codexConfigToml,
+    );
+    const tools = detectTools();
+    expect(tools.opencode).toBe(true);
+    expect(tools.claudeCode).toBe(true);
+    expect(tools.codex).toBe(true);
+  });
+});
+
+// ===================================================================
+// shellQuote (PRD-008)
+// ===================================================================
+
+describe("shellQuote", () => {
+  it("wraps simple strings in single quotes", () => {
+    expect(shellQuote("/usr/local/bin/node")).toBe("'/usr/local/bin/node'");
+  });
+
+  it("escapes embedded single quotes", () => {
+    expect(shellQuote("it's")).toBe("'it'\\''s'");
+  });
+
+  it("handles empty string", () => {
+    expect(shellQuote("")).toBe("''");
+  });
+
+  it("handles paths with spaces", () => {
+    expect(shellQuote("/path/with spaces/node")).toBe("'/path/with spaces/node'");
+  });
+});
+
+// ===================================================================
+// buildCodexHooks (PRD-008)
+// ===================================================================
+
+describe("buildCodexHooks", () => {
+  it("returns hooks object with UserPromptSubmit and Stop", () => {
+    const result = buildCodexHooks();
+    expect(result.hooks).toBeDefined();
+    expect(result.hooks.UserPromptSubmit).toBeDefined();
+    expect(result.hooks.Stop).toBeDefined();
+  });
+
+  it("UserPromptSubmit hook references capture-user.mjs", () => {
+    const result = buildCodexHooks();
+    const cmd = result.hooks.UserPromptSubmit[0].hooks[0].command;
+    expect(cmd).toContain("capture-user.mjs");
+  });
+
+  it("Stop hook references capture-assistant.mjs", () => {
+    const result = buildCodexHooks();
+    const cmd = result.hooks.Stop[0].hooks[0].command;
+    expect(cmd).toContain("capture-assistant.mjs");
+  });
+
+  it("hooks include MIDBRAIN_CONFIG_DIR env", () => {
+    const result = buildCodexHooks();
+    const cmd = result.hooks.UserPromptSubmit[0].hooks[0].command;
+    expect(cmd).toContain("MIDBRAIN_CONFIG_DIR=");
+    expect(cmd).toContain(".config/codex");
+  });
+
+  it("hooks include MIDBRAIN_QUIET_FALLBACK=1", () => {
+    const result = buildCodexHooks();
+    const cmd = result.hooks.UserPromptSubmit[0].hooks[0].command;
+    expect(cmd).toContain("MIDBRAIN_QUIET_FALLBACK=1");
+  });
+
+  it("hooks use shell-quoted paths", () => {
+    const result = buildCodexHooks();
+    const cmd = result.hooks.UserPromptSubmit[0].hooks[0].command;
+    // Should contain single-quoted node path
+    expect(cmd).toMatch(/'/);
+  });
+
+  it("hooks have timeout=10 and type=command", () => {
+    const result = buildCodexHooks();
+    const hook = result.hooks.UserPromptSubmit[0].hooks[0];
+    expect(hook.timeout).toBe(10);
+    expect(hook.type).toBe("command");
+  });
+});
+
+// ===================================================================
+// buildCodexHookCommand (PRD-008)
+// ===================================================================
+
+describe("buildCodexHookCommand", () => {
+  it("starts with env command", () => {
+    const cmd = buildCodexHookCommand("capture-user.mjs");
+    expect(cmd.startsWith("env ")).toBe(true);
+  });
+
+  it("includes shell-quoted script path", () => {
+    const cmd = buildCodexHookCommand("capture-user.mjs");
+    expect(cmd).toContain("capture-user.mjs");
+  });
+
+  it("includes MIDBRAIN_CONFIG_DIR and MIDBRAIN_QUIET_FALLBACK", () => {
+    const cmd = buildCodexHookCommand("capture-user.mjs");
+    expect(cmd).toContain("MIDBRAIN_CONFIG_DIR=");
+    expect(cmd).toContain("MIDBRAIN_QUIET_FALLBACK=1");
+  });
+});
+
+// ===================================================================
+// installCodex (PRD-008)
+// ===================================================================
+
+describe("installCodex", () => {
+  beforeEach(resetMocks);
+
+  it("writes key file with chmod 600", async () => {
+    const summary = [];
+    await installCodex(summary, "test-codex-key-1234");
+
+    const keyWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexKey);
+    expect(keyWrite).toBeDefined();
+    expect(keyWrite[1]).toBe("test-codex-key-1234\n");
+    expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexKey, 0o600);
+  });
+
+  it("writes config.toml with MCP server and codex_hooks", async () => {
+    const summary = [];
+    await installCodex(summary, "test-key");
+
+    const tomlWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfigToml);
+    expect(tomlWrite).toBeDefined();
+    expect(tomlWrite[1]).toContain("midbrain-memory");
+    expect(tomlWrite[1]).toContain("codex_hooks = true");
+  });
+
+  it("writes hooks.json with UserPromptSubmit and Stop", async () => {
+    const summary = [];
+    await installCodex(summary, "test-key");
+
+    const hooksWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexHooksJson);
+    expect(hooksWrite).toBeDefined();
+    const written = JSON.parse(hooksWrite[1]);
+    expect(written.hooks.UserPromptSubmit).toBeDefined();
+    expect(written.hooks.Stop).toBeDefined();
+  });
+
+  it("summary includes key, config, hooks, and restart lines", async () => {
+    const summary = [];
+    await installCodex(summary, "test-key");
+
+    expect(summary.some((s) => s.includes("Key written"))).toBe(true);
+    expect(summary.some((s) => s.includes("config.toml"))).toBe(true);
+    expect(summary.some((s) => s.includes("hooks.json"))).toBe(true);
+    expect(summary.some((s) => s.includes("Restart"))).toBe(true);
+  });
+
+  it("backs up existing config.toml before overwriting", async () => {
+    existsFor(PATHS.codexConfigToml);
+    fs.readFile.mockResolvedValue('[features]\nother = true\n');
+    const summary = [];
+    await installCodex(summary, "test-key");
+
+    const backupCalls = fs.copyFile.mock.calls.filter(([src]) => src === PATHS.codexConfigToml);
+    expect(backupCalls.length).toBe(1);
+    expect(backupCalls[0][1]).toMatch(/\.bak\./);
+  });
+
+  it("config.toml defaults to npx @latest command", async () => {
+    const summary = [];
+    await installCodex(summary, "test-key");
+
+    const tomlWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfigToml);
+    expect(tomlWrite[1]).toContain("npx");
+    expect(tomlWrite[1]).toContain("midbrain-memory-mcp@latest");
+  });
+
+  it("--dev flag writes absolute paths in config.toml", async () => {
+    const summary = [];
+    await installCodex(summary, "test-key", { isDev: true });
+
+    const tomlWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfigToml);
+    expect(tomlWrite[1]).toContain(process.execPath);
+    expect(tomlWrite[1]).toContain("server.js");
+  });
+
+  it("preserves existing TOML features when patching", async () => {
+    existsFor(PATHS.codexConfigToml);
+    fs.readFile.mockResolvedValue('[features]\nexisting_feature = true\n');
+    const summary = [];
+    await installCodex(summary, "test-key");
+
+    const tomlWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfigToml);
+    expect(tomlWrite[1]).toContain("existing_feature = true");
+    expect(tomlWrite[1]).toContain("codex_hooks = true");
+  });
+
+  it("throws on corrupt TOML without overwriting", async () => {
+    existsFor(PATHS.codexConfigToml);
+    fs.readFile.mockResolvedValue("invalid toml = = =");
+    const summary = [];
+    await expect(installCodex(summary, "test-key")).rejects.toThrow(/Failed to parse/);
+  });
+});
+
+// ===================================================================
+// writeCodexProjectConfig (PRD-008)
+// ===================================================================
+
+describe("writeCodexProjectConfig", () => {
+  const PROJECT_DIR = "/home/testuser/myproject";
+
+  beforeEach(resetMocks);
+
+  it("writes .codex/config.toml with MCP entry and MIDBRAIN_PROJECT_DIR", async () => {
+    const warnings = [];
+    const configsWritten = [];
+    await writeCodexProjectConfig(PROJECT_DIR, warnings, configsWritten);
+
+    const tomlPath = path.join(PROJECT_DIR, ".codex", "config.toml");
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === tomlPath);
+    expect(writeCall).toBeDefined();
+    expect(writeCall[1]).toContain("midbrain-memory");
+    expect(writeCall[1]).toContain(PROJECT_DIR);
+    expect(configsWritten).toContain(".codex/config.toml");
+  });
+
+  it("emits ACTION REQUIRED warning", async () => {
+    const warnings = [];
+    const configsWritten = [];
+    await writeCodexProjectConfig(PROJECT_DIR, warnings, configsWritten);
+
+    expect(warnings.some((w) => w.includes("ACTION REQUIRED"))).toBe(true);
+  });
+
+  it("merges into existing project TOML without clobbering", async () => {
+    const projToml = path.join(PROJECT_DIR, ".codex", "config.toml");
+    existsFor(projToml);
+    fs.readFile.mockResolvedValue('[other_section]\nkey = "value"\n');
+    const warnings = [];
+    const configsWritten = [];
+    await writeCodexProjectConfig(PROJECT_DIR, warnings, configsWritten);
+
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === projToml);
+    expect(writeCall[1]).toContain("other_section");
+    expect(writeCall[1]).toContain("midbrain-memory");
+  });
+
+  it("throws on corrupt existing project TOML", async () => {
+    const projToml = path.join(PROJECT_DIR, ".codex", "config.toml");
+    existsFor(projToml);
+    fs.readFile.mockResolvedValue("bad toml = = =");
+    const warnings = [];
+    const configsWritten = [];
+    await expect(
+      writeCodexProjectConfig(PROJECT_DIR, warnings, configsWritten),
+    ).rejects.toThrow(/Failed to parse/);
+  });
+
+  it("defaults to npx @latest command", async () => {
+    const warnings = [];
+    const configsWritten = [];
+    await writeCodexProjectConfig(PROJECT_DIR, warnings, configsWritten);
+
+    const projToml = path.join(PROJECT_DIR, ".codex", "config.toml");
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === projToml);
+    expect(writeCall[1]).toContain("npx");
+    expect(writeCall[1]).toContain("midbrain-memory-mcp@latest");
+  });
+
+  it("--dev writes absolute paths", async () => {
+    const warnings = [];
+    const configsWritten = [];
+    await writeCodexProjectConfig(PROJECT_DIR, warnings, configsWritten, { isDev: true });
+
+    const projToml = path.join(PROJECT_DIR, ".codex", "config.toml");
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === projToml);
+    expect(writeCall[1]).toContain(process.execPath);
+  });
+});
+
+// ===================================================================
+// projectSetup — Codex (PRD-008)
+// ===================================================================
+
+describe("projectSetup — Codex (PRD-008)", () => {
+  const PROJECT_DIR = "/home/testuser/codex-project";
+  const savedEnv = {};
+
+  beforeEach(() => {
+    resetMocks();
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR", "MIDBRAIN_CONFIG_DIR"]) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  function setupCodexProjectMocks(opts = {}) {
+    const { apiKey = "test-codex-key" } = opts;
+    fs.stat.mockImplementation(async (p) => {
+      if (p === PROJECT_DIR) return { isDirectory: () => true };
+      throw enoent(p);
+    });
+    fs.realpath.mockImplementation(async (p) => p);
+    readFileReturns({ [PATHS.globalKey]: apiKey + "\n" });
+    existsFor(PATHS.codexConfigToml);
+  }
+
+  it("writes .codex/config.toml when Codex detected", async () => {
+    setupCodexProjectMocks();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await projectSetup(PROJECT_DIR);
+    const result = JSON.parse(logSpy.mock.calls[0][0]);
+    logSpy.mockRestore();
+
+    expect(result.configs_written).toContain(".codex/config.toml");
+  });
+
+  it("includes ACTION REQUIRED warning in result", async () => {
+    setupCodexProjectMocks();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await projectSetup(PROJECT_DIR);
+    const result = JSON.parse(logSpy.mock.calls[0][0]);
+    logSpy.mockRestore();
+
+    expect(result.warnings.some((w) => w.includes("ACTION REQUIRED"))).toBe(true);
+  });
+});
+
+// ===================================================================
+// PATHS includes Codex entries (PRD-008)
+// ===================================================================
+
+describe("PATHS — Codex entries (PRD-008)", () => {
+  it("has codexKey path", () => {
+    expect(PATHS.codexKey).toContain(".config/codex");
+    expect(PATHS.codexKey).toContain(".midbrain-key");
+  });
+
+  it("has codexClientDir path", () => {
+    expect(PATHS.codexClientDir).toContain(".config/codex");
+  });
+
+  it("has codexDir path", () => {
+    expect(PATHS.codexDir).toContain(".codex");
+  });
+
+  it("has codexConfigToml path", () => {
+    expect(PATHS.codexConfigToml).toContain(".codex/config.toml");
+  });
+
+  it("has codexHooksJson path", () => {
+    expect(PATHS.codexHooksJson).toContain(".codex/hooks.json");
   });
 });
