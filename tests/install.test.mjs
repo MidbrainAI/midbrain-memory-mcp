@@ -1924,10 +1924,10 @@ describe("patchCodexMcpServer", () => {
 });
 
 describe("patchCodexFeatures", () => {
-  it("sets codex_hooks = true on empty object", () => {
+  it("sets hooks = true on empty object", () => {
     const obj = {};
     const result = patchCodexFeatures(obj);
-    expect(result.features.codex_hooks).toBe(true);
+    expect(result.features.hooks).toBe(true);
     expect(result).toBe(obj);
   });
 
@@ -1935,7 +1935,14 @@ describe("patchCodexFeatures", () => {
     const obj = { features: { other_feature: false } };
     patchCodexFeatures(obj);
     expect(obj.features.other_feature).toBe(false);
-    expect(obj.features.codex_hooks).toBe(true);
+    expect(obj.features.hooks).toBe(true);
+  });
+
+  it("removes deprecated codex_hooks feature flag", () => {
+    const obj = { features: { codex_hooks: true } };
+    patchCodexFeatures(obj);
+    expect(obj.features.hooks).toBe(true);
+    expect(obj.features).not.toHaveProperty("codex_hooks");
   });
 });
 
@@ -1950,9 +1957,9 @@ describe("readCodexToml", () => {
 
   it("parses valid TOML content", async () => {
     existsFor(PATHS.codexConfigToml);
-    fs.readFile.mockResolvedValue('[features]\ncodex_hooks = true\n');
+    fs.readFile.mockResolvedValue('[features]\nhooks = true\n');
     const result = await readCodexToml(PATHS.codexConfigToml);
-    expect(result.features.codex_hooks).toBe(true);
+    expect(result.features.hooks).toBe(true);
   });
 
   it("throws on corrupt TOML with clear error", async () => {
@@ -1973,21 +1980,21 @@ describe("writeCodexToml", () => {
   beforeEach(resetMocks);
 
   it("creates parent dirs and writes TOML content", async () => {
-    await writeCodexToml("/path/to/config.toml", { features: { codex_hooks: true } });
+    await writeCodexToml("/path/to/config.toml", { features: { hooks: true } });
     expect(fs.mkdir).toHaveBeenCalledWith("/path/to", { recursive: true });
     const writeCall = fs.writeFile.mock.calls[0];
     expect(writeCall[0]).toBe("/path/to/config.toml");
-    expect(writeCall[1]).toContain("codex_hooks = true");
+    expect(writeCall[1]).toContain("hooks = true");
     expect(writeCall[2]).toBe("utf8");
   });
 
   it("idempotent: write then read produces same object", async () => {
-    const original = { mcp_servers: { "midbrain-memory": { command: "npx" } }, features: { codex_hooks: true } };
+    const original = { mcp_servers: { "midbrain-memory": { command: "npx" } }, features: { hooks: true } };
     await writeCodexToml("/tmp/test.toml", original);
     const written = fs.writeFile.mock.calls[0][1];
     const TOML = (await import("@iarna/toml")).default;
     const parsed = TOML.parse(written);
-    expect(parsed.features.codex_hooks).toBe(true);
+    expect(parsed.features.hooks).toBe(true);
     expect(parsed.mcp_servers["midbrain-memory"].command).toBe("npx");
   });
 });
@@ -2072,10 +2079,11 @@ describe("shellQuote", () => {
 // ===================================================================
 
 describe("buildCodexHooks", () => {
-  it("returns hooks object with UserPromptSubmit and Stop", () => {
+  it("returns hooks object with UserPromptSubmit, PostToolUse, and Stop", () => {
     const result = buildCodexHooks();
     expect(result.hooks).toBeDefined();
     expect(result.hooks.UserPromptSubmit).toBeDefined();
+    expect(result.hooks.PostToolUse).toBeDefined();
     expect(result.hooks.Stop).toBeDefined();
   });
 
@@ -2089,6 +2097,12 @@ describe("buildCodexHooks", () => {
     const result = buildCodexHooks();
     const cmd = result.hooks.Stop[0].hooks[0].command;
     expect(cmd).toContain("capture-assistant.mjs");
+  });
+
+  it("PostToolUse hook references capture-tool.mjs", () => {
+    const result = buildCodexHooks();
+    const cmd = result.hooks.PostToolUse[0].hooks[0].command;
+    expect(cmd).toContain("capture-tool.mjs");
   });
 
   it("hooks include MIDBRAIN_CONFIG_DIR env", () => {
@@ -2158,17 +2172,18 @@ describe("installCodex", () => {
     expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexKey, 0o600);
   });
 
-  it("writes config.toml with MCP server and codex_hooks", async () => {
+  it("writes config.toml with MCP server and hooks feature", async () => {
     const summary = [];
     await installCodex(summary, "test-key");
 
     const tomlWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfigToml);
     expect(tomlWrite).toBeDefined();
     expect(tomlWrite[1]).toContain("midbrain-memory");
-    expect(tomlWrite[1]).toContain("codex_hooks = true");
+    expect(tomlWrite[1]).toContain("hooks = true");
+    expect(tomlWrite[1]).not.toContain("codex_hooks");
   });
 
-  it("writes hooks.json with UserPromptSubmit and Stop", async () => {
+  it("writes hooks.json with UserPromptSubmit, PostToolUse, and Stop", async () => {
     const summary = [];
     await installCodex(summary, "test-key");
 
@@ -2176,6 +2191,7 @@ describe("installCodex", () => {
     expect(hooksWrite).toBeDefined();
     const written = JSON.parse(hooksWrite[1]);
     expect(written.hooks.UserPromptSubmit).toBeDefined();
+    expect(written.hooks.PostToolUse).toBeDefined();
     expect(written.hooks.Stop).toBeDefined();
   });
 
@@ -2227,7 +2243,8 @@ describe("installCodex", () => {
 
     const tomlWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfigToml);
     expect(tomlWrite[1]).toContain("existing_feature = true");
-    expect(tomlWrite[1]).toContain("codex_hooks = true");
+    expect(tomlWrite[1]).toContain("hooks = true");
+    expect(tomlWrite[1]).not.toContain("codex_hooks");
   });
 
   it("throws on corrupt TOML without overwriting", async () => {

@@ -1,7 +1,7 @@
 /**
  * Unit tests for codex/common.mjs (PRD-008).
  *
- * Tests the pure-function seam: captureUser and captureAssistant with
+ * Tests the pure-function seam: captureUser, captureAssistant, and captureToolUse with
  * dependency injection (loadApiKey, storeEpisodic, fetch, debugLog).
  */
 
@@ -13,6 +13,7 @@ import path from "path";
 import {
   captureUser,
   captureAssistant,
+  captureToolUse,
   makeDefaultDeps,
   CODEX_CONFIG_DIR,
   DEBUG_LOG,
@@ -38,6 +39,14 @@ function makeTestDeps(overrides = {}) {
     fetch: vi.fn(async () => ({ status: 200 })),
     ...overrides,
   };
+}
+
+function writeJsonl(filePath, items) {
+  fs.writeFileSync(
+    filePath,
+    items.map((item) => JSON.stringify(item)).join("\n") + "\n",
+    "utf8",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +139,27 @@ describe("captureUser", () => {
     expect(deps.debugLog).toHaveBeenCalled();
   });
 
+  it("awaits storeEpisodic before resolving", async () => {
+    let releaseStore;
+    let resolved = false;
+    const deps = makeTestDeps({
+      storeEpisodic: vi.fn(() => new Promise((resolve) => {
+        releaseStore = resolve;
+      })),
+    });
+
+    const capture = captureUser({ prompt: "hi", cwd: "/tmp/p" }, deps)
+      .then(() => { resolved = true; });
+    await Promise.resolve();
+
+    expect(deps.storeEpisodic).toHaveBeenCalledTimes(1);
+    expect(resolved).toBe(false);
+
+    releaseStore();
+    await capture;
+    expect(resolved).toBe(true);
+  });
+
   it("forwards cwd as projectDir, CODEX_CONFIG_DIR as configDir", async () => {
     const deps = makeTestDeps();
     await captureUser({ prompt: "hi", cwd: "/tmp/abc" }, deps);
@@ -204,6 +234,194 @@ describe("captureAssistant", () => {
     expect(deps.debugLog).toHaveBeenCalled();
     expect(deps.storeEpisodic).not.toHaveBeenCalled();
   });
+
+  it("stores all assistant messages and reasoning summaries for the active Codex turn", async () => {
+    const deps = makeTestDeps();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-codex-transcript-"));
+    const transcriptPath = path.join(tmpDir, "session.jsonl");
+    writeJsonl(transcriptPath, [
+      { type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "working update" }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "reasoning",
+          summary: [{ text: "checked the hook schema" }],
+          encrypted_content: "opaque",
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "final answer" }],
+        },
+      },
+    ]);
+
+    try {
+      await captureAssistant(
+        {
+          transcript_path: transcriptPath,
+          turn_id: "turn-1",
+          last_assistant_message: "final answer",
+          cwd: "/tmp/p",
+        },
+        deps,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    expect(deps.storeEpisodic).toHaveBeenCalledTimes(3);
+    expect(deps.storeEpisodic.mock.calls.map((call) => call[1])).toEqual([
+      "working update",
+      "Reasoning summary:\nchecked the hook schema",
+      "final answer",
+    ]);
+    expect(deps.storeEpisodic.mock.calls.every((call) => call[2] === "assistant")).toBe(true);
+  });
+
+  it("falls back to last_assistant_message when transcript cannot be read", async () => {
+    const deps = makeTestDeps();
+    await captureAssistant(
+      {
+        transcript_path: "/no/such/transcript.jsonl",
+        turn_id: "turn-1",
+        last_assistant_message: "fallback final",
+        cwd: "/tmp/p",
+      },
+      deps,
+    );
+
+    expect(deps.storeEpisodic).toHaveBeenCalledTimes(1);
+    expect(deps.storeEpisodic.mock.calls[0][1]).toBe("fallback final");
+    expect(deps.debugLog).toHaveBeenCalled();
+  });
+
+  it("does not store encrypted reasoning without a plaintext summary", async () => {
+    const deps = makeTestDeps();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-codex-transcript-"));
+    const transcriptPath = path.join(tmpDir, "session.jsonl");
+    writeJsonl(transcriptPath, [
+      { type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } },
+      {
+        type: "response_item",
+        payload: {
+          type: "reasoning",
+          summary: [],
+          encrypted_content: "opaque",
+        },
+      },
+    ]);
+
+    try {
+      await captureAssistant(
+        { transcript_path: transcriptPath, turn_id: "turn-1", cwd: "/tmp/p" },
+        deps,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    expect(deps.storeEpisodic).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// captureToolUse
+// ---------------------------------------------------------------------------
+
+describe("captureToolUse", () => {
+  it("stores a completed PostToolUse event as assistant memory", async () => {
+    const deps = makeTestDeps();
+
+    await captureToolUse(
+      {
+        tool_name: "shell",
+        tool_use_id: "call-123",
+        tool_input: { cmd: "npm test" },
+        tool_response: { exit_code: 0, output: "pass" },
+        cwd: "/tmp/p",
+      },
+      deps,
+    );
+
+    expect(deps.storeEpisodic).toHaveBeenCalledTimes(1);
+    const [, text, role, , source] = deps.storeEpisodic.mock.calls[0];
+    expect(role).toBe("assistant");
+    expect(source).toBe("codex");
+    expect(text).toContain("Tool call completed");
+    expect(text).toContain("Name: shell");
+    expect(text).toContain("ID: call-123");
+    expect(text).toContain('"cmd": "npm test"');
+    expect(text).toContain('"output": "pass"');
+  });
+
+  it("does not store when tool_name is missing", async () => {
+    const deps = makeTestDeps();
+
+    await captureToolUse({ tool_input: { cmd: "npm test" }, cwd: "/tmp/p" }, deps);
+
+    expect(deps.storeEpisodic).not.toHaveBeenCalled();
+  });
+
+  it("truncates oversized tool payloads", async () => {
+    const deps = makeTestDeps();
+
+    await captureToolUse(
+      {
+        tool_name: "shell",
+        tool_use_id: "call-big",
+        tool_input: { cmd: "yes" },
+        tool_response: { output: "x".repeat(20_000) },
+        cwd: "/tmp/p",
+      },
+      deps,
+    );
+
+    const text = deps.storeEpisodic.mock.calls[0][1];
+    expect(text.length).toBeLessThan(13_000);
+    expect(text).toContain("[truncated");
+  });
+
+  it("redacts obvious secrets from tool input and response", async () => {
+    const deps = makeTestDeps();
+
+    await captureToolUse(
+      {
+        tool_name: "shell",
+        tool_use_id: "call-secret",
+        tool_input: {
+          api_key: "sk-testsecret123456",
+          nested: { Authorization: "Bearer abcdefghijklmnop" },
+        },
+        tool_response: {
+          output: "logged token sk-anothersecret123456 and continued",
+          safe: "visible",
+        },
+        cwd: "/tmp/p",
+      },
+      deps,
+    );
+
+    const text = deps.storeEpisodic.mock.calls[0][1];
+    expect(text).toContain('"api_key": "[redacted]"');
+    expect(text).toContain('"Authorization": "[redacted]"');
+    expect(text).toContain("logged token [redacted] and continued");
+    expect(text).toContain('"safe": "visible"');
+    expect(text).not.toContain("sk-testsecret123456");
+    expect(text).not.toContain("abcdefghijklmnop");
+    expect(text).not.toContain("sk-anothersecret123456");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -274,5 +492,18 @@ describe("Stop wrapper contract", () => {
     const contents = fs.readFileSync(wrapperPath, "utf8");
     expect(contents).toMatch(/^#!/);
     expect(contents).toContain("captureUser");
+  });
+
+  it("codex/capture-tool.mjs writes literal '{}' to stdout", () => {
+    const wrapperPath = path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      "..",
+      "codex",
+      "capture-tool.mjs",
+    );
+    const contents = fs.readFileSync(wrapperPath, "utf8");
+    expect(contents).toMatch(/^#!/);
+    expect(contents).toContain("captureToolUse");
+    expect(contents).toMatch(/process\.stdout\.write\(["']\{\}["']\)/);
   });
 });

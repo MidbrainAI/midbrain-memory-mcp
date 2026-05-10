@@ -57,10 +57,11 @@ OpenCode / Claude Code / Codex session
 **Search** — The LLM calls `memory_search` via MCP. The server queries the
 API and returns scored results as formatted text.
 
-**Capture** — Companion hooks fire on every message and POST to the
-episodic endpoint. Fire-and-forget, never blocks. OpenCode uses a Bun/TS
-plugin; Claude Code and Codex use standalone Node scripts wired to their
-hook systems.
+**Capture** — Companion hooks POST conversation events to the episodic
+endpoint. OpenCode uses a Bun/TS plugin; Claude Code and Codex use
+standalone Node scripts wired to their hook systems. Codex captures user
+prompts, assistant transcript messages, plaintext reasoning summaries when
+available, and `PostToolUse` tool calls/results.
 
 **Project Setup** — The LLM calls `memory_setup_project` via MCP to scope
 memory to a specific project, then tells the user to restart.
@@ -359,7 +360,7 @@ install.mjs                Installer CLI + --project mode
 shared/midbrain-common.mjs Shared: key loading, API helpers, constants
 plugin/midbrain-memory.ts  OpenCode plugin (Bun/TS, episodic capture)
 claude-code/               Claude Code hook scripts (episodic capture)
-codex/                     Codex hook scripts (episodic capture)
+codex/                     Codex hook scripts (messages + tool capture)
 scripts/                   CI guards (pinned-spec regression)
 tests/                     vitest (unit, integration, installer, doc-regression)
 ```

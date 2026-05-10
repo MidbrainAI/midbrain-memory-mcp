@@ -26,8 +26,10 @@ looks auto-updating but is sticky on the first resolved version.
   `capture-user.mjs` (UserPromptSubmit) and `capture-assistant.mjs` (Stop).
   `common.mjs` re-exports from `../shared/midbrain-common.mjs`. No npm deps.
 - `codex/` — Standalone Node 20 scripts for Codex's hook system. Same DI
-  seam pattern as claude-code/. Stop hook writes `{}` to stdout (Codex
-  requires JSON on stdout for exit 0). Config: `~/.codex/config.toml` (TOML).
+  seam pattern as claude-code/. Captures `UserPromptSubmit`, `Stop`, and
+  `PostToolUse` events. Stop/PostToolUse hooks write `{}` to stdout (Codex
+  requires JSON on stdout for exit 0). Config: `~/.codex/config.toml` (TOML)
+  with `[features].hooks = true`.
 - `install.mjs` — Automated installer. Detects OpenCode/Claude Code/Codex,
   writes configs, copies plugin + shared lib, sets up API key file (chmod 600).
 

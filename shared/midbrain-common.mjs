@@ -193,20 +193,22 @@ function tryReadKey(filePath, source) {
 // --- storeEpisodic ---
 
 /**
- * Fire-and-forget POST of an episodic memory to the MidBrain API.
- * Returns void immediately; network call runs in the background.
+ * POST an episodic memory to the MidBrain API.
+ * Callers may ignore the returned promise for fire-and-forget behavior, or
+ * await it in short-lived hook processes that must finish the write before exit.
  *
  * @param {string} apiKey - The MidBrain API key.
  * @param {string} text - The message text to store.
  * @param {"user"|"assistant"} role - The role of the message author.
  * @param {function(string): void} debugLogFn - A logging function for debug output.
  * @param {string} [source] - Optional client identifier (e.g. "codex").
+ * @returns {Promise<void>}
  */
 export function storeEpisodic(apiKey, text, role, debugLogFn, source) {
   debugLogFn(`STORE: role=${role} textLen=${text.length}`);
   const body = { text, role };
   if (source) body.source = source;
-  fetch(EPISODIC_ENDPOINT, {
+  return fetch(EPISODIC_ENDPOINT, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -214,8 +216,8 @@ export function storeEpisodic(apiKey, text, role, debugLogFn, source) {
     },
     body: JSON.stringify(body),
   })
-    .then((r) => debugLogFn(`STORED: status=${r.status}`))
-    .catch((e) => debugLogFn(`STORE ERROR: ${e instanceof Error ? e.message : String(e)}`));
+    .then((r) => { debugLogFn(`STORED: status=${r.status}`); })
+    .catch((e) => { debugLogFn(`STORE ERROR: ${e instanceof Error ? e.message : String(e)}`); });
 }
 
 // --- makeDebugLogger ---

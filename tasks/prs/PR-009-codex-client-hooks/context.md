@@ -67,7 +67,7 @@ All 23 ACs PASS after Phase 5 blocker fixes. File:line evidence below.
 | **AC-4** | `installCodex()` writes key with chmod 600 | PASS | `install.mjs:709` → `writeKeyFile` |
 | **AC-5** | TOML patcher adds `[mcp_servers.midbrain-memory]` | PASS | `install.mjs:173-176` |
 | **AC-6** | TOML patcher preserves existing entries | PASS | `patchCodexMcpServer` only sets target key |
-| **AC-7** | TOML patcher sets `codex_hooks = true`, preserves other features | PASS | `install.mjs:184-187` |
+| **AC-7** | TOML patcher sets `hooks = true`, removes deprecated `codex_hooks`, preserves other features | PASS | `install.mjs:184-187` |
 | **AC-7b** | Advisory when codex binary exists but `~/.codex/` absent | PASS | `install.mjs:273` `hasCodexBinary()`, `install.mjs:799-801` advisory |
 | **AC-8** | Idempotent: second run no new diff | PASS | Overwrites same key, TOML merge |
 | **AC-9** | hooks.json with shell-quoted paths, env prefix, absolute `process.execPath` | PASS | `install.mjs:596-605` `buildCodexHookCommand` |

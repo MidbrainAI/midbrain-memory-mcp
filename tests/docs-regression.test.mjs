@@ -48,6 +48,27 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(result.stdout).toContain("OK: no legacy 60-char install-command references.");
   });
 
+  it("D-3b: check-pinned-spec ignores untracked local config files", async () => {
+    const localConfigPath = path.join(REPO_ROOT, "tmp-midbrain-local-config.json");
+    await fs.writeFile(
+      localConfigPath,
+      '{"command":["npx","-y","midbrain-memory-mcp"]}\n',
+      "utf8",
+    );
+
+    try {
+      const result = spawnSync("bash", [SCRIPT_PATH], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        timeout: 10000,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("OK: no unpinned midbrain-memory-mcp references.");
+    } finally {
+      await fs.rm(localConfigPath, { force: true });
+    }
+  });
+
   it("D-4: the 60-char regex detects a known offending string", () => {
     // A minimal known-offending string that should trip the new regex block.
     // Pure-regex assertion — avoids filesystem-mutation test flake.

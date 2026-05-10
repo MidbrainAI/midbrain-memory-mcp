@@ -177,13 +177,14 @@ function patchCodexMcpServer(obj, entry) {
 }
 
 /**
- * Pure transform: ensure [features].codex_hooks = true. Other features preserved.
+ * Pure transform: ensure [features].hooks = true. Other features preserved.
  * @param {object} obj - Parsed TOML object.
  * @returns {object} The same `obj`, mutated.
  */
 function patchCodexFeatures(obj) {
   obj.features = obj.features || {};
-  obj.features.codex_hooks = true;
+  delete obj.features.codex_hooks;
+  obj.features.hooks = true;
   return obj;
 }
 
@@ -615,7 +616,8 @@ function buildCodexHookCommand(scriptName) {
 }
 
 /**
- * Build the ~/.codex/hooks.json object shape for UserPromptSubmit + Stop.
+ * Build the ~/.codex/hooks.json object shape for UserPromptSubmit,
+ * PostToolUse, and Stop.
  * Matches Codex hook schema (timeout in seconds).
  */
 function buildCodexHooks() {
@@ -625,6 +627,13 @@ function buildCodexHooks() {
         hooks: [{
           type: 'command',
           command: buildCodexHookCommand('capture-user.mjs'),
+          timeout: 10,
+        }],
+      }],
+      PostToolUse: [{
+        hooks: [{
+          type: 'command',
+          command: buildCodexHookCommand('capture-tool.mjs'),
           timeout: 10,
         }],
       }],
@@ -655,7 +664,7 @@ async function backupCodexFiles() {
 /**
  * Read-parse-patch-write ~/.codex/config.toml:
  *   - [mcp_servers.midbrain-memory] with npx @latest command
- *   - [features] codex_hooks = true
+ *   - [features] hooks = true
  * Corrupt TOML → hard error, no overwrite, no .bak of corrupt file.
  */
 async function patchCodexConfigToml(summary, opts = {}) {
@@ -668,14 +677,14 @@ async function patchCodexConfigToml(summary, opts = {}) {
     : { command: 'npx', args: ['-y', 'midbrain-memory-mcp@latest'], env: { MIDBRAIN_CONFIG_DIR: PATHS.codexClientDir } };
 
   patchCodexMcpServer(obj, entry);
-  const wasEnabled = obj.features?.codex_hooks === true;
+  const wasEnabled = obj.features?.hooks === true;
   patchCodexFeatures(obj);
   await writeCodexToml(PATHS.codexConfigToml, obj);
 
   summary.push(
     existed
-      ? `  ~ MCP server + codex_hooks: updated in ~/.codex/config.toml`
-      : `  + MCP server + codex_hooks: written to ~/.codex/config.toml`,
+      ? `  ~ MCP server + hooks feature: updated in ~/.codex/config.toml`
+      : `  + MCP server + hooks feature: written to ~/.codex/config.toml`,
   );
   summary.push(
     wasEnabled
@@ -690,7 +699,7 @@ async function patchCodexConfigToml(summary, opts = {}) {
 }
 
 /**
- * Write ~/.codex/hooks.json with UserPromptSubmit + Stop handlers.
+ * Write ~/.codex/hooks.json with UserPromptSubmit, PostToolUse, and Stop handlers.
  */
 async function writeCodexHooksJson(summary) {
   await fs.mkdir(PATHS.codexDir, { recursive: true });

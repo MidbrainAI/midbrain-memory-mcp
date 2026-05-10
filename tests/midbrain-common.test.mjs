@@ -432,9 +432,11 @@ describe("storeEpisodic", () => {
 
   it("calls debug log function on success", async () => {
     const log = vi.fn();
-    storeEpisodic("test-key", "msg", "assistant", log);
+    const result = storeEpisodic("test-key", "msg", "assistant", log);
 
-    await vi.waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining("STORED")));
+    expect(result).toHaveProperty("then", expect.any(Function));
+    await result;
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("STORED"));
   });
 
   it("calls debug log function on fetch error", async () => {
