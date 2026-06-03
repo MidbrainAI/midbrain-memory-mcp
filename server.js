@@ -67,6 +67,9 @@ const UPDATE_CACHE_FILENAME = ".midbrain-update-check.json";
 const UPDATE_FETCH_TIMEOUT_MS = 5000;
 const NPX_CACHE_MARKER = "/_npx/";
 
+// --- Recency peek constants ---
+const PEEK_TTL_MS = 60_000;               // 1 minute cache
+
 // ---------------------------------------------------------------------------
 // Shared API helper
 // ---------------------------------------------------------------------------
@@ -446,6 +449,65 @@ export function createServer() {
     version: PKG_VERSION,
   });
 
+  // --- Recency peek state (scoped to this server instance) ---
+  let lastSeenTimestamp = null;   // ISO string of most recent known episodic memory
+  let lastPeekTime = 0;          // Date.now() of last peek call
+  let cachedHint = null;         // cached hint string (null = no hint)
+
+  /**
+   * Peek at the most recent episodic memory and return a hint string if
+   * newer memories exist than what this session has seen. Returns null
+   * when no hint is needed. Cached for PEEK_TTL_MS. Never throws.
+   * @returns {Promise<string|null>}
+   */
+  async function peekRecency() {
+    try {
+      const now = Date.now();
+      if (now - lastPeekTime < PEEK_TTL_MS) return cachedHint;
+      lastPeekTime = now;
+
+      const result = await fetchApi(EPISODIC_ENDPOINT, { page: 1, limit: 1 });
+      const items = result?.items || [];
+      if (items.length === 0) { cachedHint = null; return null; }
+
+      const latest = items[0];
+      const latestTs = latest.occurred_at;
+      if (!latestTs) { cachedHint = null; return null; }
+
+      // Already seen this timestamp — no new activity
+      if (latestTs === lastSeenTimestamp) { cachedHint = null; return null; }
+
+      // New activity detected — emit hint once, then suppress until next peek
+      lastSeenTimestamp = latestTs;
+      const ts = latestTs.slice(0, 16).replace("T", " ");
+      const ageMs = now - new Date(latestTs).getTime();
+      const agoStr = ageMs < 60_000 ? "just now"
+        : ageMs < 3_600_000 ? `${Math.round(ageMs / 60_000)} min ago`
+        : ageMs < 86_400_000 ? `${Math.round(ageMs / 3_600_000)} hr ago`
+        : `${Math.round(ageMs / 86_400_000)} days ago`;
+      const hint = `\n\n[Note: Newer episodic memories exist on server (most recent: ${ts}, ${agoStr}). Use get_episodic_memories_by_date to retrieve recent context if needed.]`;
+      cachedHint = null; // suppress re-emission within TTL
+      return hint;
+    } catch {
+      // Never break a tool call due to peek failure
+      return null;
+    }
+  }
+
+  /**
+   * Update lastSeenTimestamp from a set of episodic items so subsequent
+   * peeks don't re-hint about memories the LLM already fetched.
+   * @param {Array<{occurred_at?: string}>} items
+   */
+  function markEpisodicSeen(items) {
+    for (const item of items) {
+      if (!item.occurred_at) continue;
+      if (!lastSeenTimestamp || item.occurred_at > lastSeenTimestamp) {
+        lastSeenTimestamp = item.occurred_at;
+      }
+    }
+  }
+
   // --- memory_search (semantic vector search) ---
 
   server.tool(
@@ -453,7 +515,10 @@ export function createServer() {
     `Search memories by semantic similarity.
 
 Results include source path and line numbers for semantic memories.
-Use read_file to get more context around a search hit.`,
+Use read_file to get more context around a search hit.
+
+When the user wants to continue previous work from another session or client,
+use get_episodic_memories_by_date with today's date to retrieve recent context.`,
     {
       query: z.string().describe("Natural language search query."),
       limit: z
@@ -470,7 +535,8 @@ Use read_file to get more context around a search hit.`,
         const results = await fetchApi(SEARCH_SEMANTIC_ENDPOINT, { query, limit: fetchK });
 
         if (!Array.isArray(results) || results.length === 0) {
-          return { content: [{ type: "text", text: "No memories found matching that query." }] };
+          const hint = await peekRecency();
+          return { content: [{ type: "text", text: "No memories found matching that query." + (hint || "") }] };
         }
 
         let filtered = results;
@@ -482,7 +548,8 @@ Use read_file to get more context around a search hit.`,
         filtered = filtered.slice(0, limit ?? DEFAULT_SEARCH_LIMIT);
 
         if (filtered.length === 0) {
-          return { content: [{ type: "text", text: "No memories found matching that query." }] };
+          const hint = await peekRecency();
+          return { content: [{ type: "text", text: "No memories found matching that query." + (hint || "") }] };
         }
 
         const lines = filtered.map((item) => {
@@ -493,7 +560,8 @@ Use read_file to get more context around a search hit.`,
           return `[${item.role} | ${ts} | relevance=${score}${loc}] ${item.text}`;
         });
 
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        const hint = await peekRecency();
+        return { content: [{ type: "text", text: lines.join("\n") + (hint || "") }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { content: [{ type: "text", text: `Memory search failed: ${msg}` }] };
@@ -522,11 +590,13 @@ Use for exact or pattern-based matches (names, IDs, code, URLs).`,
         const results = await fetchApi(SEARCH_LEXICAL_ENDPOINT, { pattern, source, limit });
 
         if (!Array.isArray(results) || results.length === 0) {
-          return { content: [{ type: "text", text: `No matches for pattern '${pattern}'.` }] };
+          const hint = await peekRecency();
+          return { content: [{ type: "text", text: `No matches for pattern '${pattern}'.` + (hint || "") }] };
         }
 
         const lines = results.map((m) => `${m.source}:${m.line_number}: ${m.text}`);
-        return { content: [{ type: "text", text: lines.join("\n") }] };
+        const hint = await peekRecency();
+        return { content: [{ type: "text", text: lines.join("\n") + (hint || "") }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("400")) {
@@ -544,7 +614,9 @@ Use for exact or pattern-based matches (names, IDs, code, URLs).`,
     `Retrieve episodic memories (conversations) around a specific date.
 
 Returns them formatted as a natural conversation timeline.
-Use this when the user asks about what happened on a particular day or period.`,
+Use this when the user asks about what happened on a particular day or period.
+Also use this to catch up on recent activity from other sessions or clients
+when continuing previous work.`,
     {
       date: z.string().describe("ISO date string, e.g. '2025-06-01'."),
       offset_days: z
@@ -573,6 +645,9 @@ Use this when the user asks about what happened on a particular day or period.`,
           const endStr = end.toISOString().slice(0, 10);
           return { content: [{ type: "text", text: `No episodic memories found between ${startStr} and ${endStr}.` }] };
         }
+
+        // Mark these as seen so peekRecency doesn't re-hint about them
+        markEpisodicSeen(items);
 
         // API returns newest-first; reverse for chronological timeline
         items.reverse();
@@ -609,11 +684,13 @@ Use this to discover what knowledge files are available.`,
         const docs = await fetchApi(SEMANTIC_FILES_ENDPOINT);
 
         if (!Array.isArray(docs) || docs.length === 0) {
-          return { content: [{ type: "text", text: "No files found in semantic memory." }] };
+          const hint = await peekRecency();
+          return { content: [{ type: "text", text: "No files found in semantic memory." + (hint || "") }] };
         }
 
         const lines = docs.map((d) => `  ${d.source}  (${d.chunk_count} chunks)`);
-        return { content: [{ type: "text", text: `Files (${docs.length}):\n${lines.join("\n")}` }] };
+        const hint = await peekRecency();
+        return { content: [{ type: "text", text: `Files (${docs.length}):\n${lines.join("\n")}` + (hint || "") }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { content: [{ type: "text", text: `Failed to list files: ${msg}` }] };
@@ -643,7 +720,8 @@ after memory_search to read context around a search hit.`,
         const url = `${SEMANTIC_FILES_ENDPOINT}/${encodeURIComponent(file_path).replace(/%2F/g, "/")}`;
         const result = await fetchApi(url, { start_line, num_lines });
 
-        return { content: [{ type: "text", text: `${result.path}:${result.start_line}\n${result.content}` }] };
+        const hint = await peekRecency();
+        return { content: [{ type: "text", text: `${result.path}:${result.start_line}\n${result.content}` + (hint || "") }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("404")) {

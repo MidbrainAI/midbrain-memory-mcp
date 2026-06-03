@@ -223,6 +223,12 @@ The plugin imports ./midbrain-common.mjs at runtime — both must be present.
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
 - The only memory tools available are search and setup. Use them proactively.
+- When the user asks to "continue", "pick up where we left off", or similar,
+  use get_episodic_memories_by_date with today's date to retrieve recent context.
+  This may include work done in other clients or sessions.
+- If a tool response includes a recency hint about newer episodic memories on
+  the server, consider fetching them with get_episodic_memories_by_date if
+  relevant to the user's current intent.
 - When the user asks to set up, configure, or initialize MidBrain memory for a
   project, ALWAYS use the memory_setup_project tool. NEVER manually create
   .midbrain-key files, .mcp.json, or opencode.json with shell commands.
