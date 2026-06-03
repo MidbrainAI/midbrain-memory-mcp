@@ -46,8 +46,10 @@ looks auto-updating but is sticky on the first resolved version.
   Returns: `[{source, chunk_count}]`
 - `GET /api/v1/memories/semantic/files/{file_path}?start_line=1&num_lines=200`
   Returns: `{path, start_line, content, chunks_used}`
-- `POST /api/v1/memories/episodic` — body: `{"text": "...", "role": "user"|"assistant"}`
-  Append-only. Returns created memory.
+- `POST /api/v1/memories/episodic` — body: `{"text": "...", "role": "user"|"assistant", "memory_metadata": {"client": "opencode"}}`
+  Append-only. `memory_metadata` is optional; values must be strings.
+  Capture hooks tag each memory with the originating client (opencode/claude).
+  Returns created memory.
 - `GET /health` — no auth. Returns `{"status": "ok"}`
 
 ## API Key

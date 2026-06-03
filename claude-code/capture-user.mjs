@@ -23,5 +23,5 @@ try {
     process.exit(0);
   }
 
-  storeEpisodic(apiKey, input.prompt, "user", debugLog);
+  storeEpisodic(apiKey, input.prompt, "user", debugLog, { client: "claude" });
 } catch { /* fail silently */ }

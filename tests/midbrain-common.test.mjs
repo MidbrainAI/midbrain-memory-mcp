@@ -384,6 +384,32 @@ describe("storeEpisodic", () => {
     expect(JSON.parse(opts.body)).toEqual({ text: "hello world", role: "user" });
   });
 
+  it("includes memory_metadata in POST body when metadata provided", async () => {
+    const log = vi.fn();
+    storeEpisodic("test-key", "hello", "assistant", log, { client: "opencode" });
+
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({
+      text: "hello",
+      role: "assistant",
+      memory_metadata: { client: "opencode" },
+    });
+  });
+
+  it("omits memory_metadata from POST body when metadata not provided", async () => {
+    const log = vi.fn();
+    storeEpisodic("test-key", "hello", "user", log);
+
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body).toEqual({ text: "hello", role: "user" });
+    expect(body).not.toHaveProperty("memory_metadata");
+  });
+
   it("calls debug log function on success", async () => {
     const log = vi.fn();
     storeEpisodic("test-key", "msg", "assistant", log);
