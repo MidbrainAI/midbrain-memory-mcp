@@ -1618,3 +1618,289 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
     expect(text).toMatch(/key|Key|midbrain/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Recency hint: peekRecency injects hints into tool responses
+// ---------------------------------------------------------------------------
+
+describe("recency hint (peekRecency)", () => {
+  let rcClient;
+  let rcServer;
+  let rcFetchSpy;
+  let recentTimestamp;
+  const rcSavedEnv = {};
+
+  function recentMockFetch(url, opts) {
+    const parsed = new URL(url);
+    const p = parsed.pathname;
+    const limit = parsed.searchParams.get("limit");
+
+    if (p === "/api/v1/memories/episodic" && limit === "1") {
+      return Promise.resolve(jsonResponse({
+        items: [{ role: "assistant", text: "Latest work from other client", occurred_at: recentTimestamp }],
+        total: 1, page: 1, limit: 1,
+      }));
+    }
+    return mockFetch(url, opts);
+  }
+
+  beforeEach(async () => {
+    recentTimestamp = new Date(Date.now() - 5 * 60_000).toISOString();
+    rcFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(recentMockFetch);
+
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
+      rcSavedEnv[k] = process.env[k];
+    }
+    process.env.MIDBRAIN_API_KEY = "test-key-recency";
+    process.env.MIDBRAIN_PROJECT_DIR = "";
+
+    rcServer = createServer("test");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await rcServer.connect(st);
+    rcClient = new Client({ name: "test-recency", version: "0.0.1" });
+    await rcClient.connect(ct);
+  });
+
+  afterEach(async () => {
+    try { await rcClient?.close(); } catch { /* ignore */ }
+    try { await rcServer?.close(); } catch { /* ignore */ }
+    rcFetchSpy?.mockRestore();
+    for (const [k, v] of Object.entries(rcSavedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("memory_search appends recency hint when newer memories exist", async () => {
+    const result = await rcClient.callTool({ name: "memory_search", arguments: { query: "setup" } });
+    const text = result.content[0].text;
+    expect(text).toContain("[Note: Newer episodic memories exist on server");
+    expect(text).toContain("get_episodic_memories_by_date");
+    expect(text).toContain("min ago");
+  });
+
+  it("grep appends recency hint when newer memories exist", async () => {
+    const result = await rcClient.callTool({ name: "grep", arguments: { pattern: "npm" } });
+    const text = result.content[0].text;
+    expect(text).toContain("[Note: Newer episodic memories exist on server");
+  });
+
+  it("list_files appends recency hint when newer memories exist", async () => {
+    const result = await rcClient.callTool({ name: "list_files", arguments: {} });
+    const text = result.content[0].text;
+    expect(text).toContain("Files (2):");
+    expect(text).toContain("[Note: Newer episodic memories exist on server");
+  });
+
+  it("read_file appends recency hint when newer memories exist", async () => {
+    const result = await rcClient.callTool({ name: "read_file", arguments: { file_path: "docs/setup.md" } });
+    const text = result.content[0].text;
+    expect(text).toContain("# Setup Guide");
+    expect(text).toContain("[Note: Newer episodic memories exist on server");
+  });
+
+  it("does not hint on second call within TTL (cached)", async () => {
+    const r1 = await rcClient.callTool({ name: "memory_search", arguments: { query: "setup" } });
+    expect(r1.content[0].text).toContain("[Note:");
+
+    const r2 = await rcClient.callTool({ name: "memory_search", arguments: { query: "setup" } });
+    expect(r2.content[0].text).not.toContain("[Note:");
+  });
+
+  it("get_episodic_memories_by_date does not emit recency hint", async () => {
+    const result = await rcClient.callTool({
+      name: "get_episodic_memories_by_date",
+      arguments: { date: "2025-06-01" },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("[assistant]");
+    expect(text).not.toContain("[Note: Newer episodic memories exist");
+  });
+
+  it("memory_setup_project does not emit recency hint", async () => {
+    const result = await rcClient.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: "/tmp/nonexistent-dir-" + Date.now() },
+    });
+    const text = result.content[0].text;
+    expect(text).not.toContain("[Note:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recency hint: old unseen memories still produce a hint
+// ---------------------------------------------------------------------------
+
+describe("recency hint — old unseen memories still hint", () => {
+  let rcClient;
+  let rcServer;
+  let rcFetchSpy;
+  const rcSavedEnv = {};
+
+  function oldMockFetch(url, opts) {
+    const parsed = new URL(url);
+    const p = parsed.pathname;
+    const limit = parsed.searchParams.get("limit");
+
+    if (p === "/api/v1/memories/episodic" && limit === "1") {
+      return Promise.resolve(jsonResponse({
+        items: [{ role: "user", text: "Old message", occurred_at: "2025-01-01T10:00:00Z" }],
+        total: 1, page: 1, limit: 1,
+      }));
+    }
+    return mockFetch(url, opts);
+  }
+
+  beforeEach(async () => {
+    rcFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(oldMockFetch);
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
+      rcSavedEnv[k] = process.env[k];
+    }
+    process.env.MIDBRAIN_API_KEY = "test-key-old";
+    process.env.MIDBRAIN_PROJECT_DIR = "";
+
+    rcServer = createServer("test");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await rcServer.connect(st);
+    rcClient = new Client({ name: "test-recency-old", version: "0.0.1" });
+    await rcClient.connect(ct);
+  });
+
+  afterEach(async () => {
+    try { await rcClient?.close(); } catch { /* ignore */ }
+    try { await rcServer?.close(); } catch { /* ignore */ }
+    rcFetchSpy?.mockRestore();
+    for (const [k, v] of Object.entries(rcSavedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("memory_search hints even when latest memory is old", async () => {
+    const result = await rcClient.callTool({ name: "memory_search", arguments: { query: "setup" } });
+    const text = result.content[0].text;
+    expect(text).toContain("[Note: Newer episodic memories exist on server");
+    expect(text).toContain("days ago");
+  });
+
+  it("grep hints even when latest memory is old", async () => {
+    const result = await rcClient.callTool({ name: "grep", arguments: { pattern: "npm" } });
+    const text = result.content[0].text;
+    expect(text).toContain("[Note:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recency hint: peek failure is silent
+// ---------------------------------------------------------------------------
+
+describe("recency hint — peek failure is silent", () => {
+  let rcClient;
+  let rcServer;
+  let rcFetchSpy;
+  const rcSavedEnv = {};
+
+  function failingPeekMockFetch(url, opts) {
+    const parsed = new URL(url);
+    const p = parsed.pathname;
+    const limit = parsed.searchParams.get("limit");
+
+    if (p === "/api/v1/memories/episodic" && limit === "1") {
+      return Promise.reject(new Error("Network failure on peek"));
+    }
+    return mockFetch(url, opts);
+  }
+
+  beforeEach(async () => {
+    rcFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(failingPeekMockFetch);
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
+      rcSavedEnv[k] = process.env[k];
+    }
+    process.env.MIDBRAIN_API_KEY = "test-key-fail";
+    process.env.MIDBRAIN_PROJECT_DIR = "";
+
+    rcServer = createServer("test");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await rcServer.connect(st);
+    rcClient = new Client({ name: "test-recency-fail", version: "0.0.1" });
+    await rcClient.connect(ct);
+  });
+
+  afterEach(async () => {
+    try { await rcClient?.close(); } catch { /* ignore */ }
+    try { await rcServer?.close(); } catch { /* ignore */ }
+    rcFetchSpy?.mockRestore();
+    for (const [k, v] of Object.entries(rcSavedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("memory_search returns normal results when peek fails", async () => {
+    const result = await rcClient.callTool({ name: "memory_search", arguments: { query: "setup" } });
+    const text = result.content[0].text;
+    expect(text).toContain("How do I set up the project?");
+    expect(text).not.toContain("[Note:");
+  });
+
+  it("grep returns normal results when peek fails", async () => {
+    const result = await rcClient.callTool({ name: "grep", arguments: { pattern: "npm" } });
+    const text = result.content[0].text;
+    expect(text).toContain("docs/setup.md:12:");
+    expect(text).not.toContain("[Note:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recency hint: empty episodic store
+// ---------------------------------------------------------------------------
+
+describe("recency hint — empty episodic store", () => {
+  let rcClient;
+  let rcServer;
+  let rcFetchSpy;
+  const rcSavedEnv = {};
+
+  function emptyPeekMockFetch(url, opts) {
+    const parsed = new URL(url);
+    const p = parsed.pathname;
+    const limit = parsed.searchParams.get("limit");
+
+    if (p === "/api/v1/memories/episodic" && limit === "1") {
+      return Promise.resolve(jsonResponse({ items: [], total: 0, page: 1, limit: 1 }));
+    }
+    return mockFetch(url, opts);
+  }
+
+  beforeEach(async () => {
+    rcFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(emptyPeekMockFetch);
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
+      rcSavedEnv[k] = process.env[k];
+    }
+    process.env.MIDBRAIN_API_KEY = "test-key-empty";
+    process.env.MIDBRAIN_PROJECT_DIR = "";
+
+    rcServer = createServer("test");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await rcServer.connect(st);
+    rcClient = new Client({ name: "test-recency-empty", version: "0.0.1" });
+    await rcClient.connect(ct);
+  });
+
+  afterEach(async () => {
+    try { await rcClient?.close(); } catch { /* ignore */ }
+    try { await rcServer?.close(); } catch { /* ignore */ }
+    rcFetchSpy?.mockRestore();
+    for (const [k, v] of Object.entries(rcSavedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("memory_search has no hint when episodic store is empty", async () => {
+    const result = await rcClient.callTool({ name: "memory_search", arguments: { query: "setup" } });
+    const text = result.content[0].text;
+    expect(text).toContain("How do I set up the project?");
+    expect(text).not.toContain("[Note:");
+  });
+});

@@ -25,5 +25,5 @@ try {
     process.exit(0);
   }
 
-  api.storeEpisodic(input.last_assistant_message, "assistant", debugLog);
+  api.storeEpisodic(input.last_assistant_message, "assistant", debugLog, { client: "claude" });
 } catch { /* fail silently */ }

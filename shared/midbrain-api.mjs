@@ -101,8 +101,9 @@ export class MidbrainApi {
    * @param {string} text
    * @param {"user"|"assistant"} role
    * @param {function(string): void} debugLogFn
+   * @param {Record<string, string>} [memoryMetadata] - Optional metadata (e.g. { client: "opencode" }).
    */
-  storeEpisodic(text, role, debugLogFn) {
+  storeEpisodic(text, role, debugLogFn, memoryMetadata) {
     debugLogFn(`STORE: role=${role} textLen=${text.length}`);
     fetch(ENDPOINTS.EPISODIC, {
       method: "POST",
@@ -110,7 +111,7 @@ export class MidbrainApi {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.#key}`,
       },
-      body: JSON.stringify({ text, role }),
+      body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
     })
       .then((r) => debugLogFn(`STORED: status=${r.status}`))
       .catch((e) => debugLogFn(`STORE ERROR: ${e instanceof Error ? e.message : String(e)}`));
