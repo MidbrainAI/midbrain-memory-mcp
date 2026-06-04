@@ -2,37 +2,27 @@
  * Shared utilities for Claude Code episodic capture hooks.
  * Node 20 builtins only — no npm dependencies.
  *
- * Re-exports storeEpisodic, makeDebugLogger from the shared module.
- * Wraps loadApiKey to pass Claude Code's config dir (~/.config/claude).
+ * Provides a pre-configured MidbrainApi instance and debug logger.
  * Hook scripts import from this file — their imports don't change.
  */
 
 import { join } from "path";
 import { homedir } from "os";
-import {
-  loadApiKey as sharedLoadApiKey,
-  storeEpisodic,
-  makeDebugLogger,
-  KEY_ENV_VAR,
-  CONFIG_DIR_ENV_VAR,
-} from "../shared/midbrain-common.mjs";
+import { MidbrainApi } from "../../shared/midbrain-api.mjs";
+import { makeDebugLogger } from "../../shared/logger.mjs";
+import { getClient } from "../../shared/clients/registry.mjs";
 
-export { storeEpisodic, makeDebugLogger, KEY_ENV_VAR };
-
-/** Claude Code config dir where .midbrain-key lives for this client. */
-const CLAUDE_CONFIG_DIR = join(homedir(), ".config", "claude");
+export { MidbrainApi, makeDebugLogger };
 
 /**
- * Loads API key with Claude Code's config dir pre-filled.
+ * Creates a MidbrainApi instance for the Claude Code client.
  * Accepts optional cwd (from hook stdin payload) for project-scoped key resolution.
- * Falls through to MIDBRAIN_CONFIG_DIR env, env var, then global fallback.
  * @param {string|undefined} cwd - The project working directory from the hook payload.
- * @returns {{ key: string, source: string }}
+ * @returns {Promise<MidbrainApi>}
  */
-export function loadApiKey(cwd) {
-  const configDir = process.env[CONFIG_DIR_ENV_VAR] || CLAUDE_CONFIG_DIR;
+export async function createApi(cwd) {
   const projectDir = cwd?.trim() || undefined;
-  return sharedLoadApiKey(projectDir, configDir);
+  return MidbrainApi.create(getClient("claude"), projectDir);
 }
 
 /**

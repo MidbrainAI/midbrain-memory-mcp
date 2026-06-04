@@ -2,7 +2,7 @@
  * MidBrain Memory OpenCode Plugin
  *
  * Episodic auto-capture: every user + assistant message stored automatically.
- * memory_search lives in the MCP server (server.js), not here.
+ * memory_search lives in the MCP server (index.js), not here.
  *
  * Architecture:
  * - User messages: captured via chat.message hook (fires once, has parts inline)
@@ -16,11 +16,12 @@
  */
 
 import { type Plugin } from "@opencode-ai/plugin";
-// @ts-ignore — midbrain-common.mjs is copied alongside this file at install time
-import { loadApiKey, storeEpisodic, makeDebugLogger } from "./midbrain-common.mjs";
-
-// --- Constants ---
-const OPENCODE_CONFIG_DIR = `${process.env.HOME ?? "/tmp"}/.config/opencode`;
+// @ts-ignore — shared modules are copied alongside this file at install time
+import { MidbrainApi } from "./midbrain-api.mjs";
+// @ts-ignore
+import { makeDebugLogger } from "./logger.mjs";
+// @ts-ignore
+import { getClient } from "./clients/registry.mjs";
 
 // --- Plugin ---
 
@@ -28,11 +29,10 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
   const HOME = process.env.HOME ?? "/tmp";
   const debugLog = makeDebugLogger(`${HOME}/midbrain-plugin-debug.log`);
 
-  let apiKey: string;
+  let api: InstanceType<typeof MidbrainApi>;
   try {
-    const { key, source } = loadApiKey(directory, OPENCODE_CONFIG_DIR);
-    apiKey = key;
-    debugLog(`INIT: dir=${directory} src=${source} key=...${key.slice(-4)}`);
+    api = await MidbrainApi.create(getClient("opencode"), directory);
+    debugLog(`INIT: dir=${directory} src=${api.keySource} key=${api.keyFingerprint}`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     debugLog(`INIT ERROR: ${msg}`);
@@ -59,7 +59,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
       debugLog(`USER: id=${messageID} len=${text.length}`);
       storedMessages.add(messageID);
-      storeEpisodic(apiKey, text, "user", debugLog);
+      api.storeEpisodic(text, "user", debugLog);
     },
 
     // --- Assistant messages: captured when message.updated shows completion ---
@@ -112,7 +112,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
         }
 
         debugLog(`ASSISTANT: storing id=${msgID} len=${text.length}`);
-        storeEpisodic(apiKey, text, "assistant", debugLog);
+        api.storeEpisodic(text, "assistant", debugLog);
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         debugLog(`ASSISTANT ERROR: ${errMsg}`);

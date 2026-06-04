@@ -20,19 +20,78 @@ to freeze a specific version. Never use the bare unpinned form — it
 looks auto-updating but is sticky on the first resolved version.
 
 ## Architecture
-- `server.js` — MCP server (Node 20, plain JS). Exposes 6 tools:
-  `memory_search`, `grep`, `get_episodic_memories_by_date`, `list_files`,
-  `read_file`, `memory_setup_project`
-- `shared/midbrain-common.mjs` — Shared utilities consumed by all components:
-  `loadApiKey`, `storeEpisodic`, `makeDebugLogger`, and all API constants.
-- `plugin/midbrain-memory.ts` — OpenCode plugin. Auto-stores every message as
-  episodic memory via `chat.message` hook. Runs in Bun (OpenCode's runtime).
-  Imports from `./midbrain-common.mjs` (copied alongside it at install time).
-- `claude-code/` — Standalone Node 20 scripts for Claude Code's hook system.
-  `capture-user.mjs` (UserPromptSubmit) and `capture-assistant.mjs` (Stop).
-  `common.mjs` re-exports from `../shared/midbrain-common.mjs`. No npm deps.
-- `install.mjs` — Automated installer. Detects OpenCode/Claude Code, writes
-  configs, copies plugin + shared lib, sets up API key file (chmod 600).
+
+```
+index.js                         Entry point: MCP server OR install CLI dispatcher
+mcp.mjs                          All 6 MCP tool definitions (createServer factory)
+install.mjs                      Installer orchestrator + CLI + setupProject() core
+shared/
+  midbrain-api.mjs               HTTP client (MidbrainApi class). Single source of truth
+                                 for all API calls and key resolution.
+  logger.mjs                     makeDebugLogger() — timestamped file appender
+  clients/
+    base.mjs                     Abstract BaseClient. Owns the full resolveKey() chain.
+    opencode.mjs                 OpenCode adapter: JSONC config, plugin copy
+    claude.mjs                   Claude Code adapter: hooks, .mcp.json, .claude.json
+    generic.mjs                  Near-noop fallback: global key write, project key CRUD
+    registry.mjs                 getClient(id), detectClients(), allClients()
+plugins/
+  opencode/
+    midbrain-memory.ts           OpenCode plugin (TypeScript, Bun runtime). Captures
+                                 every message via chat.message hook.
+  claude-code/
+    common.mjs                   Shared hook utilities (createApi, debugLog, readStdinJSON)
+    capture-user.mjs             Hook: UserPromptSubmit → storeEpisodic("user")
+    capture-assistant.mjs        Hook: Stop → storeEpisodic("assistant")
+```
+
+### Capture paths
+
+**OpenCode plugin** — `plugins/opencode/midbrain-memory.ts` runs in Bun.
+At install time, this file and all of `shared/` are copied into
+`~/.config/opencode/plugins/`. The plugin uses relative imports at runtime:
+`./midbrain-api.mjs`, `./logger.mjs`, `./clients/registry.mjs`.
+
+**Claude Code hooks** — `plugins/claude-code/*.mjs` run in Node 20.
+They are NOT copied; they run directly from the installed npm package via
+absolute paths written into `~/.claude/settings.json` at install time.
+`common.mjs` imports from `../../shared/` (relative within the package tree).
+
+Both capture paths go through the same modules:
+`MidbrainApi.create(getClient(id), projectDir)` → `BaseClient.resolveKey()`.
+**Never re-implement key resolution or API calls in a plugin or hook.**
+Use `MidbrainApi` and `getClient` from `shared/`.
+
+## API Key Resolution
+
+Key resolution is owned entirely by `BaseClient.resolveKey()` in
+`shared/clients/base.mjs`. All plugins, hooks, and the MCP server MUST
+obtain their API key through `MidbrainApi.create(getClient(id), projectDir)`.
+Never read key files directly. Never fall back to env vars manually.
+
+Resolution chain (in priority order):
+
+| # | Location | Notes |
+|---|---|---|
+| 1a | `<projectDir>/.midbrain/.midbrain-key` | Per-project (recommended) |
+| 1b | `<projectDir>/.midbrain-key` | Per-project (flat override) |
+| 2a | `$MIDBRAIN_PROJECT_DIR/.midbrain/.midbrain-key` | Per-project via env |
+| 2b | `$MIDBRAIN_PROJECT_DIR/.midbrain-key` | Per-project via env (flat) |
+| 3 | `resolveClientKey()` | Per-client file (e.g. `~/.config/opencode/.midbrain-key`) |
+| 4 | `~/.config/midbrain/.midbrain-key` | Global default |
+| 5 | `MIDBRAIN_API_KEY` env var | CI / debug fallback only |
+
+Rules:
+- `EACCES` on any key file is a hard error (throw, not silent fallthrough).
+- Empty key files are a hard error naming the file path.
+- Fallthrough from project key to global key emits a WARN to stderr.
+
+Per-client key file locations:
+- OpenCode: `~/.config/opencode/.midbrain-key`
+- Claude Code: `~/.config/claude/.midbrain-key`
+- Global default: `~/.config/midbrain/.midbrain-key`
+- Project override (recommended): `<projectDir>/.midbrain/.midbrain-key`
+- Project override (flat): `<projectDir>/.midbrain-key`
 
 ## API Reference
 - Auth: `Authorization: Bearer <key>` header
@@ -49,29 +108,6 @@ looks auto-updating but is sticky on the first resolved version.
 - `POST /api/v1/memories/episodic` — body: `{"text": "...", "role": "user"|"assistant"}`
   Append-only. Returns created memory.
 - `GET /health` — no auth. Returns `{"status": "ok"}`
-
-## API Key
-- Keys in files with chmod 600. Env var is CI/debug fallback only.
-- Per-client key files support multi-embodiment (different keys per client).
-- loadApiKey(projectDir?, configDir?) priority chain:
-  1a. .midbrain-key in projectDir (per-project file override)
-  1b. .midbrain/.midbrain-key in projectDir (subdirectory convention, recommended)
-  2a. .midbrain-key from MIDBRAIN_PROJECT_DIR env path (when no projectDir arg)
-  2b. .midbrain/.midbrain-key from MIDBRAIN_PROJECT_DIR env path (subdirectory convention)
-  3. .midbrain-key in configDir (per-client config dir, e.g. ~/.config/opencode)
-  4. .midbrain-key from MIDBRAIN_CONFIG_DIR env path (when no configDir arg)
-  5. MIDBRAIN_API_KEY env var (CI / debug fallback only)
-  6. ~/.config/midbrain/.midbrain-key (global default)
-- EACCES on any key file is a hard error (throw, not silent fallthrough).
-- Empty key files are a hard error naming the file path.
-- When projectDir is provided but no project key found, a WARN is emitted to
-  stderr if resolution falls through to the global key (step 6).
-- Key file locations:
-  - Global default: ~/.config/midbrain/.midbrain-key
-  - OpenCode client: ~/.config/opencode/.midbrain-key
-  - Claude Code client: ~/.config/claude/.midbrain-key
-  - Project override (flat): <projectDir>/.midbrain-key
-  - Project override (recommended): <projectDir>/.midbrain/.midbrain-key
 
 ## Per-Project Memory Setup
 To scope episodic memory to a project-specific agent:
@@ -92,9 +128,9 @@ OpenCode — project-level opencode.json (or opencode.jsonc) in the project root
     "mcp": {
       "midbrain-memory": {
         "type": "local",
-        "command": ["<absolute-node-path>", "<path-to>/server.js"],
+        "command": ["<absolute-node-path>", "<path-to>/index.js"],
         "environment": {
-          "MIDBRAIN_CONFIG_DIR": "~/.config/opencode",
+          "MIDBRAIN_CLIENT": "opencode",
           "MIDBRAIN_PROJECT_DIR": "<project-root>"
         },
         "enabled": true
@@ -107,9 +143,9 @@ Claude Code — project-level .mcp.json in the project root:
     "mcpServers": {
       "midbrain-memory": {
         "command": "<absolute-node-path>",
-        "args": ["<path-to>/server.js"],
+        "args": ["<path-to>/index.js"],
         "env": {
-          "MIDBRAIN_CONFIG_DIR": "~/.config/claude",
+          "MIDBRAIN_CLIENT": "claude",
           "MIDBRAIN_PROJECT_DIR": "<project-root>"
         }
       }
@@ -158,17 +194,34 @@ CLI: node install.mjs --project /absolute/path/to/project
 - Import McpServer from @modelcontextprotocol/sdk/server/mcp.js
 - Import StdioServerTransport from @modelcontextprotocol/sdk/server/stdio.js
 - Import { z } from "zod" (zod@3, not zod@4)
-- Import { parse, modify, applyEdits } from "jsonc-parser" for config file I/O
 - Native fetch (Node 20 built-in). No axios, no httpx.
+- Use MidbrainApi.create(getClient(id), projectDir) for all API calls.
+  Never read key files directly in tool handlers.
 
-## Plugin Constraints
+## Plugin / Hook Constraints
+
+**CRITICAL: All plugins and hooks MUST use the shared client layer.**
+Never read `.midbrain-key` files directly. Never call `fs.readFile` for
+keys. Never check env vars for the API key manually. The entire resolution
+chain lives in `BaseClient.resolveKey()` — accessed via
+`MidbrainApi.create(getClient(id), projectDir)`.
+
+**OpenCode plugin** (`plugins/opencode/midbrain-memory.ts`):
 - TypeScript (.ts). Runs in OpenCode's Bun runtime.
 - Import { type Plugin } from "@opencode-ai/plugin"
-- Use chat.message hook to capture every message
-- POST to /api/v1/memories/episodic with role from message
-- Read API key via loadApiKey(directory, "~/.config/opencode") — file-first
-- Fire-and-forget: don't block the chat on API response
-- Log errors to console.error, never crash
+- Use chat.message hook to capture every message.
+- Call MidbrainApi.create(getClient('opencode'), directory) for key + API.
+- Fire-and-forget: don't block the chat on API response.
+- Log errors to console.error, never crash.
+- jsonc-parser is NOT available in the Bun plugin runtime — it is lazy-loaded
+  inside opencode.mjs only when config writing is needed. The plugin itself
+  never calls config-writing methods.
+
+**Claude Code hooks** (`plugins/claude-code/`):
+- Node 20. No npm deps (imports only from ../../shared/).
+- Import { createApi, debugLog, readStdinJSON } from ./common.mjs.
+- createApi(cwd) wraps MidbrainApi.create(getClient('claude'), cwd) — use it.
+- Fire-and-forget via api.storeEpisodic(). Fail silently on any error.
 
 ## Plugin Hook Signature
 chat.message receives:
@@ -199,21 +252,30 @@ Using `path: { sessionID }` will silently fail (returns no data).
       "type": "local",
       "command": ["npx", "-y", "midbrain-memory-mcp@latest"],
       "environment": {
-        "MIDBRAIN_CONFIG_DIR": "~/.config/opencode"
+        "MIDBRAIN_CLIENT": "opencode"
       },
       "enabled": true
     }
   }
 }
 Note: No API key in environment block — server reads from
-~/.config/opencode/.midbrain-key (file-first priority).
-MIDBRAIN_CONFIG_DIR tells the server which client's key file to use.
+~/.config/opencode/.midbrain-key via BaseClient.resolveKey().
+MIDBRAIN_CLIENT tells the registry which client adapter to use.
 
-## Plugin Location
-Copy BOTH files to ~/.config/opencode/plugins/:
-  shared/midbrain-common.mjs  →  ~/.config/opencode/plugins/midbrain-common.mjs
-  plugin/midbrain-memory.ts   →  ~/.config/opencode/plugins/midbrain-memory.ts
-The plugin imports ./midbrain-common.mjs at runtime — both must be present.
+## Plugin Location (OpenCode)
+At install time, the following are copied to ~/.config/opencode/plugins/:
+
+  plugins/opencode/midbrain-memory.ts  →  ~/.config/opencode/plugins/midbrain-memory.ts
+  shared/midbrain-api.mjs              →  ~/.config/opencode/plugins/midbrain-api.mjs
+  shared/logger.mjs                    →  ~/.config/opencode/plugins/logger.mjs
+  shared/clients/base.mjs              →  ~/.config/opencode/plugins/clients/base.mjs
+  shared/clients/generic.mjs           →  ~/.config/opencode/plugins/clients/generic.mjs
+  shared/clients/opencode.mjs          →  ~/.config/opencode/plugins/clients/opencode.mjs
+  shared/clients/claude.mjs            →  ~/.config/opencode/plugins/clients/claude.mjs
+  shared/clients/registry.mjs          →  ~/.config/opencode/plugins/clients/registry.mjs
+
+The plugin uses relative imports at runtime (./midbrain-api.mjs etc.) which
+resolve within the copied plugins/ directory. All 8 files must be present.
 
 ## Rules for LLM (put in project AGENTS.md where MCP is used)
 - Use memory_search at session start to load relevant context
@@ -283,44 +345,53 @@ review and creates the PR.
 
 ## Test Architecture
 
-Tests live in `tests/`, using vitest (ESM). Three categories:
+Tests live in `tests/`, using vitest (ESM). Each test file maps 1:1 to a source module:
 
-1. **Unit tests** (`tests/midbrain-common.test.mjs`)
-   - Pure function tests: `loadApiKey`, `isNewerVersion`, `storeEpisodic`, constants
-   - Uses temp directories for key file tests (cleaned up in afterEach)
-   - Mocks `globalThis.fetch` with `vi.spyOn` for network calls
-   - No external dependencies beyond vitest
+| Test file | Source module |
+|---|---|
+| `tests/midbrain-api.test.mjs` | `shared/midbrain-api.mjs` |
+| `tests/logger.test.mjs` | `shared/logger.mjs` |
+| `tests/client-opencode.test.mjs` | `shared/clients/opencode.mjs` |
+| `tests/client-claude.test.mjs` | `shared/clients/claude.mjs` |
+| `tests/client-registry.test.mjs` | `shared/clients/registry.mjs` |
+| `tests/install.test.mjs` | `install.mjs` (orchestrator only) |
+| `tests/mcp.test.mjs` | `mcp.mjs` / `index.js` (MCP tool integration) |
+| `tests/docs-regression.test.mjs` | `scripts/check-pinned-spec.sh` + doc files |
 
-2. **Installer tests** (`tests/install.test.mjs`)
-   - All filesystem operations mocked via `vi.mock('fs/promises')` and `vi.mock('fs')`
-   - Tests: readJson, writeJson, patchJsonFile, resolveOpencodeConfig,
-     detectTools, installOpenCode, installClaudeJson, installClaudeSettings, projectSetup
-   - Verifies JSONC comment preservation, config merging, key file handling
-   - No real files read or written
+Shared mock helper: `tests/fs-mock.mjs` — exports `enoent`, `makeResetMocks`,
+`makeExistsFor`, `makeReadFileReturns`. Each test file that needs fs mocks
+declares its own `mocks` via `vi.hoisted()` and binds helpers via the factory
+functions. The `vi.mock()` calls must live in the test file (vitest hoisting).
 
-3. **Integration tests** (`tests/server-integration.test.mjs`)
-   - Self-contained, in-process: no child process, no stdio, no mock HTTP server
-   - Imports `createServer()` from `server.js` directly
-   - Uses MCP SDK `InMemoryTransport.createLinkedPair()` to connect Client <-> Server
-   - Mocks `globalThis.fetch` with `vi.spyOn` to intercept all API calls
-   - Routes mock responses by URL path in a `mockFetch()` function
-   - Temp API key file + env vars set in `beforeAll`, restored in `afterAll`
-   - memory_setup_project tests use real temp dirs for config file I/O
+**Unit tests** (`midbrain-api`, `logger`, `client-*`, `install`):
+- All filesystem operations mocked via `vi.mock('fs/promises')` and `vi.mock('fs')`
+- No real files read or written
+- Mocks `globalThis.fetch` with `vi.spyOn` for network calls where needed
+
+**Integration tests** (`mcp.test.mjs`):
+- Self-contained, in-process: no child process, no stdio, no mock HTTP server
+- Imports `createServer()` from `index.js` directly
+- Uses MCP SDK `InMemoryTransport.createLinkedPair()` to connect Client <-> Server
+- Mocks `globalThis.fetch` with `vi.spyOn` to intercept all API calls
+- Routes mock responses by URL path in a `mockFetch()` function
+- Temp API key file + env vars set in `beforeAll`, restored in `afterAll`
+- `memory_setup_project` tests use real temp dirs for config file I/O
 
 **Writing new tool tests:**
-1. Add mock response data to `MOCK_DATA` in the integration test
+1. Add mock response data to `MOCK_DATA` in `mcp.test.mjs`
 2. Add a URL route in `mockFetch()` to return the mock data
 3. Write tests that call the tool via `client.callTool()` and assert on
    `result.content[0].text`
 4. Test both success and error paths (4xx responses, invalid inputs)
 
 **Writing new unit tests:**
-1. Import the function from `shared/midbrain-common.mjs`
-2. Create temp dirs in `beforeEach`, clean up in `afterEach`
-3. Mock `fetch` with `vi.spyOn(globalThis, "fetch")` if needed
+1. Create or add to the test file matching the source module
+2. Declare `mocks` via `vi.hoisted()`, wire `vi.mock()`, bind helpers
+3. Create temp dirs in `beforeEach`, clean up in `afterEach` if touching real fs
+4. Mock `fetch` with `vi.spyOn(globalThis, "fetch")` if needed
 
 ## Test Plan (manual smoke tests)
-1. node server.js -- should not crash, should print "MCP server running" to stderr
+1. node index.js -- should not crash, should print "MCP server running" to stderr
 2. curl https://memory.midbrain.ai/health -- should return {"status": "ok"}
 3. In fresh OpenCode session: memory_search should be available as a tool
 4. Send a message -- plugin should auto-store it as episodic

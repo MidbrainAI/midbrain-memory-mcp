@@ -8,7 +8,7 @@
  * Fails silently on any error.
  */
 
-import { readStdinJSON, loadApiKey, storeEpisodic, debugLog } from "./common.mjs";
+import { readStdinJSON, createApi, debugLog } from "./common.mjs";
 
 try {
   const input = await readStdinJSON();
@@ -17,14 +17,13 @@ try {
   if (input.stop_hook_active) process.exit(0);
   if (!input.last_assistant_message) process.exit(0);
 
-  let apiKey;
+  let api;
   try {
-    const { key } = loadApiKey(input.cwd);
-    apiKey = key;
+    api = await createApi(input.cwd);
   } catch {
     debugLog("NO KEY");
     process.exit(0);
   }
 
-  storeEpisodic(apiKey, input.last_assistant_message, "assistant", debugLog);
+  api.storeEpisodic(input.last_assistant_message, "assistant", debugLog);
 } catch { /* fail silently */ }

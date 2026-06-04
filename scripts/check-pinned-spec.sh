@@ -12,7 +12,7 @@
 #   Matches the bare package name followed by anything NOT in the safe
 #   set, or by end-of-line. Safe set:
 #     @   permits "@latest", "@0.3.1", "@beta" etc.
-#     /   permits "midbrain-memory-mcp/server.js" paths (runtime
+#     /   permits "midbrain-memory-mcp/index.js" paths (runtime
 #         migration handles those cases)
 #     .   permits URL fragments like "midbrain-memory-mcp.git"
 #     -   permits hypothetical sibling packages like
@@ -21,15 +21,11 @@
 #     a-zA-Z0-9  permits longer identifiers (should almost never hit)
 #
 # Exclusions:
-#   - node_modules/ / .git/
 #   - tasks/          internal PRDs, backlog, review notes (intentionally
 #                     contain historical bare references)
 #   - tests/          fixtures for stale-pattern detection contain the
 #                     bare form on purpose
-#   - shared/midbrain-common.mjs
-#                     defines NPM_PACKAGE_NAME = "midbrain-memory-mcp"
-#                     as the single source of truth
-#   - server.js       PRD-005 update hint string: "npm update -g ..."
+#   - index.js      PRD-005 update hint string: "npm update -g ..."
 #   - package.json / package-lock.json
 #                     self-referential (the package IS midbrain-memory-mcp)
 #   - CHANGELOG.md / BACKLOG.md
@@ -39,23 +35,31 @@
 
 set -euo pipefail
 
+GIT_GREP_INCLUDES=(
+  '*.md' '*.json' '*.mjs' '*.ts' '*.js' '*.sh'
+)
+
+GIT_GREP_EXCLUDES=(
+  ':!tasks/**'
+  ':!tests/**'
+  ':!package.json'
+  ':!package-lock.json'
+  ':!CHANGELOG.md'
+  ':!BACKLOG.md'
+  ':!team-rollout-*.md'
+  ':!TEAM-ROLLOUT-*.md'
+)
+
 # Step 1: bare grep. Step 2: filter out known-safe "midbrain-memory-mcp install"
 # invocations (PRD-011 subcommand) — that invocation is pinned via the `install`
 # subcommand contract, not via `@latest`, but it is a legitimate public command
 # the docs MUST lead with.
 
-RAW=$(grep -rn -E "midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)" \
-    --include="*.md" --include="*.json" --include="*.mjs" \
-    --include="*.ts" --include="*.js" --include="*.sh" \
-    --exclude-dir=node_modules --exclude-dir=tasks --exclude-dir=.git \
-    --exclude-dir=tests \
-    --exclude="package.json" --exclude="package-lock.json" \
-    --exclude="CHANGELOG.md" --exclude="BACKLOG.md" \
-    --exclude="team-rollout-*.md" --exclude="TEAM-ROLLOUT-*.md" \
-    --exclude="midbrain-common.mjs" \
-    --exclude="server.js" \
-    --exclude="check-pinned-spec.sh" \
-    . || true)
+RAW=$(git grep -n -E "midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)" -- \
+    "${GIT_GREP_INCLUDES[@]}" \
+    "${GIT_GREP_EXCLUDES[@]}" \
+    ':!index.js' \
+    ':!scripts/check-pinned-spec.sh' || true)
 
 # Strip allowed "midbrain-memory-mcp install" tokens from each line, then
 # re-check the residual for bare unpinned references. A line-level grep -v
@@ -77,6 +81,7 @@ while IFS= read -r line; do
     -e 's/"midbrain-memory-mcp"/REDACTED_PROSE/g' \
     -e 's/midbrain-memory-mcp\)/REDACTED_URL)/g' \
     -e 's/midbrain-memory-mcp v[0-9]/REDACTED_LOG/g' \
+    -e 's/npm update -g midbrain-memory-mcp/REDACTED_UPDATE/g' \
     -e 's/(cd|clone) midbrain-memory-mcp/\1 REDACTED_DIR/g')
   if printf '%s' "$stripped" | grep -qE 'midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)'; then
     FOUND="${FOUND}${line}
@@ -107,16 +112,10 @@ echo "OK: no unpinned midbrain-memory-mcp references."
 # works') do NOT match and remain allowed.
 # ---------------------------------------------------------------------------
 
-FOUND_60CHAR=$(grep -rn -E 'npx.*--package=midbrain-memory-mcp[^[:space:]]*[[:space:]]+midbrain-memory-setup' \
-    --include="*.md" --include="*.json" --include="*.mjs" \
-    --include="*.ts" --include="*.js" --include="*.sh" \
-    --exclude-dir=node_modules --exclude-dir=tasks --exclude-dir=.git \
-    --exclude-dir=tests \
-    --exclude="package.json" --exclude="package-lock.json" \
-    --exclude="CHANGELOG.md" --exclude="BACKLOG.md" \
-    --exclude="team-rollout-*.md" --exclude="TEAM-ROLLOUT-*.md" \
-    --exclude="check-pinned-spec.sh" \
-    . || true)
+FOUND_60CHAR=$(git grep -n -E 'npx.*--package=midbrain-memory-mcp[^[:space:]]*[[:space:]]+midbrain-memory-setup' -- \
+    "${GIT_GREP_INCLUDES[@]}" \
+    "${GIT_GREP_EXCLUDES[@]}" \
+    ':!scripts/check-pinned-spec.sh' || true)
 
 if [ -n "$FOUND_60CHAR" ]; then
   echo "ERROR: legacy 60-char 'npx --package=... midbrain-memory-setup' form found."
