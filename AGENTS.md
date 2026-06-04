@@ -281,6 +281,9 @@ resolve within the copied plugins/ directory. All 8 files must be present.
 
 ## Rules for LLM (put in project AGENTS.md where MCP is used)
 - Use memory_search at session start to load relevant context
+- Use check_session_status at session start to detect recent activity from
+  other sessions or clients. If it reports recent activity, use
+  get_episodic_memories_by_date to fetch full context.
 - Use grep for exact pattern matches (names, IDs, code, URLs)
 - Use list_files and read_file to browse semantic memory documents
 - Use get_episodic_memories_by_date for conversation history by date

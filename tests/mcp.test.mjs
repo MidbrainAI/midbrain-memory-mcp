@@ -204,15 +204,16 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP server tool listing", () => {
-  it("exposes exactly 6 tools", async () => {
+  it("exposes exactly 7 tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(6);
+    expect(tools).toHaveLength(7);
   });
 
   it("exposes the expected tool names", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      "check_session_status",
       "get_episodic_memories_by_date",
       "grep",
       "list_files",
@@ -1616,6 +1617,179 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
 
     // Tool response shape unchanged: text content with key + config lines
     expect(text).toMatch(/key|Key|midbrain/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// check_session_status tool
+// ---------------------------------------------------------------------------
+
+describe("check_session_status tool", () => {
+  let rcClient;
+  let rcServer;
+  let rcFetchSpy;
+  let recentTimestamp;
+  const rcSavedEnv = {};
+
+  function sessionStatusMockFetch(url, opts) {
+    const parsed = new URL(url);
+    const p = parsed.pathname;
+    const limit = parsed.searchParams.get("limit");
+
+    if (p === "/api/v1/memories/episodic" && limit === "1") {
+      return Promise.resolve(jsonResponse({
+        items: [{
+          role: "assistant",
+          text: "Implemented the auth module",
+          occurred_at: recentTimestamp,
+          memory_metadata: { client: "opencode" },
+        }],
+        total: 1, page: 1, limit: 1,
+      }));
+    }
+    return mockFetch(url, opts);
+  }
+
+  beforeEach(async () => {
+    recentTimestamp = new Date(Date.now() - 5 * 60_000).toISOString();
+    rcFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(sessionStatusMockFetch);
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
+      rcSavedEnv[k] = process.env[k];
+    }
+    process.env.MIDBRAIN_API_KEY = "test-key-session";
+    process.env.MIDBRAIN_PROJECT_DIR = "";
+
+    rcServer = createServer("test");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await rcServer.connect(st);
+    rcClient = new Client({ name: "test-session-status", version: "0.0.1" });
+    await rcClient.connect(ct);
+  });
+
+  afterEach(async () => {
+    try { await rcClient?.close(); } catch { /* ignore */ }
+    try { await rcServer?.close(); } catch { /* ignore */ }
+    rcFetchSpy?.mockRestore();
+    for (const [k, v] of Object.entries(rcSavedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("returns recent activity summary with timestamp and client", async () => {
+    const result = await rcClient.callTool({ name: "check_session_status", arguments: {} });
+    const text = result.content[0].text;
+    expect(text).toContain("Most recent episodic memory:");
+    expect(text).toContain("min ago");
+    expect(text).toContain("client: opencode");
+    expect(text).toContain("get_episodic_memories_by_date");
+  });
+
+  it("suppresses recency hint on subsequent tool calls (markEpisodicSeen)", async () => {
+    // First call: check_session_status marks the memory as seen
+    await rcClient.callTool({ name: "check_session_status", arguments: {} });
+
+    // Second call: memory_search should NOT have a recency hint
+    const r2 = await rcClient.callTool({ name: "memory_search", arguments: { query: "setup" } });
+    expect(r2.content[0].text).not.toContain("[Note:");
+  });
+});
+
+describe("check_session_status — no activity", () => {
+  let rcClient;
+  let rcServer;
+  let rcFetchSpy;
+  const rcSavedEnv = {};
+
+  function emptyMockFetch(url, opts) {
+    const parsed = new URL(url);
+    const p = parsed.pathname;
+    const limit = parsed.searchParams.get("limit");
+
+    if (p === "/api/v1/memories/episodic" && limit === "1") {
+      return Promise.resolve(jsonResponse({ items: [], total: 0, page: 1, limit: 1 }));
+    }
+    return mockFetch(url, opts);
+  }
+
+  beforeEach(async () => {
+    rcFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(emptyMockFetch);
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
+      rcSavedEnv[k] = process.env[k];
+    }
+    process.env.MIDBRAIN_API_KEY = "test-key-empty-session";
+    process.env.MIDBRAIN_PROJECT_DIR = "";
+
+    rcServer = createServer("test");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await rcServer.connect(st);
+    rcClient = new Client({ name: "test-session-empty", version: "0.0.1" });
+    await rcClient.connect(ct);
+  });
+
+  afterEach(async () => {
+    try { await rcClient?.close(); } catch { /* ignore */ }
+    try { await rcServer?.close(); } catch { /* ignore */ }
+    rcFetchSpy?.mockRestore();
+    for (const [k, v] of Object.entries(rcSavedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("returns no-activity message when episodic store is empty", async () => {
+    const result = await rcClient.callTool({ name: "check_session_status", arguments: {} });
+    const text = result.content[0].text;
+    expect(text).toBe("No episodic memories found.");
+  });
+});
+
+describe("check_session_status — API failure", () => {
+  let rcClient;
+  let rcServer;
+  let rcFetchSpy;
+  const rcSavedEnv = {};
+
+  function failMockFetch(url, opts) {
+    const parsed = new URL(url);
+    const p = parsed.pathname;
+    const limit = parsed.searchParams.get("limit");
+
+    if (p === "/api/v1/memories/episodic" && limit === "1") {
+      return Promise.resolve(jsonResponse({ detail: "Server error" }, 500));
+    }
+    return mockFetch(url, opts);
+  }
+
+  beforeEach(async () => {
+    rcFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(failMockFetch);
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
+      rcSavedEnv[k] = process.env[k];
+    }
+    process.env.MIDBRAIN_API_KEY = "test-key-fail-session";
+    process.env.MIDBRAIN_PROJECT_DIR = "";
+
+    rcServer = createServer("test");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await rcServer.connect(st);
+    rcClient = new Client({ name: "test-session-fail", version: "0.0.1" });
+    await rcClient.connect(ct);
+  });
+
+  afterEach(async () => {
+    try { await rcClient?.close(); } catch { /* ignore */ }
+    try { await rcServer?.close(); } catch { /* ignore */ }
+    rcFetchSpy?.mockRestore();
+    for (const [k, v] of Object.entries(rcSavedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("returns error message when API fails", async () => {
+    const result = await rcClient.callTool({ name: "check_session_status", arguments: {} });
+    const text = result.content[0].text;
+    expect(text).toContain("Failed to check session status");
   });
 });
 

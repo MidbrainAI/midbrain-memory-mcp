@@ -316,6 +316,53 @@ after memory_search to read context around a search hit.`,
     }
   );
 
+  // --- check_session_status ---
+
+  server.tool(
+    "check_session_status",
+    `Check for recent activity from other sessions or clients.
+Call this at the start of a session or when the user wants to continue
+previous work. Returns a summary of recent episodic activity without
+fetching full memories. Use get_episodic_memories_by_date to retrieve
+full context if needed.`,
+    {},
+    async () => {
+      try {
+        const a = await createApi();
+        const result = await a.fetch(MidbrainApi.EPISODIC, { page: 1, limit: 1 });
+        const items = result?.items || [];
+
+        if (items.length === 0) {
+          return { content: [{ type: "text", text: "No episodic memories found." }] };
+        }
+
+        const latest = items[0];
+        markEpisodicSeen(items);
+
+        const ts = latest.occurred_at
+          ? latest.occurred_at.slice(0, 16).replace("T", " ")
+          : "unknown";
+        const ageMs = latest.occurred_at
+          ? Date.now() - new Date(latest.occurred_at).getTime()
+          : 0;
+        const agoStr = ageMs < 60_000 ? "just now"
+          : ageMs < 3_600_000 ? `${Math.round(ageMs / 60_000)} min ago`
+          : ageMs < 86_400_000 ? `${Math.round(ageMs / 3_600_000)} hr ago`
+          : `${Math.round(ageMs / 86_400_000)} days ago`;
+
+        const clientTag = latest.memory_metadata?.client
+          ? `, client: ${latest.memory_metadata.client}`
+          : "";
+
+        const summary = `Most recent episodic memory: ${ts} (${agoStr}${clientTag})\nUse get_episodic_memories_by_date with today's date to retrieve full context.`;
+        return { content: [{ type: "text", text: summary }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: `Failed to check session status: ${msg}` }] };
+      }
+    }
+  );
+
   // --- memory_setup_project ---
 
   server.tool(
