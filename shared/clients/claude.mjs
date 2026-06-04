@@ -9,7 +9,7 @@
  * - Split command/args format, `env` key, `type: "stdio"`
  */
 
-import { BaseClient } from './base.mjs';
+import { BaseClient, readKeyFile } from './base.mjs';
 
 const KEY_FILENAME = ".midbrain-key";
 import fs from 'fs/promises';
@@ -158,12 +158,9 @@ export class Claude extends BaseClient {
   }
 
   async resolveClientKey() {
-    try {
-      const raw = await fs.readFile(keyFilePathFn(), 'utf8');
-      const key = raw.trim();
-      if (key) return { key, source: keyFilePathFn() };
-    } catch { /* not found */ }
-    return null;
+    const source = keyFilePathFn();
+    const key = await readKeyFile(source);
+    return key ? { key, source } : null;
   }
 
   async writeKey(key) {
@@ -287,9 +284,16 @@ export class Claude extends BaseClient {
     let data;
     try {
       data = (await readJson(cjp)) || {};
-    } catch {
-      data = {};
+    } catch (err) {
+      throw new Error(
+        `Could not patch ${cjp}: Claude config could not be read or parsed (${err.message})`,
+        { cause: err }
+      );
     }
+    return await this.#patchProjectLocalData(cjp, data, projectDir, { isDev });
+  }
+
+  async #patchProjectLocalData(cjp, data, projectDir, { isDev }) {
     const existingEntry =
       data.projects &&
       data.projects[projectDir] &&

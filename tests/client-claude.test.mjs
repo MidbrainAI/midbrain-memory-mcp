@@ -43,9 +43,16 @@ const HOME = os.homedir();
 const MCP_KEY = "midbrain-memory";
 
 const PATHS = {
+  claudeKey:      path.join(HOME, ".config", "claude", ".midbrain-key"),
   claudeJson:     path.join(HOME, ".claude.json"),
   claudeSettings: path.join(HOME, ".claude", "settings.json"),
 };
+
+function fileError(code, filePath) {
+  const err = new Error(`${code}: test failure, open '${filePath}'`);
+  err.code = code;
+  return err;
+}
 
 // ===================================================================
 // isInstalled
@@ -72,6 +79,48 @@ describe("Claude.isInstalled", () => {
 
   it("returns false when neither exists", () => {
     expect(cc.isInstalled()).toBe(false);
+  });
+});
+
+// ===================================================================
+// resolveClientKey
+// ===================================================================
+
+describe("Claude.resolveClientKey", () => {
+  const cc = new Claude();
+  beforeEach(resetMocks);
+
+  it("returns the client key when present", async () => {
+    readFileReturns({ [PATHS.claudeKey]: "claude-key\n" });
+
+    await expect(cc.resolveClientKey()).resolves.toEqual({
+      key: "claude-key",
+      source: PATHS.claudeKey,
+    });
+  });
+
+  it("returns null when the client key file is missing", async () => {
+    await expect(cc.resolveClientKey()).resolves.toBeNull();
+  });
+
+  it("throws when the client key file is empty", async () => {
+    readFileReturns({ [PATHS.claudeKey]: " \n" });
+
+    await expect(cc.resolveClientKey()).rejects.toThrow(/Key file is empty/);
+    await expect(cc.resolveClientKey()).rejects.toThrow(PATHS.claudeKey);
+  });
+
+  it("throws when the client key file is unreadable", async () => {
+    mocks.readFile.mockRejectedValue(fileError("EACCES", PATHS.claudeKey));
+
+    await expect(cc.resolveClientKey()).rejects.toThrow(/Permission denied reading key file/);
+    await expect(cc.resolveClientKey()).rejects.toThrow(PATHS.claudeKey);
+  });
+
+  it("throws unexpected client key read errors", async () => {
+    mocks.readFile.mockRejectedValue(fileError("EIO", PATHS.claudeKey));
+
+    await expect(cc.resolveClientKey()).rejects.toThrow(/EIO/);
   });
 });
 
@@ -304,5 +353,18 @@ describe("Claude.installProject", () => {
     await cc.installProject(PROJECT_DIR);
 
     expect(firstResult.projects[PROJECT_DIR].mcpServers[MCP_KEY]).toBeDefined();
+  });
+
+  it("does not overwrite corrupt ~/.claude.json project-local config", async () => {
+    readFileReturns({
+      [PATHS.claudeJson]: "{ not json",
+    });
+    existsFor(PATHS.claudeJson);
+
+    await expect(cc.installProject(PROJECT_DIR)).rejects.toThrow(/could not patch/i);
+    await expect(cc.installProject(PROJECT_DIR)).rejects.toThrow(PATHS.claudeJson);
+
+    const claudeJsonWrites = fs.writeFile.mock.calls.filter(([p]) => p === PATHS.claudeJson);
+    expect(claudeJsonWrites).toHaveLength(0);
   });
 });

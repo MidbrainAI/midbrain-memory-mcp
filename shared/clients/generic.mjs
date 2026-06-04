@@ -6,10 +6,10 @@
  * Config-writing methods are no-ops (only named clients write configs).
  */
 
-import { writeFile, mkdir, chmod, readFile } from 'fs/promises';
+import { writeFile, mkdir, chmod } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
-import { BaseClient } from './base.mjs';
+import { BaseClient, readKeyFile } from './base.mjs';
 
 const KEY_FILENAME = ".midbrain-key";
 
@@ -39,15 +39,12 @@ export class Generic extends BaseClient {
 
   /** Check if a project-level key file exists. */
   async getProjectKey(projectDir) {
-    const tryRead = async (p) => {
-      try { const r = (await readFile(p, 'utf8')).trim(); return r || null; } catch { return null; }
-    };
     const subPath = join(projectDir, MIDBRAIN_DIR, KEY_FILENAME);
-    const subKey = await tryRead(subPath);
+    const subKey = await readKeyFile(subPath);
     if (subKey) return { key: subKey, source: subPath };
 
     const flatPath = join(projectDir, KEY_FILENAME);
-    const flatKey = await tryRead(flatPath);
+    const flatKey = await readKeyFile(flatPath);
     if (flatKey) return { key: flatKey, source: flatPath };
 
     return null;

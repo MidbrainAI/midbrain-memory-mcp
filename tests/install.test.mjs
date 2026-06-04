@@ -56,6 +56,12 @@ const PATHS = {
 
 const PROJECT_DIR = "/home/testuser/myproject";
 
+function fileError(code, filePath) {
+  const err = new Error(`${code}: test failure, open '${filePath}'`);
+  err.code = code;
+  return err;
+}
+
 // ===================================================================
 // main() — per-client key writing
 // ===================================================================
@@ -190,6 +196,55 @@ describe("projectSetup", () => {
     expect(keyWrite).toBeDefined();
     expect(keyWrite[1]).toBe("test-api-key-1234\n");
     expect(fs.chmod).toHaveBeenCalledWith(keyPath, 0o600);
+  });
+
+  it("exits without overwriting when an existing project key is empty", async () => {
+    setupProjectMocks({ existingProjectKey: true });
+    const keyPath = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+    readFileReturns({
+      [keyPath]: " \n",
+      [PATHS.globalKey]: "test-api-key-1234\n",
+    });
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("process.exit"); });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await expect(projectSetup(PROJECT_DIR)).rejects.toThrow("process.exit");
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain(`Key file is empty: ${keyPath}`);
+    const keyWrites = fs.writeFile.mock.calls.filter(([p]) => p === keyPath);
+    expect(keyWrites).toHaveLength(0);
+
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it("exits without overwriting when an existing project key is unreadable", async () => {
+    setupProjectMocks({ existingProjectKey: true });
+    const keyPath = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+    mocks.readFile.mockImplementation(async (filePath) => {
+      if (filePath === keyPath) throw fileError("EACCES", filePath);
+      if (filePath === PATHS.globalKey) return "test-api-key-1234\n";
+      throw enoent(filePath);
+    });
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("process.exit"); });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await expect(projectSetup(PROJECT_DIR)).rejects.toThrow("process.exit");
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain(`Permission denied reading key file: ${keyPath}`);
+    const keyWrites = fs.writeFile.mock.calls.filter(([p]) => p === keyPath);
+    expect(keyWrites).toHaveLength(0);
+
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    exitSpy.mockRestore();
   });
 
   it("preserves existing project key file", async () => {

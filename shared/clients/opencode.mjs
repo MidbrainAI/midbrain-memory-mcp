@@ -9,7 +9,7 @@
  * - $schema enforcement + invalid mcpServers cleanup
  */
 
-import { BaseClient } from './base.mjs';
+import { BaseClient, readKeyFile } from './base.mjs';
 
 const KEY_FILENAME = ".midbrain-key";
 import fs from 'fs/promises';
@@ -166,12 +166,9 @@ export class OpenCode extends BaseClient {
   }
 
   async resolveClientKey() {
-    try {
-      const raw = await fs.readFile(ownKeyPath(), 'utf8');
-      const key = raw.trim();
-      if (key) return { key, source: ownKeyPath() };
-    } catch { /* not found */ }
-    return null;
+    const source = ownKeyPath();
+    const key = await readKeyFile(source);
+    return key ? { key, source } : null;
   }
 
   async writeKey(key) {

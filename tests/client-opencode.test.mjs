@@ -45,8 +45,15 @@ const MCP_KEY = "midbrain-memory";
 const PATHS = {
   opencodeDir:     path.join(HOME, ".config", "opencode"),
   opencodeConfig:  path.join(HOME, ".config", "opencode", "opencode.json"),
+  opencodeKey:     path.join(HOME, ".config", "opencode", ".midbrain-key"),
   opencodePlugins: path.join(HOME, ".config", "opencode", "plugins"),
 };
+
+function fileError(code, filePath) {
+  const err = new Error(`${code}: test failure, open '${filePath}'`);
+  err.code = code;
+  return err;
+}
 
 // ===================================================================
 // isInstalled
@@ -73,6 +80,48 @@ describe("OpenCode.isInstalled", () => {
 
   it("returns false when nothing exists", () => {
     expect(oc.isInstalled()).toBe(false);
+  });
+});
+
+// ===================================================================
+// resolveClientKey
+// ===================================================================
+
+describe("OpenCode.resolveClientKey", () => {
+  const oc = new OpenCode();
+  beforeEach(resetMocks);
+
+  it("returns the client key when present", async () => {
+    readFileReturns({ [PATHS.opencodeKey]: "opencode-key\n" });
+
+    await expect(oc.resolveClientKey()).resolves.toEqual({
+      key: "opencode-key",
+      source: PATHS.opencodeKey,
+    });
+  });
+
+  it("returns null when the client key file is missing", async () => {
+    await expect(oc.resolveClientKey()).resolves.toBeNull();
+  });
+
+  it("throws when the client key file is empty", async () => {
+    readFileReturns({ [PATHS.opencodeKey]: " \n" });
+
+    await expect(oc.resolveClientKey()).rejects.toThrow(/Key file is empty/);
+    await expect(oc.resolveClientKey()).rejects.toThrow(PATHS.opencodeKey);
+  });
+
+  it("throws when the client key file is unreadable", async () => {
+    mocks.readFile.mockRejectedValue(fileError("EACCES", PATHS.opencodeKey));
+
+    await expect(oc.resolveClientKey()).rejects.toThrow(/Permission denied reading key file/);
+    await expect(oc.resolveClientKey()).rejects.toThrow(PATHS.opencodeKey);
+  });
+
+  it("throws unexpected client key read errors", async () => {
+    mocks.readFile.mockRejectedValue(fileError("EIO", PATHS.opencodeKey));
+
+    await expect(oc.resolveClientKey()).rejects.toThrow(/EIO/);
   });
 });
 

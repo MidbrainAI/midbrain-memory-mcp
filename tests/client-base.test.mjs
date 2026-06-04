@@ -35,9 +35,16 @@ vi.mock("fs", async (importOriginal) => {
 });
 
 const { BaseClient } = await import("../shared/clients/base.mjs");
+const { Generic } = await import("../shared/clients/generic.mjs");
 
 const resetMocks = makeResetMocks(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
+
+function fileError(code, filePath) {
+  const err = new Error(`${code}: test failure, open '${filePath}'`);
+  err.code = code;
+  return err;
+}
 
 /** Minimal concrete subclass for testing BaseClient directly. */
 class TestClient extends BaseClient {
@@ -149,5 +156,88 @@ describe("BaseClient.resolveKey — project→global WARN", () => {
     await client.resolveKey(PROJECT_DIR);
 
     expect(errSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ===================================================================
+// Generic project key CRUD
+// ===================================================================
+
+describe("Generic.getProjectKey", () => {
+  const client = new Generic();
+  const PROJECT_DIR = "/home/testuser/proj";
+  const subPath = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+  const flatPath = path.join(PROJECT_DIR, ".midbrain-key");
+
+  beforeEach(resetMocks);
+
+  it("returns the subdirectory key before the flat key", async () => {
+    readFileReturns({
+      [subPath]: "sub-key\n",
+      [flatPath]: "flat-key\n",
+    });
+
+    await expect(client.getProjectKey(PROJECT_DIR)).resolves.toEqual({
+      key: "sub-key",
+      source: subPath,
+    });
+  });
+
+  it("returns the flat key when the subdirectory key is absent", async () => {
+    readFileReturns({ [flatPath]: "flat-key\n" });
+
+    await expect(client.getProjectKey(PROJECT_DIR)).resolves.toEqual({
+      key: "flat-key",
+      source: flatPath,
+    });
+  });
+
+  it("returns null when both project key files are absent", async () => {
+    await expect(client.getProjectKey(PROJECT_DIR)).resolves.toBeNull();
+  });
+
+  it("throws when the subdirectory key is unreadable", async () => {
+    mocks.readFile.mockImplementation(async (filePath) => {
+      if (filePath === subPath) throw fileError("EACCES", filePath);
+      throw fileError("ENOENT", filePath);
+    });
+
+    await expect(client.getProjectKey(PROJECT_DIR)).rejects.toThrow(/Permission denied reading key file/);
+    await expect(client.getProjectKey(PROJECT_DIR)).rejects.toThrow(subPath);
+  });
+
+  it("throws when the subdirectory key is empty instead of falling through", async () => {
+    readFileReturns({
+      [subPath]: " \n",
+      [flatPath]: "flat-key\n",
+    });
+
+    await expect(client.getProjectKey(PROJECT_DIR)).rejects.toThrow(/Key file is empty/);
+    await expect(client.getProjectKey(PROJECT_DIR)).rejects.toThrow(subPath);
+  });
+
+  it("throws when the flat key is empty", async () => {
+    readFileReturns({ [flatPath]: " \n" });
+
+    await expect(client.getProjectKey(PROJECT_DIR)).rejects.toThrow(/Key file is empty/);
+    await expect(client.getProjectKey(PROJECT_DIR)).rejects.toThrow(flatPath);
+  });
+
+  it("throws unexpected project key read errors", async () => {
+    mocks.readFile.mockImplementation(async (filePath) => {
+      if (filePath === subPath) throw fileError("EIO", filePath);
+      throw fileError("ENOENT", filePath);
+    });
+
+    await expect(client.getProjectKey(PROJECT_DIR)).rejects.toThrow(/EIO/);
+  });
+
+  it("prevents project key creation when an existing key is broken", async () => {
+    readFileReturns({
+      [subPath]: " \n",
+    });
+
+    await expect(client.getProjectKey(PROJECT_DIR)).rejects.toThrow(/Key file is empty/);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 });

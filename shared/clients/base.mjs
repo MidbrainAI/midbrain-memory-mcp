@@ -28,9 +28,9 @@ const ENV_VAR = 'MIDBRAIN_API_KEY';
 
 /**
  * Read a key file. Returns trimmed content, or null on ENOENT.
- * Throws on EACCES (permission denied) or empty file.
+ * Throws on EACCES (permission denied), empty file, or other read errors.
  */
-async function tryReadKey(filePath) {
+export async function readKeyFile(filePath) {
   let raw;
   try {
     raw = await readFile(filePath, 'utf8');
@@ -96,11 +96,11 @@ export class BaseClient {
 
   async #resolveProjectKey(projDir) {
     const subPath = join(projDir, MIDBRAIN_DIR, KEY_FILENAME);
-    const subKey = await tryReadKey(subPath);
+    const subKey = await readKeyFile(subPath);
     if (subKey) return { key: subKey, source: subPath };
 
     const flatPath = join(projDir, KEY_FILENAME);
-    const flatKey = await tryReadKey(flatPath);
+    const flatKey = await readKeyFile(flatPath);
     if (flatKey) return { key: flatKey, source: flatPath };
 
     return null;
@@ -108,7 +108,7 @@ export class BaseClient {
 
   async #resolveGlobalKey() {
     const globalPath = join(homedir(), '.config', 'midbrain', KEY_FILENAME);
-    const key = await tryReadKey(globalPath);
+    const key = await readKeyFile(globalPath);
     return key ? { key, source: globalPath } : null;
   }
 
