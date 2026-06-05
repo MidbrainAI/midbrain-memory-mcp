@@ -105,8 +105,10 @@ Per-client key file locations:
   Returns: `[{source, chunk_count}]`
 - `GET /api/v1/memories/semantic/files/{file_path}?start_line=1&num_lines=200`
   Returns: `{path, start_line, content, chunks_used}`
-- `POST /api/v1/memories/episodic` — body: `{"text": "...", "role": "user"|"assistant"}`
-  Append-only. Returns created memory.
+- `POST /api/v1/memories/episodic` — body: `{"text": "...", "role": "user"|"assistant", "memory_metadata": {"client": "opencode"}}`
+  Append-only. `memory_metadata` is optional; values must be strings.
+  Capture hooks tag each memory with the originating client (opencode/claude).
+  Returns created memory.
 - `GET /health` — no auth. Returns `{"status": "ok"}`
 
 ## Per-Project Memory Setup
@@ -279,12 +281,21 @@ resolve within the copied plugins/ directory. All 8 files must be present.
 
 ## Rules for LLM (put in project AGENTS.md where MCP is used)
 - Use memory_search at session start to load relevant context
+- Use check_session_status at session start to detect recent activity from
+  other sessions or clients. If it reports recent activity, use
+  get_episodic_memories_by_date to fetch full context.
 - Use grep for exact pattern matches (names, IDs, code, URLs)
 - Use list_files and read_file to browse semantic memory documents
 - Use get_episodic_memories_by_date for conversation history by date
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
 - The only memory tools available are search and setup. Use them proactively.
+- When the user asks to "continue", "pick up where we left off", or similar,
+  use get_episodic_memories_by_date with today's date to retrieve recent context.
+  This may include work done in other clients or sessions.
+- If a tool response includes a recency hint about newer episodic memories on
+  the server, consider fetching them with get_episodic_memories_by_date if
+  relevant to the user's current intent.
 - When the user asks to set up, configure, or initialize MidBrain memory for a
   project, ALWAYS use the memory_setup_project tool. NEVER manually create
   .midbrain-key files, .mcp.json, or opencode.json with shell commands.

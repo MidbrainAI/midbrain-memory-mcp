@@ -59,7 +59,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
       debugLog(`USER: id=${messageID} len=${text.length}`);
       storedMessages.add(messageID);
-      api.storeEpisodic(text, "user", debugLog);
+      api.storeEpisodic(text, "user", debugLog, { client: "opencode" });
     },
 
     // --- Assistant messages: captured when message.updated shows completion ---
@@ -112,7 +112,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
         }
 
         debugLog(`ASSISTANT: storing id=${msgID} len=${text.length}`);
-        api.storeEpisodic(text, "assistant", debugLog);
+        api.storeEpisodic(text, "assistant", debugLog, { client: "opencode" });
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         debugLog(`ASSISTANT ERROR: ${errMsg}`);
