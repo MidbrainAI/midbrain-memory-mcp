@@ -6,7 +6,7 @@
  */
 
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
@@ -23,6 +23,14 @@ export const PINNED_RE = /midbrain-memory-mcp@\d+\.\d+\.\d+/;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 export const REPO_ROOT = path.resolve(__dirname, '..', '..');
+
+/** Package metadata read from package.json at REPO_ROOT. */
+const _pkg = (() => {
+  try { return JSON.parse(readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')); }
+  catch { return {}; }
+})();
+export const PKG_NAME = _pkg.name || 'midbrain-memory-mcp';
+export const PKG_VERSION = _pkg.version || 'unknown';
 
 // --- Lazy accessors ---
 

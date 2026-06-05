@@ -11,7 +11,7 @@
 
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
-  KEY_FILENAME, MCP_KEY, REPO_ROOT,
+  KEY_FILENAME, MCP_KEY, REPO_ROOT, PKG_NAME, PKG_VERSION,
   home, backup, classifyEntry, formatMigrationLine,
 } from './utils.mjs';
 
@@ -40,6 +40,7 @@ function ownKeyPath() { return path.join(configDir(), KEY_FILENAME); }
 const PLUGIN_FILE = 'midbrain-memory.ts';
 const BUNDLE_FILE = 'midbrain-shared.mjs';
 const MARKER_FILE = '.midbrain-repo-root';
+const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}:${REPO_ROOT}`;
 const EXPECTED_PLUGIN_FILES = new Set([PLUGIN_FILE, BUNDLE_FILE, MARKER_FILE]);
 
 /** Remove stale midbrain plugin files that aren't part of the current release. */
@@ -176,7 +177,7 @@ export class OpenCode extends BaseClient {
     summary.push(`  + Bundle copied: ~/.config/opencode/plugins/${BUNDLE_FILE}`);
 
     // Write freshness marker for staleness detection
-    await fs.writeFile(path.join(pd, MARKER_FILE), REPO_ROOT + '\n', 'utf8');
+    await fs.writeFile(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n', 'utf8');
 
     // Patch opencode config (.json or .jsonc)
     const configPath = resolveConfig(configDir());
@@ -258,7 +259,7 @@ export class OpenCode extends BaseClient {
     try {
       const markerPath = path.join(pluginsDir(), MARKER_FILE);
       const raw = await fs.readFile(markerPath, 'utf8');
-      return raw.trim() === REPO_ROOT;
+      return raw.trim() === MARKER_VALUE;
     } catch { return false; }
   }
 
@@ -280,7 +281,7 @@ export class OpenCode extends BaseClient {
       path.join(pd, BUNDLE_FILE),
     );
 
-    await fs.writeFile(path.join(pd, MARKER_FILE), REPO_ROOT + '\n', 'utf8');
+    await fs.writeFile(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n', 'utf8');
     return ['  ~ OpenCode plugin files repaired (re-copied)'];
   }
 }
