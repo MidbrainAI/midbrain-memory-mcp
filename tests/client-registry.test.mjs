@@ -34,13 +34,15 @@ vi.mock("fs", async (importOriginal) => {
 const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 
-const { detectClients } = await import("../shared/clients/registry.mjs");
+const { allClients, detectClients, getClient } = await import("../shared/clients/registry.mjs");
 
 const HOME = os.homedir();
 
 const PATHS = {
   opencodeConfig: path.join(HOME, ".config", "opencode", "opencode.json"),
   claudeJson:     path.join(HOME, ".claude.json"),
+  codexConfig:    path.join(HOME, ".codex", "config.toml"),
+  codexDir:       path.join(HOME, ".codex"),
 };
 
 describe("detectClients", () => {
@@ -51,6 +53,14 @@ describe("detectClients", () => {
     const clients = detectClients();
     expect(clients).toHaveLength(2);
     expect(clients.map((c) => c.id).sort()).toEqual(["claude", "opencode"]);
+  });
+
+  it("registers Codex in allClients", () => {
+    expect(allClients().map((c) => c.id)).toEqual(["opencode", "claude", "codex"]);
+  });
+
+  it("returns Codex by id", () => {
+    expect(getClient("codex").id).toBe("codex");
   });
 
   it("detects only OpenCode when only OpenCode installed", () => {
@@ -65,6 +75,20 @@ describe("detectClients", () => {
     const clients = detectClients();
     expect(clients).toHaveLength(1);
     expect(clients[0].id).toBe("claude");
+  });
+
+  it("detects only Codex when only Codex config exists", () => {
+    existsFor(PATHS.codexConfig);
+    const clients = detectClients();
+    expect(clients).toHaveLength(1);
+    expect(clients[0].id).toBe("codex");
+  });
+
+  it("detects only Codex when only ~/.codex exists", () => {
+    existsFor(PATHS.codexDir);
+    const clients = detectClients();
+    expect(clients).toHaveLength(1);
+    expect(clients[0].id).toBe("codex");
   });
 
   it("returns empty when nothing installed", () => {

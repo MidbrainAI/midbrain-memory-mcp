@@ -197,7 +197,7 @@ export class OpenCode extends BaseClient {
     const clientsSrc = path.join(REPO_ROOT, 'shared', 'clients');
     const clientsDst = path.join(pd, 'clients');
     await fs.mkdir(clientsDst, { recursive: true });
-    for (const file of ['base.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'registry.mjs']) {
+    for (const file of ['base.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'codex.mjs', 'registry.mjs']) {
       await fs.copyFile(path.join(clientsSrc, file), path.join(clientsDst, file));
     }
     summary.push('  + Client adapters copied: ~/.config/opencode/plugins/clients/');

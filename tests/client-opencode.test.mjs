@@ -149,6 +149,7 @@ describe("OpenCode.installGlobal", () => {
     expect(copyArgs).toContainEqual(["midbrain-memory.ts", "midbrain-memory.ts"]);
     expect(copyArgs).toContainEqual(["midbrain-api.mjs", "midbrain-api.mjs"]);
     expect(copyArgs).toContainEqual(["logger.mjs", "logger.mjs"]);
+    expect(copyArgs).toContainEqual(["codex.mjs", "codex.mjs"]);
   });
 
   it("creates plugins directory", async () => {
