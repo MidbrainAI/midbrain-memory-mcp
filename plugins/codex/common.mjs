@@ -48,8 +48,12 @@ export async function captureAssistant(input, deps = makeDefaultDeps()) {
   for (const entry of plan.entries) {
     stored = await postEpisodic(entry, "assistant", input?.cwd, deps) && stored;
   }
-  const summary = plan.skipToolSummary ? "" : flushToolSummary(input, deps);
-  if (summary) stored = await postEpisodic(summary, "assistant", input?.cwd, deps) && stored;
+  const summary = plan.skipToolSummary ? "" : readToolSummary(input, deps);
+  if (summary) {
+    const summaryStored = await postEpisodic(summary, "assistant", input?.cwd, deps);
+    if (summaryStored) removeToolBuffer(input, deps);
+    stored = summaryStored && stored;
+  }
   if (plan.markStored && stored) markAssistantTurnStored(input, deps);
 }
 
@@ -83,8 +87,8 @@ async function postEpisodic(text, role, cwd, deps) {
   try {
     const projectDir = typeof cwd === "string" && cwd.trim() ? cwd : undefined;
     const api = await deps.createApi(projectDir);
-    await Promise.resolve(api.storeEpisodic(text, role, deps.debugLog, CODEX_METADATA));
-    return true;
+    const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.debugLog, CODEX_METADATA));
+    return stored !== false;
   } catch (err) {
     safeLog(deps.debugLog, `CODEX CAPTURE ERROR (${role}): ${errorMessage(err)}`);
     return false;
@@ -277,16 +281,25 @@ function toolEvent(input) {
   };
 }
 
-function flushToolSummary(input, deps) {
+function readToolSummary(input, deps) {
   const dir = toolTurnDir(input, deps);
   if (!dir || !fs.existsSync(dir)) return "";
   try {
     const events = readToolEvents(dir, deps.debugLog);
-    fs.rmSync(dir, { recursive: true, force: true });
     return events.length > 0 ? formatToolSummary(events) : "";
   } catch (err) {
-    safeLog(deps.debugLog, `TOOL BUFFER FLUSH ERROR: ${errorMessage(err)}`);
+    safeLog(deps.debugLog, `TOOL BUFFER READ ERROR: ${errorMessage(err)}`);
     return "";
+  }
+}
+
+function removeToolBuffer(input, deps) {
+  const dir = toolTurnDir(input, deps);
+  if (!dir) return;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    safeLog(deps.debugLog, `TOOL BUFFER REMOVE ERROR: ${errorMessage(err)}`);
   }
 }
 

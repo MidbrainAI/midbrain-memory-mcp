@@ -159,6 +159,22 @@ describe("Codex hook capture", () => {
     expect(deps.api.storeEpisodic.mock.calls[0][0]).toBe("done");
   });
 
+  it("does not mark a final assistant turn stored when storage reports false", async () => {
+    const transcript = path.join(deps.toolBufferDir, "history.jsonl");
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "t1" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ text: "done" }] } }),
+    ].join("\n"));
+    deps.api.storeEpisodic.mockResolvedValueOnce(false);
+
+    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+    deps.api.storeEpisodic.mockClear();
+    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+
+    expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(1);
+    expect(deps.api.storeEpisodic.mock.calls[0][0]).toBe("done");
+  });
+
   it("captureToolUse buffers events and Stop emits one summary per turn", async () => {
     await captureToolUse({
       session_id: "s1",
@@ -211,6 +227,24 @@ describe("Codex hook capture", () => {
     expect(deps.api.storeEpisodic.mock.calls[0][0]).toBe("done");
     expect(deps.api.storeEpisodic.mock.calls[1][0]).toContain("Assistant reasoning/commentary summary");
     expect(deps.api.storeEpisodic.mock.calls[2][0]).toContain("Tool activity summary");
+  });
+
+  it("keeps tool buffers retryable when summary storage fails", async () => {
+    await captureToolUse({
+      session_id: "s1",
+      turn_id: "t1",
+      tool_name: "Bash",
+      tool_input: { cmd: "npm test" },
+      tool_response: { exit_code: 0 },
+    }, deps);
+    deps.api.storeEpisodic.mockResolvedValueOnce(false);
+
+    await captureAssistant({ session_id: "s1", turn_id: "t1" }, deps);
+    deps.api.storeEpisodic.mockClear();
+    await captureAssistant({ session_id: "s1", turn_id: "t1" }, deps);
+
+    expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(1);
+    expect(deps.api.storeEpisodic.mock.calls[0][0]).toContain("Tool activity summary");
   });
 
   it("tool summaries redact secrets and truncate large payloads", async () => {

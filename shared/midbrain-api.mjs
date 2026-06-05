@@ -98,24 +98,34 @@ export class MidbrainApi {
 
   /**
    * POST an episodic memory. Callers may ignore the returned promise for
-   * fire-and-forget capture, or await it when process exit would cut off I/O.
+   * fire-and-forget capture, or await its boolean result for retry decisions.
    * @param {string} text
    * @param {"user"|"assistant"} role
    * @param {function(string): void} debugLogFn
    * @param {Record<string, string>} [memoryMetadata] - Optional metadata (e.g. { client: "codex" }).
    */
-  storeEpisodic(text, role, debugLogFn, memoryMetadata) {
+  async storeEpisodic(text, role, debugLogFn, memoryMetadata) {
     debugLogFn(`STORE: role=${role} textLen=${text.length}`);
-    return fetch(ENDPOINTS.EPISODIC, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.#key}`,
-      },
-      body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
-    })
-      .then((r) => debugLogFn(`STORED: status=${r.status}`))
-      .catch((e) => debugLogFn(`STORE ERROR: ${e instanceof Error ? e.message : String(e)}`));
+    try {
+      const response = await fetch(ENDPOINTS.EPISODIC, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.#key}`,
+        },
+        body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => "(no body)");
+        debugLogFn(`STORE ERROR: status=${response.status} body=${body}`);
+        return false;
+      }
+      debugLogFn(`STORED: status=${response.status}`);
+      return true;
+    } catch (err) {
+      debugLogFn(`STORE ERROR: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
   }
 
   // --- Static endpoint constants (for callers that build URLs directly) ---

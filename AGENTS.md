@@ -307,10 +307,11 @@ At install time, the following are copied to ~/.config/opencode/plugins/:
   shared/clients/generic.mjs           →  ~/.config/opencode/plugins/clients/generic.mjs
   shared/clients/opencode.mjs          →  ~/.config/opencode/plugins/clients/opencode.mjs
   shared/clients/claude.mjs            →  ~/.config/opencode/plugins/clients/claude.mjs
+  shared/clients/codex.mjs             →  ~/.config/opencode/plugins/clients/codex.mjs
   shared/clients/registry.mjs          →  ~/.config/opencode/plugins/clients/registry.mjs
 
 The plugin uses relative imports at runtime (./midbrain-api.mjs etc.) which
-resolve within the copied plugins/ directory. All 8 files must be present.
+resolve within the copied plugins/ directory. All 9 files must be present.
 
 ## Rules for LLM (put in project AGENTS.md where MCP is used)
 - Use memory_search at session start to load relevant context

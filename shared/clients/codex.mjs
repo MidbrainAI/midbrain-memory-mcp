@@ -16,7 +16,6 @@ import { existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +30,7 @@ const HOOK_EVENTS = {
   PostToolUse: 'capture-tool.mjs',
   Stop: 'capture-assistant.mjs',
 };
+let tomlModule;
 
 function home() { return os.homedir(); }
 function codexDir() { return path.join(home(), '.codex'); }
@@ -48,8 +48,9 @@ async function writeSecure(filePath, key) {
 
 async function readToml(filePath) {
   try {
+    const toml = await loadToml();
     const raw = await fs.readFile(filePath, 'utf8');
-    return parseToml(raw);
+    return toml.parse(raw);
   } catch (err) {
     if (err.code === 'ENOENT') return {};
     throw new Error(`Failed to parse ${filePath}: ${err.message}`, { cause: err });
@@ -66,8 +67,14 @@ async function readJson(filePath) {
 }
 
 async function writeToml(filePath, data) {
+  const toml = await loadToml();
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, stringifyToml(data), 'utf8');
+  await fs.writeFile(filePath, toml.stringify(data), 'utf8');
+}
+
+async function loadToml() {
+  tomlModule ||= await import('smol-toml');
+  return tomlModule;
 }
 
 async function writeJson(filePath, data) {
