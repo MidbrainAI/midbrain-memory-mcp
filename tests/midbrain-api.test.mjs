@@ -56,19 +56,22 @@ describe("MidbrainApi.storeEpisodic", () => {
     expect(JSON.parse(opts.body)).toEqual({ text: "hello world", role: "user" });
   });
 
-  it("includes memory_metadata in POST body when metadata provided", async () => {
-    const log = vi.fn();
-    api.storeEpisodic("hello", "assistant", log, { client: "opencode" });
+  it.each(["opencode", "claude", "codex"])(
+    "includes %s client memory_metadata in POST body",
+    async (client) => {
+      const log = vi.fn();
+      api.storeEpisodic("hello", "assistant", log, { client });
 
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
 
-    const [, opts] = fetchSpy.mock.calls[0];
-    expect(JSON.parse(opts.body)).toEqual({
-      text: "hello",
-      role: "assistant",
-      memory_metadata: { client: "opencode" },
-    });
-  });
+      const [, opts] = fetchSpy.mock.calls[0];
+      expect(JSON.parse(opts.body)).toEqual({
+        text: "hello",
+        role: "assistant",
+        memory_metadata: { client },
+      });
+    },
+  );
 
   it("omits memory_metadata from POST body when metadata not provided", async () => {
     const log = vi.fn();
@@ -87,6 +90,25 @@ describe("MidbrainApi.storeEpisodic", () => {
     api.storeEpisodic("msg", "assistant", log);
 
     await vi.waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining("STORED")));
+  });
+
+  it("returns the POST promise so hook callers can await storage", async () => {
+    let resolveFetch;
+    fetchSpy.mockReturnValueOnce(new Promise((resolve) => { resolveFetch = resolve; }));
+    const log = vi.fn();
+
+    const promise = api.storeEpisodic("msg", "assistant", log);
+    let settled = false;
+    promise.then(() => { settled = true; });
+    await Promise.resolve();
+
+    expect(promise).toBeInstanceOf(Promise);
+    expect(settled).toBe(false);
+
+    resolveFetch({ status: 201 });
+    await promise;
+
+    expect(log).toHaveBeenCalledWith("STORED: status=201");
   });
 
   it("calls debug log function on fetch error", async () => {

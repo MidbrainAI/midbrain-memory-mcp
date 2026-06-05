@@ -1671,6 +1671,7 @@ describe("check_session_status tool", () => {
   let rcServer;
   let rcFetchSpy;
   let recentTimestamp;
+  let recentClient;
   const rcSavedEnv = {};
 
   function sessionStatusMockFetch(url, opts) {
@@ -1684,7 +1685,7 @@ describe("check_session_status tool", () => {
           role: "assistant",
           text: "Implemented the auth module",
           occurred_at: recentTimestamp,
-          memory_metadata: { client: "opencode" },
+          memory_metadata: { client: recentClient },
         }],
         total: 1, page: 1, limit: 1,
       }));
@@ -1694,6 +1695,7 @@ describe("check_session_status tool", () => {
 
   beforeEach(async () => {
     recentTimestamp = new Date(Date.now() - 5 * 60_000).toISOString();
+    recentClient = "opencode";
     rcFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(sessionStatusMockFetch);
     for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
       rcSavedEnv[k] = process.env[k];
@@ -1725,6 +1727,15 @@ describe("check_session_status tool", () => {
     expect(text).toContain("min ago");
     expect(text).toContain("client: opencode");
     expect(text).toContain("get_episodic_memories_by_date");
+  });
+
+  it("returns Codex as a recent activity client label", async () => {
+    recentClient = "codex";
+
+    const result = await rcClient.callTool({ name: "check_session_status", arguments: {} });
+    const text = result.content[0].text;
+
+    expect(text).toContain("client: codex");
   });
 
   it("suppresses recency hint on subsequent tool calls (markEpisodicSeen)", async () => {

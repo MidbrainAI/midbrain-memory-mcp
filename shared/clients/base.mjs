@@ -45,7 +45,7 @@ export async function readKeyFile(filePath) {
 }
 
 export class BaseClient {
-  /** @returns {string} Machine-readable identifier ("opencode", "claude") */
+  /** @returns {string} Machine-readable identifier ("opencode", "claude", "codex") */
   get id() { throw new Error("BaseClient.id not implemented"); }
 
   /** @returns {string} Human-readable name for user-facing output */

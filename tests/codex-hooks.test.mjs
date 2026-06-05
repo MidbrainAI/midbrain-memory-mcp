@@ -24,12 +24,14 @@ function makeDeps() {
     api,
     createApi: vi.fn(async () => api),
     debugLog: vi.fn(),
+    assistantBufferDir: fs.mkdtempSync(path.join(os.tmpdir(), "codex-assistant-")),
     toolBufferDir: fs.mkdtempSync(path.join(os.tmpdir(), "codex-hooks-")),
   };
 }
 
 function cleanupDeps(deps) {
   try { fs.rmSync(deps.toolBufferDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { fs.rmSync(deps.assistantBufferDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
 function firstStore(deps) {
@@ -84,20 +86,77 @@ describe("Codex hook capture", () => {
     expect(deps.api.storeEpisodic).not.toHaveBeenCalled();
   });
 
-  it("captureAssistant stores transcript assistant text and reasoning summaries", async () => {
+  it("captureAssistant stores plain answer and separate reasoning/commentary summary", async () => {
     const transcript = path.join(deps.toolBufferDir, "history.jsonl");
     fs.writeFileSync(transcript, [
       JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "t1" } }),
-      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ text: "hello" }] } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", phase: "commentary", content: [{ text: "checking files" }] } }),
       JSON.stringify({ type: "response_item", payload: { type: "reasoning", summary: [{ text: "checked files" }] } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ text: "done" }] } }),
       JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "t2" } }),
     ].join("\n"));
 
     await captureAssistant({ transcript_path: transcript, turn_id: "t1" }, deps);
 
     expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(2);
-    expect(deps.api.storeEpisodic.mock.calls[0][0]).toBe("hello");
-    expect(deps.api.storeEpisodic.mock.calls[1][0]).toBe("Reasoning summary:\nchecked files");
+    expect(deps.api.storeEpisodic.mock.calls[0]).toEqual([
+      "done",
+      "assistant",
+      deps.debugLog,
+      { client: "codex" },
+    ]);
+    expect(deps.api.storeEpisodic.mock.calls[0][0]).not.toMatch(/final|response|answer/i);
+    const [summary, role, , metadata] = deps.api.storeEpisodic.mock.calls[1];
+    expect(role).toBe("assistant");
+    expect(metadata).toEqual({ client: "codex" });
+    expect(summary).toContain("Assistant reasoning/commentary summary");
+    expect(summary).toContain("[commentary] checking files");
+    expect(summary).toContain("[reasoning] checked files");
+  });
+
+  it("buffers interim reasoning/commentary until the final answer arrives", async () => {
+    const transcript = path.join(deps.toolBufferDir, "history.jsonl");
+    const lines = [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "t1" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", phase: "commentary", content: [{ text: "checking files" }] } }),
+      JSON.stringify({ type: "response_item", payload: { type: "reasoning", summary: [{ text: "checked files" }] } }),
+    ];
+    fs.writeFileSync(transcript, lines.join("\n"));
+
+    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+
+    expect(deps.api.storeEpisodic).not.toHaveBeenCalled();
+
+    lines.push(
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", phase: "commentary", content: [{ text: "checking files" }] } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ text: "done" }] } }),
+    );
+    fs.writeFileSync(transcript, lines.join("\n"));
+
+    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+
+    expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(2);
+    expect(deps.api.storeEpisodic.mock.calls[0][0]).toBe("done");
+    const summary = deps.api.storeEpisodic.mock.calls[1][0];
+    expect(summary.match(/\[commentary\] checking files/g)).toHaveLength(1);
+    expect(summary).toContain("[reasoning] checked files");
+  });
+
+  it("does not mark a final assistant turn stored when storage fails", async () => {
+    const transcript = path.join(deps.toolBufferDir, "history.jsonl");
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "t1" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ text: "done" }] } }),
+    ].join("\n"));
+    deps.api.storeEpisodic.mockRejectedValueOnce(new Error("network down"));
+
+    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+    deps.api.storeEpisodic.mockClear();
+    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+
+    expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(1);
+    expect(deps.api.storeEpisodic.mock.calls[0][0]).toBe("done");
   });
 
   it("captureToolUse buffers events and Stop emits one summary per turn", async () => {
@@ -129,6 +188,29 @@ describe("Codex hook capture", () => {
     expect(summary).toContain("Bash x1");
     expect(summary).toContain("apply_patch x1");
     expect(summary).toContain("patch failed");
+  });
+
+  it("keeps tool summaries separate from answer and reasoning/commentary entries", async () => {
+    const transcript = path.join(deps.toolBufferDir, "history.jsonl");
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "t1" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ text: "done" }] } }),
+      JSON.stringify({ type: "response_item", payload: { type: "reasoning", summary: [{ text: "checked files" }] } }),
+    ].join("\n"));
+    await captureToolUse({
+      session_id: "s1",
+      turn_id: "t1",
+      tool_name: "Bash",
+      tool_input: { cmd: "npm test" },
+      tool_response: { exit_code: 0 },
+    }, deps);
+
+    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+
+    expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(3);
+    expect(deps.api.storeEpisodic.mock.calls[0][0]).toBe("done");
+    expect(deps.api.storeEpisodic.mock.calls[1][0]).toContain("Assistant reasoning/commentary summary");
+    expect(deps.api.storeEpisodic.mock.calls[2][0]).toContain("Tool activity summary");
   });
 
   it("tool summaries redact secrets and truncate large payloads", async () => {

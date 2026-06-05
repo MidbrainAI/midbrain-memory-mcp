@@ -7,16 +7,18 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
 import { makeDebugLogger } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 
 const DEBUG_LOG = path.join(os.homedir(), "midbrain-codex-debug.log");
+const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-assistant-turns");
 const TOOL_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-tool-events");
-const TOOL_BUFFER_TTL_MS = 24 * 60 * 60 * 1000;
+const TURN_BUFFER_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_SUMMARY_CHARS = 4_000;
+const MAX_ASSISTANT_NOTES_CHARS = 4_000;
 const MAX_DETAIL_CHARS = 500;
 const MAX_EVENTS = 10;
 const REDACTED = "[redacted]";
@@ -40,10 +42,15 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
 
 export async function captureAssistant(input, deps = makeDefaultDeps()) {
   if (input?.stop_hook_active === true) return;
-  const entries = assistantEntries(input, deps.debugLog);
-  for (const entry of entries) await postEpisodic(entry, "assistant", input?.cwd, deps);
-  const summary = flushToolSummary(input, deps);
-  if (summary) await postEpisodic(summary, "assistant", input?.cwd, deps);
+  const plan = assistantCapturePlan(input, deps);
+  if (plan.deferred) return;
+  let stored = true;
+  for (const entry of plan.entries) {
+    stored = await postEpisodic(entry, "assistant", input?.cwd, deps) && stored;
+  }
+  const summary = plan.skipToolSummary ? "" : flushToolSummary(input, deps);
+  if (summary) stored = await postEpisodic(summary, "assistant", input?.cwd, deps) && stored;
+  if (plan.markStored && stored) markAssistantTurnStored(input, deps);
 }
 
 export async function captureToolUse(input, deps = makeDefaultDeps()) {
@@ -51,7 +58,7 @@ export async function captureToolUse(input, deps = makeDefaultDeps()) {
     const event = toolEvent(input);
     const dir = toolTurnDir(input, deps);
     if (!event || !dir) return;
-    cleanupOldToolBuffers(toolBufferRoot(deps), deps.debugLog);
+    cleanupOldTurnBuffers(toolBufferRoot(deps), deps.debugLog, "TOOL");
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(toolEventPath(dir, event), JSON.stringify(event), { encoding: "utf8", mode: 0o600 });
   } catch (err) {
@@ -77,25 +84,31 @@ async function postEpisodic(text, role, cwd, deps) {
     const projectDir = typeof cwd === "string" && cwd.trim() ? cwd : undefined;
     const api = await deps.createApi(projectDir);
     await Promise.resolve(api.storeEpisodic(text, role, deps.debugLog, CODEX_METADATA));
+    return true;
   } catch (err) {
     safeLog(deps.debugLog, `CODEX CAPTURE ERROR (${role}): ${errorMessage(err)}`);
+    return false;
   }
 }
 
-function assistantEntries(input, debugLog) {
-  const transcriptEntries = transcriptAssistantEntries(input, debugLog);
-  if (transcriptEntries.length > 0) return transcriptEntries;
+function assistantCapturePlan(input, deps) {
+  const transcriptPlan = transcriptAssistantCapturePlan(input, deps);
+  if (transcriptPlan) return transcriptPlan;
   const msg = typeof input?.last_assistant_message === "string" ? input.last_assistant_message.trim() : "";
-  return msg ? [msg] : [];
+  return { entries: msg ? [msg] : [], deferred: false, markStored: false, skipToolSummary: false };
 }
 
-function transcriptAssistantEntries(input, debugLog) {
-  if (!input?.transcript_path || !input?.turn_id) return [];
+function transcriptAssistantCapturePlan(input, deps) {
+  if (!input?.transcript_path || !input?.turn_id) return null;
+  const dir = assistantTurnDir(input, deps);
+  if (dir && assistantTurnStored(dir)) {
+    return { entries: [], deferred: false, markStored: false, skipToolSummary: true };
+  }
   try {
-    return parseTranscriptTurn(input.transcript_path, input.turn_id);
+    return formatAssistantTurn(parseTranscriptTurn(input.transcript_path, input.turn_id), input, deps);
   } catch (err) {
-    safeLog(debugLog, `TRANSCRIPT READ ERROR: ${errorMessage(err)}`);
-    return [];
+    safeLog(deps.debugLog, `TRANSCRIPT READ ERROR: ${errorMessage(err)}`);
+    return null;
   }
 }
 
@@ -107,7 +120,7 @@ function parseTranscriptTurn(transcriptPath, turnId) {
     const item = JSON.parse(line);
     if (isTaskStart(item, turnId)) inTurn = true;
     else if (inTurn && isTaskStart(item)) break;
-    if (inTurn && item.type === "response_item") entries.push(...assistantTextFromPayload(item.payload));
+    if (inTurn && item.type === "response_item") entries.push(...assistantItemsFromPayload(item.payload));
   }
   return entries;
 }
@@ -118,9 +131,16 @@ function isTaskStart(item, turnId) {
   return turnId ? payload.turn_id === turnId : true;
 }
 
-function assistantTextFromPayload(payload) {
-  if (payload?.type === "message" && payload.role === "assistant") return textParts(payload.content);
-  if (payload?.type === "reasoning") return reasoningSummaryParts(payload.summary);
+function assistantItemsFromPayload(payload) {
+  if (payload?.type === "message" && payload.role === "assistant") {
+    const kind = payload.phase === "commentary" || payload.phase === "final_answer"
+      ? payload.phase
+      : "message";
+    return textParts(payload.content).map((text) => ({ kind, text }));
+  }
+  if (payload?.type === "reasoning") {
+    return reasoningSummaryParts(payload.summary).map((text) => ({ kind: "reasoning", text }));
+  }
   return [];
 }
 
@@ -135,7 +155,115 @@ function reasoningSummaryParts(summary) {
     .filter((part) => typeof part === "string" && part.trim())
     .map((part) => part.trim())
     .join("\n");
-  return text ? [`Reasoning summary:\n${text}`] : [];
+  return text ? [text] : [];
+}
+
+function formatAssistantTurn(items, input, deps) {
+  if (items.length === 0) {
+    return { entries: [], deferred: false, markStored: false, skipToolSummary: false };
+  }
+  const finalAnswers = itemTexts(items, "final_answer");
+  const messages = itemTexts(items, "message");
+  const notes = items.filter((item) => item.kind === "commentary" || item.kind === "reasoning");
+  const entries = [...finalAnswers, ...messages];
+  if (entries.length === 0 && notes.length > 0) {
+    bufferAssistantNotes(input, notes, deps);
+    return { entries: [], deferred: true, markStored: false, skipToolSummary: true };
+  }
+  const allNotes = dedupeAssistantItems([...readBufferedAssistantNotes(input, deps), ...notes]);
+  const notesEntry = formatAssistantNotes(allNotes);
+  if (notesEntry) entries.push(notesEntry);
+  return { entries, deferred: false, markStored: entries.length > 0, skipToolSummary: false };
+}
+
+function itemTexts(items, kind) {
+  return items.filter((item) => item.kind === kind).map((item) => item.text);
+}
+
+function formatAssistantNotes(notes) {
+  if (notes.length === 0) return "";
+  const lines = ["Assistant reasoning/commentary summary"];
+  lines.push(...notes.map((item) => `[${item.kind === "reasoning" ? "reasoning" : "commentary"}] ${item.text}`));
+  return truncateText(lines.join("\n"), MAX_ASSISTANT_NOTES_CHARS);
+}
+
+function bufferAssistantNotes(input, notes, deps) {
+  const dir = assistantTurnDir(input, deps);
+  if (!dir) return;
+  try {
+    cleanupOldTurnBuffers(assistantBufferRoot(deps), deps.debugLog, "ASSISTANT");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const items = dedupeAssistantItems([...readAssistantNotesFile(dir, deps.debugLog), ...notes]);
+    fs.writeFileSync(assistantNotesPath(dir), JSON.stringify(items), { encoding: "utf8", mode: 0o600 });
+  } catch (err) {
+    safeLog(deps.debugLog, `ASSISTANT BUFFER ERROR: ${errorMessage(err)}`);
+  }
+}
+
+function readBufferedAssistantNotes(input, deps) {
+  const dir = assistantTurnDir(input, deps);
+  return dir ? readAssistantNotesFile(dir, deps.debugLog) : [];
+}
+
+function readAssistantNotesFile(dir, debugLog) {
+  try {
+    const items = JSON.parse(fs.readFileSync(assistantNotesPath(dir), "utf8"));
+    return Array.isArray(items) ? items.filter(isAssistantNote) : [];
+  } catch (err) {
+    if (err?.code !== "ENOENT") safeLog(debugLog, `ASSISTANT BUFFER READ ERROR: ${errorMessage(err)}`);
+    return [];
+  }
+}
+
+function markAssistantTurnStored(input, deps) {
+  const dir = assistantTurnDir(input, deps);
+  if (!dir) return;
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.rmSync(assistantNotesPath(dir), { force: true });
+    fs.writeFileSync(assistantStoredPath(dir), "1", { encoding: "utf8", mode: 0o600 });
+  } catch (err) {
+    safeLog(deps.debugLog, `ASSISTANT STORE MARK ERROR: ${errorMessage(err)}`);
+  }
+}
+
+function assistantTurnStored(dir) {
+  return fs.existsSync(assistantStoredPath(dir));
+}
+
+function assistantTurnDir(input, deps) {
+  const bucket = safePathPart(input?.session_id) || shortHash(`${input?.transcript_path || ""}:${input?.cwd || ""}`);
+  const turnId = safePathPart(input?.turn_id);
+  return bucket && turnId ? path.join(assistantBufferRoot(deps), bucket, turnId) : "";
+}
+
+function assistantBufferRoot(deps) {
+  return typeof deps?.assistantBufferDir === "string" && deps.assistantBufferDir.trim()
+    ? deps.assistantBufferDir
+    : ASSISTANT_BUFFER_DIR;
+}
+
+function assistantNotesPath(dir) {
+  return path.join(dir, "notes.json");
+}
+
+function assistantStoredPath(dir) {
+  return path.join(dir, "stored");
+}
+
+function isAssistantNote(item) {
+  return (item?.kind === "commentary" || item?.kind === "reasoning") && typeof item?.text === "string" && item.text;
+}
+
+function dedupeAssistantItems(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    if (!isAssistantNote(item)) return false;
+    const key = `${item.kind}\0${item.text}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function toolEvent(input) {
@@ -257,15 +385,15 @@ function toolEventPath(dir, event) {
   return path.join(dir, `${Date.now()}-${safePathPart(event.id) || "unknown"}-${randomUUID()}.json`);
 }
 
-function cleanupOldToolBuffers(root, debugLog) {
-  const cutoff = Date.now() - TOOL_BUFFER_TTL_MS;
+function cleanupOldTurnBuffers(root, debugLog, label) {
+  const cutoff = Date.now() - TURN_BUFFER_TTL_MS;
   try {
     for (const sessionDir of childDirs(root)) {
       for (const turnDir of childDirs(sessionDir)) removeOldDir(turnDir, cutoff);
       removeEmptyDir(sessionDir);
     }
   } catch (err) {
-    safeLog(debugLog, `TOOL BUFFER CLEANUP ERROR: ${errorMessage(err)}`);
+    safeLog(debugLog, `${label} BUFFER CLEANUP ERROR: ${errorMessage(err)}`);
   }
 }
 
@@ -327,6 +455,10 @@ function safePathPart(value) {
   return value.trim().replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
 }
 
+function shortHash(value) {
+  return createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
+}
+
 function safeLog(debugLog, message) {
   try { debugLog(message); } catch { /* ignore */ }
 }
@@ -339,6 +471,7 @@ export function makeDefaultDeps() {
   return {
     createApi,
     debugLog: makeDebugLogger(DEBUG_LOG),
+    assistantBufferDir: ASSISTANT_BUFFER_DIR,
     toolBufferDir: TOOL_BUFFER_DIR,
   };
 }

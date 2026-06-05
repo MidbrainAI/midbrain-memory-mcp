@@ -60,8 +60,11 @@ absolute paths written into `~/.claude/settings.json` at install time.
 **Codex hooks** — `plugins/codex/*.mjs` run in Node 20 from absolute paths
 written into `~/.codex/hooks.json`. They capture `UserPromptSubmit`,
 `PostToolUse`, and `Stop`. `Stop` and `PostToolUse` wrappers write JSON `{}` to
-stdout on zero exit. Project setup does not write project-local Codex hooks
-because Codex runs all matching hook layers and duplicate writes would occur.
+stdout on zero exit. Assistant capture buffers commentary/reasoning-only Stop
+events until a final answer is visible, then stores a clean assistant answer,
+one reasoning/commentary summary, and a separate tool summary. Project setup
+does not write project-local Codex hooks because Codex runs all matching hook
+layers and duplicate writes would occur.
 
 All capture paths go through the same modules:
 `MidbrainApi.create(getClient(id), projectDir)` → `BaseClient.resolveKey()`.
@@ -248,7 +251,8 @@ chain lives in `BaseClient.resolveKey()` — accessed via
 - createApi(cwd) wraps MidbrainApi.create(getClient('codex'), cwd) — use it.
 - Never read key files directly or check MIDBRAIN_API_KEY manually.
 - UserPromptSubmit stores prompt text as role "user".
-- Stop stores assistant text and flushes one bounded tool summary per turn.
+- Stop stores clean assistant answer text separately from one bounded
+  reasoning/commentary summary, and flushes one bounded tool summary per turn.
 - PostToolUse buffers redacted/truncated tool summaries locally.
 - Stop and PostToolUse wrappers must write JSON `{}` to stdout on zero exit.
 - Hook config uses canonical `[features].hooks` only when a feature flag write

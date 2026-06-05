@@ -9,6 +9,7 @@ node_modules/
 *~
 .env
 .env.*
+.codex/
 BACKLOG.md
 tasks/
 team-rollout-*.md

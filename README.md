@@ -61,7 +61,10 @@ API and returns scored results as formatted text.
 endpoint. Fire-and-forget, never blocks. OpenCode uses a Bun/TS plugin;
 Claude Code and Codex use standalone Node scripts wired to their hook
 systems. Codex captures prompts, assistant messages, plaintext reasoning
-summaries when available, and bounded per-turn tool summaries.
+summaries when available, and bounded per-turn tool summaries. Codex
+assistant capture stores the clean assistant answer separately from one
+bounded reasoning/commentary summary, so interim commentary does not create
+many standalone memories.
 
 **Project Setup** — The LLM calls `memory_setup_project` via MCP to scope
 memory to a specific project, then tells the user to restart.
@@ -236,6 +239,11 @@ Codex global install also writes `~/.codex/hooks.json` with
 writes only `.codex/config.toml`; it does not write project-local hooks to
 avoid duplicate captures from multiple matching hook layers. Use `/hooks` in
 Codex to review and trust hook changes if prompted.
+
+Codex may invoke `Stop` more than once during a turn. MidBrain buffers
+commentary/reasoning-only stops and stores them only when the final assistant
+answer appears: one clean assistant answer, one reasoning/commentary summary,
+and one separate tool activity summary when tools ran.
 
 For per-project configs, add `"MIDBRAIN_PROJECT_DIR": "/absolute/path/to/project"`
 to the JSON environment/env block or `MIDBRAIN_PROJECT_DIR = "/absolute/path/to/project"`

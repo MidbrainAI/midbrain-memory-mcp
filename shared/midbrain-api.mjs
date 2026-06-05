@@ -97,15 +97,16 @@ export class MidbrainApi {
   }
 
   /**
-   * Fire-and-forget POST of an episodic memory.
+   * POST an episodic memory. Callers may ignore the returned promise for
+   * fire-and-forget capture, or await it when process exit would cut off I/O.
    * @param {string} text
    * @param {"user"|"assistant"} role
    * @param {function(string): void} debugLogFn
-   * @param {Record<string, string>} [memoryMetadata] - Optional metadata (e.g. { client: "opencode" }).
+   * @param {Record<string, string>} [memoryMetadata] - Optional metadata (e.g. { client: "codex" }).
    */
   storeEpisodic(text, role, debugLogFn, memoryMetadata) {
     debugLogFn(`STORE: role=${role} textLen=${text.length}`);
-    fetch(ENDPOINTS.EPISODIC, {
+    return fetch(ENDPOINTS.EPISODIC, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
