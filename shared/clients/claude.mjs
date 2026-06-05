@@ -10,25 +10,17 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
+import {
+  KEY_FILENAME, MCP_KEY, REPO_ROOT,
+  home, readJson, writeJson, backup, classifyEntry, formatMigrationLine,
+} from './utils.mjs';
 
-const KEY_FILENAME = ".midbrain-key";
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import os from 'os';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-
-const MCP_KEY = 'midbrain-memory';
-
-const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR', 'MIDBRAIN_CLIENT']);
 
 // Lazy accessors — must resolve at call time, not module load time,
 // because tests override process.env.HOME.
-function home() { return os.homedir(); }
 function cfgDir() { return path.join(home(), '.config', 'claude'); }
 function keyFilePathFn() { return path.join(cfgDir(), KEY_FILENAME); }
 function claudeJsonPath() { return path.join(home(), '.claude.json'); }
@@ -44,63 +36,8 @@ const PERM_KEYS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Internal helpers (Claude-specific only)
 // ---------------------------------------------------------------------------
-
-/** Read and parse a JSON file. Returns null if missing. */
-async function readJson(filePath) {
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw new Error(`Failed to parse ${filePath}: ${err.message}`, { cause: err });
-  }
-}
-
-/** Write object as formatted JSON (creates dirs if needed). */
-async function writeJson(filePath, data) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2) + '\n', 'utf8');
-}
-
-/** Back up a file (no-op if source missing). */
-async function backup(filePath) {
-  if (existsSync(filePath)) {
-    await fs.copyFile(filePath, filePath + '.bak');
-  }
-}
-
-/** Extracts non-reserved env keys from an existing MCP entry. */
-function extractCustomEnv(entry) {
-  const source = entry && typeof entry === 'object' && entry.env;
-  if (!source || typeof source !== 'object') return {};
-  const out = {};
-  for (const [k, v] of Object.entries(source)) {
-    if (!RESERVED_ENV_KEYS.has(k)) out[k] = v;
-  }
-  return out;
-}
-
-const PINNED_RE = /midbrain-memory-mcp@\d+\.\d+\.\d+/;
-
-/** Classifies an existing entry for custom env extraction. */
-function classifyEntry(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return { exists: false, pinned: false, extraEnv: {} };
-  }
-  const args = Array.isArray(entry.args) ? entry.args : [];
-  const pinned = args.some((a) => PINNED_RE.test(a));
-  return { exists: true, pinned, extraEnv: extractCustomEnv(entry) };
-}
-
-/** Builds a status line for install summary. */
-function formatMigrationLine(label, exists, pinned) {
-  if (pinned) return `${label}: midbrain-memory pinned version preserved (no change)`;
-  return exists
-    ? `${label}: midbrain-memory updated`
-    : `${label}: midbrain-memory entry added`;
-}
 
 /** Builds the MCP entry for this client. */
 function buildEntry({ isDev = false, projectDir } = {}) {
@@ -193,7 +130,7 @@ export class Claude extends BaseClient {
     const mcpJsonPath = path.join(projectDir, '.mcp.json');
     const mcpJson = (await readJson(mcpJsonPath)) || {};
     mcpJson.mcpServers = mcpJson.mcpServers || {};
-    const { exists: mcpExists, pinned: mcpPinned, extraEnv: mcpExtraEnv } = classifyEntry(mcpJson.mcpServers[MCP_KEY]);
+    const { exists: mcpExists, pinned: mcpPinned, extraEnv: mcpExtraEnv } = classifyEntry(mcpJson.mcpServers[MCP_KEY], 'env');
     if (!mcpPinned) {
       const entry = buildEntry({ isDev, projectDir });
       entry.env = { ...mcpExtraEnv, ...entry.env };
@@ -229,7 +166,7 @@ export class Claude extends BaseClient {
     await backup(cjp);
 
     const existing = data.mcpServers && data.mcpServers[MCP_KEY];
-    const { pinned, extraEnv: customEnv } = classifyEntry(existing);
+    const { pinned, extraEnv: customEnv } = classifyEntry(existing, 'env');
 
     if (!pinned) {
       const entry = buildEntry({ isDev });
@@ -300,7 +237,7 @@ export class Claude extends BaseClient {
       data.projects[projectDir].mcpServers &&
       data.projects[projectDir].mcpServers[MCP_KEY];
 
-    const { exists, pinned, extraEnv } = classifyEntry(existingEntry);
+    const { exists, pinned, extraEnv } = classifyEntry(existingEntry, 'env');
     if (!pinned) {
       const entry = buildEntry({ isDev, projectDir });
       entry.env = { ...extraEnv, ...entry.env };

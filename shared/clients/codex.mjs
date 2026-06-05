@@ -9,21 +9,16 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
+import {
+  KEY_FILENAME, MCP_KEY, REPO_ROOT,
+  home, readJson, writeJson, backup, writeSecure,
+  classifyEntry, formatMigrationLine,
+} from './utils.mjs';
 
-const KEY_FILENAME = ".midbrain-key";
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import os from 'os';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-
-const MCP_KEY = 'midbrain-memory';
-const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR', 'MIDBRAIN_CLIENT']);
-const PINNED_RE = /midbrain-memory-mcp@\d+\.\d+\.\d+/;
 const HOOK_TIMEOUT_SEC = 10;
 const HOOK_EVENTS = {
   UserPromptSubmit: 'capture-user.mjs',
@@ -32,34 +27,17 @@ const HOOK_EVENTS = {
 };
 let tomlModule;
 
-function home() { return os.homedir(); }
 function codexDir() { return path.join(home(), '.codex'); }
 function configPath() { return path.join(codexDir(), 'config.toml'); }
 function hooksPath() { return path.join(codexDir(), 'hooks.json'); }
 function cfgDir() { return path.join(home(), '.config', 'codex'); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
 
-/** Write a key file with chmod 600. */
-async function writeSecure(filePath, key) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, key + '\n', 'utf8');
-  await fs.chmod(filePath, 0o600);
-}
-
 async function readToml(filePath) {
   try {
     const toml = await loadToml();
     const raw = await fs.readFile(filePath, 'utf8');
     return toml.parse(raw);
-  } catch (err) {
-    if (err.code === 'ENOENT') return {};
-    throw new Error(`Failed to parse ${filePath}: ${err.message}`, { cause: err });
-  }
-}
-
-async function readJson(filePath) {
-  try {
-    return JSON.parse(await fs.readFile(filePath, 'utf8'));
   } catch (err) {
     if (err.code === 'ENOENT') return {};
     throw new Error(`Failed to parse ${filePath}: ${err.message}`, { cause: err });
@@ -77,32 +55,6 @@ async function loadToml() {
   return tomlModule;
 }
 
-async function writeJson(filePath, data) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2) + '\n', 'utf8');
-}
-
-async function backup(filePath) {
-  if (existsSync(filePath)) await fs.copyFile(filePath, filePath + '.bak');
-}
-
-function extractCustomEnv(entry) {
-  const source = entry && typeof entry === 'object' && entry.env;
-  if (!source || typeof source !== 'object') return {};
-  return Object.fromEntries(
-    Object.entries(source).filter(([key]) => !RESERVED_ENV_KEYS.has(key)),
-  );
-}
-
-function classifyEntry(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return { exists: false, pinned: false, extraEnv: {} };
-  }
-  const values = [entry.command, ...(Array.isArray(entry.args) ? entry.args : [])];
-  const pinned = values.some((value) => typeof value === 'string' && PINNED_RE.test(value));
-  return { exists: true, pinned, extraEnv: extractCustomEnv(entry) };
-}
-
 function buildEntry({ isDev = false, projectDir, extraEnv = {} } = {}) {
   const env = { ...extraEnv, MIDBRAIN_CLIENT: 'codex' };
   if (projectDir) env.MIDBRAIN_PROJECT_DIR = projectDir;
@@ -110,13 +62,6 @@ function buildEntry({ isDev = false, projectDir, extraEnv = {} } = {}) {
     return { command: process.execPath, args: [path.join(REPO_ROOT, 'index.js')], env };
   }
   return { command: 'npx', args: ['-y', 'midbrain-memory-mcp@latest'], env };
-}
-
-function formatMigrationLine(label, exists, pinned) {
-  if (pinned) return `${label}: midbrain-memory pinned version preserved (no change)`;
-  return exists
-    ? `${label}: midbrain-memory updated`
-    : `${label}: midbrain-memory entry added`;
 }
 
 function patchFeatureAliases(config) {
@@ -130,7 +75,7 @@ function patchFeatureAliases(config) {
 function patchMcpEntry(config, opts) {
   config.mcp_servers = config.mcp_servers || {};
   const existing = config.mcp_servers[MCP_KEY];
-  const { exists, pinned, extraEnv } = classifyEntry(existing);
+  const { exists, pinned, extraEnv } = classifyEntry(existing, 'env');
   if (!pinned) config.mcp_servers[MCP_KEY] = buildEntry({ ...opts, extraEnv });
   return { exists, pinned };
 }
@@ -207,7 +152,7 @@ export class Codex extends BaseClient {
     await writeToml(cfp, config);
     summary.push(formatMigrationLine('~/.codex/config.toml', exists, pinned));
 
-    const hooks = patchHooks(await readJson(hp));
+    const hooks = patchHooks((await readJson(hp)) || {});
     await backup(hp);
     await writeJson(hp, hooks);
     summary.push('~/.codex/hooks.json: MidBrain hooks written');

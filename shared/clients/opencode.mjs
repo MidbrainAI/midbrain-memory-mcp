@@ -10,13 +10,14 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
+import {
+  KEY_FILENAME, MCP_KEY, REPO_ROOT,
+  home, backup, classifyEntry, formatMigrationLine,
+} from './utils.mjs';
 
-const KEY_FILENAME = ".midbrain-key";
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import os from 'os';
-import { fileURLToPath } from 'url';
 
 // Lazy-loaded: jsonc-parser is only needed for config writing, not key
 // resolution. Keeping it lazy lets the plugin/hook runtime import this
@@ -27,18 +28,10 @@ async function jsonc() {
   return _jsonc;
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-
-const MCP_KEY = 'midbrain-memory';
 const JSONC_FORMAT = { tabSize: 2, insertSpaces: true, eol: '\n' };
-
-const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR', 'MIDBRAIN_CLIENT']);
 
 // Lazy accessors — must resolve at call time, not module load time,
 // because tests override process.env.HOME.
-function home() { return os.homedir(); }
 function configDir() { return path.join(home(), '.config', 'opencode'); }
 function pluginsDir() { return path.join(configDir(), 'plugins'); }
 function ownKeyPath() { return path.join(configDir(), KEY_FILENAME); }
@@ -92,36 +85,6 @@ async function patchJsonFile(filePath, modifications) {
   await fs.writeFile(filePath, text, 'utf8');
 }
 
-/** Back up a file (no-op if source missing). */
-async function backup(filePath) {
-  if (existsSync(filePath)) {
-    await fs.copyFile(filePath, filePath + '.bak');
-  }
-}
-
-/** Extracts non-reserved env keys from an existing MCP entry. */
-function extractCustomEnv(entry) {
-  const source = entry && typeof entry === 'object' && entry.environment;
-  if (!source || typeof source !== 'object') return {};
-  const out = {};
-  for (const [k, v] of Object.entries(source)) {
-    if (!RESERVED_ENV_KEYS.has(k)) out[k] = v;
-  }
-  return out;
-}
-
-const PINNED_RE = /midbrain-memory-mcp@\d+\.\d+\.\d+/;
-
-/** Classifies an existing entry for custom env extraction. */
-function classifyEntry(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return { exists: false, pinned: false, extraEnv: {} };
-  }
-  const args = Array.isArray(entry.command) ? entry.command : [];
-  const pinned = args.some((a) => PINNED_RE.test(a));
-  return { exists: true, pinned, extraEnv: extractCustomEnv(entry) };
-}
-
 /** Builds the MCP entry for this client. */
 function buildEntry({ isDev = false, projectDir } = {}) {
   if (isDev) {
@@ -142,14 +105,6 @@ function buildEntry({ isDev = false, projectDir } = {}) {
     environment,
     enabled: true,
   };
-}
-
-/** Builds a status line for install summary. */
-function formatMigrationLine(label, exists, pinned) {
-  if (pinned) return `${label}: midbrain-memory pinned version preserved (no change)`;
-  return exists
-    ? `${label}: midbrain-memory updated`
-    : `${label}: midbrain-memory entry added`;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +152,7 @@ export class OpenCode extends BaseClient {
     const clientsSrc = path.join(REPO_ROOT, 'shared', 'clients');
     const clientsDst = path.join(pd, 'clients');
     await fs.mkdir(clientsDst, { recursive: true });
-    for (const file of ['base.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'codex.mjs', 'registry.mjs']) {
+    for (const file of ['base.mjs', 'utils.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'codex.mjs', 'registry.mjs']) {
       await fs.copyFile(path.join(clientsSrc, file), path.join(clientsDst, file));
     }
     summary.push('  + Client adapters copied: ~/.config/opencode/plugins/clients/');
@@ -219,7 +174,7 @@ export class OpenCode extends BaseClient {
     }
 
     const existing = config.mcp && config.mcp[MCP_KEY];
-    const { exists, pinned, extraEnv: customEnv } = classifyEntry(existing);
+    const { exists, pinned, extraEnv: customEnv } = classifyEntry(existing, 'environment');
     if (!pinned) {
       const entry = buildEntry({ isDev });
       entry.environment = { ...customEnv, ...entry.environment };
@@ -245,7 +200,7 @@ export class OpenCode extends BaseClient {
     const config = (await readJson(configPath)) || {};
 
     const existingEntry = config.mcp && config.mcp[MCP_KEY];
-    const { exists, pinned, extraEnv } = classifyEntry(existingEntry);
+    const { exists, pinned, extraEnv } = classifyEntry(existingEntry, 'environment');
 
     const modifications = [];
     if (!config['$schema']) {

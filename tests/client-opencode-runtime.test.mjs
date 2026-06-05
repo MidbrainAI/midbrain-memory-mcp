@@ -12,6 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
 const CLIENT_FILES = [
   "base.mjs",
+  "utils.mjs",
   "generic.mjs",
   "opencode.mjs",
   "claude.mjs",
