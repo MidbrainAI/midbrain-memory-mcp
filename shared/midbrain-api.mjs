@@ -22,6 +22,7 @@ const ENDPOINTS = {
   SEARCH_LEXICAL:  `${API_V1}/memories/search/lexical`,
   EPISODIC:        `${API_V1}/memories/episodic`,
   SEMANTIC_FILES:  `${API_V1}/memories/semantic/files`,
+  PROCEDURAL:      `${API_V1}/memories/procedural`,
 };
 
 const DEFAULT_SEARCH_LIMIT = 10;
@@ -134,6 +135,7 @@ export class MidbrainApi {
   static get SEARCH_LEXICAL()   { return ENDPOINTS.SEARCH_LEXICAL; }
   static get EPISODIC()         { return ENDPOINTS.EPISODIC; }
   static get SEMANTIC_FILES()   { return ENDPOINTS.SEMANTIC_FILES; }
+  static get PROCEDURAL()       { return ENDPOINTS.PROCEDURAL; }
   static get DEFAULT_SEARCH_LIMIT() { return DEFAULT_SEARCH_LIMIT; }
   static get API_BASE_URL()     { return API_BASE; }
 }

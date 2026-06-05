@@ -76,6 +76,24 @@ const MOCK_DATA = {
     content: "1: # Setup Guide\n2: Install with npm.",
     chunks_used: 1,
   },
+  procedural: [
+    {
+      id: 1,
+      title: "Deploy to production",
+      content: "Run npm run build && npm publish",
+      source_ids: [10, 11],
+      created_at: "2025-05-01T10:00:00Z",
+      updated_at: "2025-05-20T14:30:00Z",
+    },
+    {
+      id: 2,
+      title: "Run tests",
+      content: "Use npm test for full suite, npm run test:watch for dev",
+      source_ids: [],
+      created_at: "2025-04-15T08:00:00Z",
+      updated_at: "2025-04-15T08:00:00Z",
+    },
+  ],
 };
 
 /** Build a fake Response object matching the fetch() API. */
@@ -147,6 +165,9 @@ function mockFetch(url, _opts) {
     }
     return Promise.resolve(jsonResponse(MOCK_DATA.readFile));
   }
+  if (p === "/api/v1/memories/procedural") {
+    return Promise.resolve(jsonResponse(MOCK_DATA.procedural));
+  }
   return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
 }
 
@@ -205,9 +226,9 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP server tool listing", () => {
-  it("exposes exactly 7 tools", async () => {
+  it("exposes exactly 8 tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(8);
   });
 
   it("exposes the expected tool names", async () => {
@@ -220,6 +241,7 @@ describe("MCP server tool listing", () => {
       "list_files",
       "memory_search",
       "memory_setup_project",
+      "procedural_knowledge",
       "read_file",
     ]);
   });
@@ -1659,6 +1681,29 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
 
     // Tool response shape unchanged: text content with key + config lines
     expect(text).toMatch(/key|Key|midbrain/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// procedural_knowledge tool
+// ---------------------------------------------------------------------------
+
+describe("procedural_knowledge tool", () => {
+  it("returns formatted procedural entries", async () => {
+    const result = await client.callTool({ name: "procedural_knowledge", arguments: {} });
+    const text = result.content[0].text;
+    expect(text).toContain("Procedural knowledge (2):");
+    expect(text).toContain("[1] Deploy to production");
+    expect(text).toContain("Run npm run build && npm publish");
+    expect(text).toContain("(2 sources)");
+    expect(text).toContain("[2] Run tests");
+  });
+
+  it("does not include timestamps in concise listing", async () => {
+    const result = await client.callTool({ name: "procedural_knowledge", arguments: {} });
+    const text = result.content[0].text;
+    // Procedural entries show title + content, not timestamps
+    expect(text).not.toContain("2025-05-20");
   });
 });
 
