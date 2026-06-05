@@ -36,6 +36,26 @@ function configDir() { return path.join(home(), '.config', 'opencode'); }
 function pluginsDir() { return path.join(configDir(), 'plugins'); }
 function ownKeyPath() { return path.join(configDir(), KEY_FILENAME); }
 
+// --- Plugin deploy constants (single source of truth for copy + cleanup) ---
+const PLUGIN_FILE = 'midbrain-memory.ts';
+const BUNDLE_FILE = 'midbrain-shared.mjs';
+const MARKER_FILE = '.midbrain-repo-root';
+const EXPECTED_PLUGIN_FILES = new Set([PLUGIN_FILE, BUNDLE_FILE, MARKER_FILE]);
+
+/** Remove stale midbrain plugin files that aren't part of the current release. */
+async function cleanStalePlugins(pd) {
+  try {
+    const entries = await fs.readdir(pd);
+    for (const entry of entries) {
+      if (entry.startsWith('midbrain-') || entry.startsWith('.midbrain-') || entry === 'clients') {
+        if (!EXPECTED_PLUGIN_FILES.has(entry)) {
+          await fs.rm(path.join(pd, entry), { recursive: true, force: true });
+        }
+      }
+    }
+  } catch { /* ignore — dir may not exist yet */ }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -141,21 +161,22 @@ export class OpenCode extends BaseClient {
     // Copy plugin + bundled shared code (2 files, no transformation needed)
     const pd = pluginsDir();
     await fs.mkdir(pd, { recursive: true });
+    await cleanStalePlugins(pd);
 
     await fs.copyFile(
-      path.join(REPO_ROOT, 'plugins', 'opencode', 'midbrain-memory.ts'),
-      path.join(pd, 'midbrain-memory.ts'),
+      path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE),
+      path.join(pd, PLUGIN_FILE),
     );
-    summary.push('  + Plugin installed: ~/.config/opencode/plugins/midbrain-memory.ts');
+    summary.push(`  + Plugin installed: ~/.config/opencode/plugins/${PLUGIN_FILE}`);
 
     await fs.copyFile(
-      path.join(REPO_ROOT, 'dist', 'midbrain-shared.mjs'),
-      path.join(pd, 'midbrain-shared.mjs'),
+      path.join(REPO_ROOT, 'dist', BUNDLE_FILE),
+      path.join(pd, BUNDLE_FILE),
     );
-    summary.push('  + Bundle copied: ~/.config/opencode/plugins/midbrain-shared.mjs');
+    summary.push(`  + Bundle copied: ~/.config/opencode/plugins/${BUNDLE_FILE}`);
 
     // Write freshness marker for staleness detection
-    await fs.writeFile(path.join(pd, '.midbrain-repo-root'), REPO_ROOT + '\n', 'utf8');
+    await fs.writeFile(path.join(pd, MARKER_FILE), REPO_ROOT + '\n', 'utf8');
 
     // Patch opencode config (.json or .jsonc)
     const configPath = resolveConfig(configDir());
@@ -235,10 +256,10 @@ export class OpenCode extends BaseClient {
    */
   async isFresh() {
     try {
-      const markerPath = path.join(pluginsDir(), '.midbrain-repo-root');
+      const markerPath = path.join(pluginsDir(), MARKER_FILE);
       const raw = await fs.readFile(markerPath, 'utf8');
       return raw.trim() === REPO_ROOT;
-    } catch { return false; } // missing marker = stale
+    } catch { return false; }
   }
 
   /**
@@ -248,17 +269,18 @@ export class OpenCode extends BaseClient {
   async repairPlugins() {
     const pd = pluginsDir();
     await fs.mkdir(pd, { recursive: true });
+    await cleanStalePlugins(pd);
 
     await fs.copyFile(
-      path.join(REPO_ROOT, 'plugins', 'opencode', 'midbrain-memory.ts'),
-      path.join(pd, 'midbrain-memory.ts'),
+      path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE),
+      path.join(pd, PLUGIN_FILE),
     );
     await fs.copyFile(
-      path.join(REPO_ROOT, 'dist', 'midbrain-shared.mjs'),
-      path.join(pd, 'midbrain-shared.mjs'),
+      path.join(REPO_ROOT, 'dist', BUNDLE_FILE),
+      path.join(pd, BUNDLE_FILE),
     );
 
-    await fs.writeFile(path.join(pd, '.midbrain-repo-root'), REPO_ROOT + '\n', 'utf8');
+    await fs.writeFile(path.join(pd, MARKER_FILE), REPO_ROOT + '\n', 'utf8');
     return ['  ~ OpenCode plugin files repaired (re-copied)'];
   }
 }
