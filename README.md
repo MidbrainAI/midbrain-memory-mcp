@@ -4,8 +4,9 @@ Persistent AI memory for long running agents. An MCP server that gives LLMs
 long-term memory — semantic search, episodic recall, and per-project
 scoping — with automatic capture of every conversation.
 
-Works with [OpenCode](https://opencode.ai) and
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+Works with [OpenCode](https://opencode.ai),
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code), and
+[OpenAI Codex](https://developers.openai.com/codex).
 
 [![npm version](https://img.shields.io/npm/v/midbrain-memory-mcp.svg?style=flat-square)](https://www.npmjs.com/package/midbrain-memory-mcp)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-brightgreen?style=flat-square)](#prerequisites)
@@ -25,13 +26,13 @@ agent, and generate an API key.
 npx midbrain-memory-mcp install
 ```
 
-The installer detects OpenCode and/or Claude Code on your machine, prompts
-for your API key, writes per-client key files (chmod 600), patches MCP
-configs, and copies plugin files. One command, done.
+The installer detects OpenCode, Claude Code, and/or Codex on your machine,
+prompts for your API key, writes per-client key files (chmod 600), patches
+MCP configs, and copies hook/plugin files. One command, done.
 
 ### 3. Restart and verify
 
-Restart OpenCode or Claude Code. The `memory_search` tool should be
+Restart OpenCode, Claude Code, or Codex. The `memory_search` tool should be
 available. Send a few messages, then search — your messages should appear.
 
 ```sh
@@ -44,7 +45,7 @@ npx -y midbrain-memory-mcp@latest --version
 ## How It Works
 
 ```
-OpenCode / Claude Code session
+OpenCode / Claude Code / Codex session
   |
   |-- MCP stdio -----> index.js -------> memory.midbrain.ai
   |                    (search, browse)    /api/v1/memories/search
@@ -56,9 +57,11 @@ OpenCode / Claude Code session
 **Search** — The LLM calls `memory_search` via MCP. The server queries the
 API and returns scored results as formatted text.
 
-**Capture** — Companion hooks fire on every message and POST to the
-episodic endpoint. Fire-and-forget, never blocks. OpenCode uses a Bun/TS
-plugin; Claude Code uses standalone Node scripts wired to its hook system.
+**Capture** — Companion hooks POST conversation events to the episodic
+endpoint. Fire-and-forget, never blocks. OpenCode uses a Bun/TS plugin;
+Claude Code and Codex use standalone Node scripts wired to their hook
+systems. Codex captures prompts, assistant messages, plaintext reasoning
+summaries when available, and bounded per-turn tool summaries.
 
 **Project Setup** — The LLM calls `memory_setup_project` via MCP to scope
 memory to a specific project, then tells the user to restart.
@@ -72,6 +75,7 @@ memory to a specific project, then tells the user to restart.
 | `get_episodic_memories_by_date` | Conversation history by date range |
 | `list_files` | Browse semantic memory documents |
 | `read_file` | Read a semantic memory document by line range |
+| `check_session_status` | Check for recent activity from other clients |
 | `memory_setup_project` | Configure per-project memory scoping |
 
 ---
@@ -108,7 +112,7 @@ MCP configs, outputs JSON to stdout. All progress goes to stderr.
 Set up midbrain memory for this project
 ```
 
-**Claude Code** (name the tool — lazy loading):
+**Claude Code / Codex** (name the tool if your client lazy-loads tools):
 ```
 Use the memory_setup_project tool to configure this project
 ```
@@ -148,7 +152,7 @@ version. The MCP server also logs its version to stderr on startup:
 
 | Variable | Purpose | Set by |
 |---|---|---|
-| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode` or `claude`) | MCP config `environment`/`env` block |
+| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, or `codex`) | MCP config `environment`/`env` block |
 | `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution | Project-level MCP config |
 | `MIDBRAIN_API_KEY` | API key (CI/debug fallback only) | User environment |
 
@@ -156,9 +160,9 @@ version. The MCP server also logs its version to stderr on startup:
 
 Keys are stored in files with `chmod 600`. The full resolution chain is
 owned by `BaseClient.resolveKey()` in `shared/clients/base.mjs`. All
-components — MCP server, OpenCode plugin, Claude Code hooks — obtain their
-key through `MidbrainApi.create(getClient(id), projectDir)`. Never read
-key files directly or implement resolution manually.
+components — MCP server, OpenCode plugin, Claude Code hooks, and Codex hooks
+— obtain their key through `MidbrainApi.create(getClient(id), projectDir)`.
+Never read key files directly or implement resolution manually.
 
 Resolution order:
 
@@ -215,11 +219,32 @@ Resolution order:
 }
 ```
 
-For per-project configs, add `"MIDBRAIN_PROJECT_DIR": "/absolute/path/to/project"` to the environment/env block.
+**Codex** — `~/.codex/config.toml` (global) or
+`<project>/.codex/config.toml` (per-project):
+
+```toml
+[mcp_servers.midbrain-memory]
+command = "npx"
+args = ["-y", "midbrain-memory-mcp@latest"]
+
+[mcp_servers.midbrain-memory.env]
+MIDBRAIN_CLIENT = "codex"
+```
+
+Codex global install also writes `~/.codex/hooks.json` with
+`UserPromptSubmit`, `PostToolUse`, and `Stop` capture hooks. Project setup
+writes only `.codex/config.toml`; it does not write project-local hooks to
+avoid duplicate captures from multiple matching hook layers. Use `/hooks` in
+Codex to review and trust hook changes if prompted.
+
+For per-project configs, add `"MIDBRAIN_PROJECT_DIR": "/absolute/path/to/project"`
+to the JSON environment/env block or `MIDBRAIN_PROJECT_DIR = "/absolute/path/to/project"`
+to the Codex TOML env table.
 
 **Important:**
 - All paths must be absolute. JSON does not expand `~`.
-- OpenCode uses `mcp`. Claude Code uses `mcpServers`. Wrong key = silent failure.
+- OpenCode uses `mcp`. Claude Code uses `mcpServers`. Codex uses
+  `[mcp_servers.<id>]` TOML tables. Wrong key = silent failure.
 - MCP servers in `~/.claude/settings.json` are silently ignored — use `~/.claude.json`.
 
 ---
@@ -272,7 +297,7 @@ curl https://memory.midbrain.ai/health         # Is the API reachable?
 
 **Common causes:**
 - Stale npx cache (see version check above)
-- `MIDBRAIN_CLIENT` not set or set to wrong value (`opencode` or `claude`)
+- `MIDBRAIN_CLIENT` not set or set to wrong value (`opencode`, `claude`, or `codex`)
 - Key file missing or wrong permissions (`chmod 600`)
 - Claude Code: MCP entry in `~/.claude/settings.json` instead of `~/.claude.json`
 
@@ -367,18 +392,20 @@ shared/
     base.mjs                   BaseClient — owns the full key resolution chain
     opencode.mjs               OpenCode adapter (JSONC config, plugin copy)
     claude.mjs                 Claude Code adapter (hooks, .mcp.json)
+    codex.mjs                  Codex adapter (TOML config, hooks.json)
     generic.mjs                Fallback adapter
     registry.mjs               getClient(id), detectClients()
 plugins/
   opencode/midbrain-memory.ts  OpenCode plugin (Bun/TS, episodic capture)
   claude-code/                 Claude Code hook scripts (Node 20, episodic capture)
+  codex/                       Codex hook scripts (Node 20, episodic capture)
 scripts/                       CI guards (pinned-spec regression)
 tests/                         vitest (unit, integration, installer, doc-regression)
 ```
 
 **The shared client layer is the single source of truth** for key
 resolution and API access. Every component — MCP server tools, the
-OpenCode plugin, and the Claude Code hooks — must call
+OpenCode plugin, Claude Code hooks, and Codex hooks — must call
 `MidbrainApi.create(getClient(id), projectDir)`. Direct `fs.readFile`
 calls for key files or manual env var checks are forbidden.
 
@@ -388,6 +415,7 @@ calls for key files or manual env var checks are forbidden.
 |---|---|
 | `@modelcontextprotocol/sdk` | MCP protocol |
 | `jsonc-parser` | JSONC parsing with comment preservation |
+| `smol-toml` | Codex `config.toml` parsing and serialization |
 | `zod` | Schema validation |
 
 Dev: eslint, vitest, husky, lint-staged. Not shipped to users.
@@ -397,7 +425,7 @@ Dev: eslint, vitest, husky, lint-staged. Not shipped to users.
 ## Prerequisites
 
 - Node >= 20
-- [OpenCode](https://opencode.ai) and/or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and/or [OpenAI Codex](https://developers.openai.com/codex)
 - A MidBrain API key ([memory.midbrain.ai](https://memory.midbrain.ai))
 
 ## License

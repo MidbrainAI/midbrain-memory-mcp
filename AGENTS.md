@@ -1,15 +1,9 @@
 # MidBrain Memory MCP
 
-## Important: Deferred Codex work
-
-`tasks/PRD-010-npx-install-readiness/codex-followups.md` lists
-Codex-related work deferred from PRD-010 (npx install readiness).
-Before starting any Codex PRD, read that file. Remove this section
-from AGENTS.md when the Codex PRD closes.
-
 ## What This Is
 MCP server + episodic capture hooks for persistent AI memory.
-Supports **OpenCode** (plugin) and **Claude Code** (hook scripts).
+Supports **OpenCode** (plugin), **Claude Code** (hook scripts), and
+**OpenAI Codex** (hook scripts).
 API: https://memory.midbrain.ai
 Published on npm as midbrain-memory-mcp. Version 0.1.0+.
 Install: `npx -y midbrain-memory-mcp@latest` (MCP config command) or
@@ -33,6 +27,7 @@ shared/
     base.mjs                     Abstract BaseClient. Owns the full resolveKey() chain.
     opencode.mjs                 OpenCode adapter: JSONC config, plugin copy
     claude.mjs                   Claude Code adapter: hooks, .mcp.json, .claude.json
+    codex.mjs                    Codex adapter: TOML config, hooks.json
     generic.mjs                  Near-noop fallback: global key write, project key CRUD
     registry.mjs                 getClient(id), detectClients(), allClients()
 plugins/
@@ -43,6 +38,11 @@ plugins/
     common.mjs                   Shared hook utilities (createApi, debugLog, readStdinJSON)
     capture-user.mjs             Hook: UserPromptSubmit → storeEpisodic("user")
     capture-assistant.mjs        Hook: Stop → storeEpisodic("assistant")
+  codex/
+    common.mjs                   Shared Codex hook runtime; uses MidbrainApi + getClient("codex")
+    capture-user.mjs             Hook: UserPromptSubmit → storeEpisodic("user")
+    capture-tool.mjs             Hook: PostToolUse → local bounded tool buffer
+    capture-assistant.mjs        Hook: Stop → assistant memory + flushed tool summary
 ```
 
 ### Capture paths
@@ -57,7 +57,13 @@ They are NOT copied; they run directly from the installed npm package via
 absolute paths written into `~/.claude/settings.json` at install time.
 `common.mjs` imports from `../../shared/` (relative within the package tree).
 
-Both capture paths go through the same modules:
+**Codex hooks** — `plugins/codex/*.mjs` run in Node 20 from absolute paths
+written into `~/.codex/hooks.json`. They capture `UserPromptSubmit`,
+`PostToolUse`, and `Stop`. `Stop` and `PostToolUse` wrappers write JSON `{}` to
+stdout on zero exit. Project setup does not write project-local Codex hooks
+because Codex runs all matching hook layers and duplicate writes would occur.
+
+All capture paths go through the same modules:
 `MidbrainApi.create(getClient(id), projectDir)` → `BaseClient.resolveKey()`.
 **Never re-implement key resolution or API calls in a plugin or hook.**
 Use `MidbrainApi` and `getClient` from `shared/`.
@@ -89,6 +95,7 @@ Rules:
 Per-client key file locations:
 - OpenCode: `~/.config/opencode/.midbrain-key`
 - Claude Code: `~/.config/claude/.midbrain-key`
+- Codex: `~/.config/codex/.midbrain-key`
 - Global default: `~/.config/midbrain/.midbrain-key`
 - Project override (recommended): `<projectDir>/.midbrain/.midbrain-key`
 - Project override (flat): `<projectDir>/.midbrain-key`
@@ -107,7 +114,7 @@ Per-client key file locations:
   Returns: `{path, start_line, content, chunks_used}`
 - `POST /api/v1/memories/episodic` — body: `{"text": "...", "role": "user"|"assistant", "memory_metadata": {"client": "opencode"}}`
   Append-only. `memory_metadata` is optional; values must be strings.
-  Capture hooks tag each memory with the originating client (opencode/claude).
+  Capture hooks tag each memory with the originating client (opencode/claude/codex).
   Returns created memory.
 - `GET /health` — no auth. Returns `{"status": "ok"}`
 
@@ -117,7 +124,7 @@ To scope episodic memory to a project-specific agent:
   2. Place the API key: echo "your-key" > <project>/.midbrain/.midbrain-key
   3. Set permissions: chmod 600 <project>/.midbrain/.midbrain-key
   4. Add to .gitignore: .midbrain-key
-Both OpenCode and Claude Code will automatically detect the project key.
+OpenCode, Claude Code, and Codex will automatically detect the project key.
 No hook reconfiguration, no env vars, no .mcp.json changes needed for the write path.
 
 ### Per-Project Search (MCP Server)
@@ -154,6 +161,15 @@ Claude Code — project-level .mcp.json in the project root:
     }
   }
 
+Codex — project-level .codex/config.toml in the project root:
+  [mcp_servers.midbrain-memory]
+  command = "npx"
+  args = ["-y", "midbrain-memory-mcp@latest"]
+
+  [mcp_servers.midbrain-memory.env]
+  MIDBRAIN_CLIENT = "codex"
+  MIDBRAIN_PROJECT_DIR = "<project-root>"
+
 Without MIDBRAIN_PROJECT_DIR, the MCP server falls through to the client
 config dir key, which may be a different agent than the project key.
 IMPORTANT: Always use absolute node paths in MCP configs — bare `node` fails
@@ -163,7 +179,7 @@ when the client's shell environment extraction doesn't include PATH.
 The `memory_setup_project` MCP tool and `node install.mjs --project` CLI
 automate per-project memory configuration:
   - Creates .midbrain/.midbrain-key with chmod 600
-  - Writes project-level MCP config (opencode.json/.jsonc or .mcp.json)
+  - Writes project-level MCP config (opencode.json/.jsonc, .mcp.json, or .codex/config.toml)
   - Patches ~/.claude.json project-local mcpServers (bypasses trust gate)
   - Merges into existing configs without data loss
   - Preserves comments and formatting in JSONC files (via jsonc-parser)
@@ -224,6 +240,19 @@ chain lives in `BaseClient.resolveKey()` — accessed via
 - Import { createApi, debugLog, readStdinJSON } from ./common.mjs.
 - createApi(cwd) wraps MidbrainApi.create(getClient('claude'), cwd) — use it.
 - Fire-and-forget via api.storeEpisodic(). Fail silently on any error.
+
+**Codex hooks** (`plugins/codex/`):
+- Node 20. No npm deps beyond package runtime deps.
+- Import { MidbrainApi } from ../../shared/midbrain-api.mjs and
+  { getClient } from ../../shared/clients/registry.mjs in common.mjs only.
+- createApi(cwd) wraps MidbrainApi.create(getClient('codex'), cwd) — use it.
+- Never read key files directly or check MIDBRAIN_API_KEY manually.
+- UserPromptSubmit stores prompt text as role "user".
+- Stop stores assistant text and flushes one bounded tool summary per turn.
+- PostToolUse buffers redacted/truncated tool summaries locally.
+- Stop and PostToolUse wrappers must write JSON `{}` to stdout on zero exit.
+- Hook config uses canonical `[features].hooks` only when a feature flag write
+  is necessary; never write the deprecated Codex hook feature alias.
 
 ## Plugin Hook Signature
 chat.message receives:

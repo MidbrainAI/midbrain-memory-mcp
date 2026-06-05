@@ -36,7 +36,7 @@
 set -euo pipefail
 
 GIT_GREP_INCLUDES=(
-  '*.md' '*.json' '*.mjs' '*.ts' '*.js' '*.sh'
+  '*.md' '*.json' '*.toml' '*.mjs' '*.ts' '*.js' '*.sh'
 )
 
 GIT_GREP_EXCLUDES=(
@@ -126,3 +126,22 @@ if [ -n "$FOUND_60CHAR" ]; then
 fi
 
 echo "OK: no legacy 60-char install-command references."
+
+# ---------------------------------------------------------------------------
+# PRD-012: user-facing docs/config examples must not teach Codex's deprecated
+# codex_hooks alias. Runtime migration code and tests may mention the alias;
+# docs should use canonical [features].hooks only.
+# ---------------------------------------------------------------------------
+
+FOUND_CODEX_HOOKS=$(git grep -n -E 'codex_hooks' -- '*.md' '*.toml' \
+    "${GIT_GREP_EXCLUDES[@]}" || true)
+
+if [ -n "$FOUND_CODEX_HOOKS" ]; then
+  echo "ERROR: deprecated Codex 'codex_hooks' references found in docs/config examples."
+  echo "Use canonical [features].hooks instead."
+  echo ""
+  echo "$FOUND_CODEX_HOOKS"
+  exit 1
+fi
+
+echo "OK: no deprecated codex_hooks docs/config references."
