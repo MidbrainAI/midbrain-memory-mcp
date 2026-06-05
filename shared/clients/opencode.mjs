@@ -157,6 +157,9 @@ export class OpenCode extends BaseClient {
     }
     summary.push('  + Client adapters copied: ~/.config/opencode/plugins/clients/');
 
+    // Write freshness marker for staleness detection
+    await fs.writeFile(path.join(pd, '.midbrain-repo-root'), REPO_ROOT + '\n', 'utf8');
+
     // Patch opencode config (.json or .jsonc)
     const configPath = resolveConfig(configDir());
     const configBasename = path.basename(configPath);
@@ -227,6 +230,38 @@ export class OpenCode extends BaseClient {
   projectConfigFiles(projectDir) {
     const configPath = resolveConfig(projectDir);
     return [path.basename(configPath)];
+  }
+
+  /**
+   * Check if plugin files are fresh by comparing a version marker.
+   * Returns true if fresh (marker matches REPO_ROOT), false if stale.
+   */
+  async isFresh() {
+    try {
+      const markerPath = path.join(pluginsDir(), '.midbrain-repo-root');
+      const raw = await fs.readFile(markerPath, 'utf8');
+      return raw.trim() === REPO_ROOT;
+    } catch { return false; } // missing marker = stale
+  }
+
+  /**
+   * Repair stale plugin files by re-copying from current REPO_ROOT.
+   * Also writes a freshness marker.
+   */
+  async repairPlugins() {
+    const pd = pluginsDir();
+    await fs.mkdir(pd, { recursive: true });
+    await fs.copyFile(path.join(REPO_ROOT, 'plugins', 'opencode', 'midbrain-memory.ts'), path.join(pd, 'midbrain-memory.ts'));
+    await fs.copyFile(path.join(REPO_ROOT, 'shared', 'midbrain-api.mjs'), path.join(pd, 'midbrain-api.mjs'));
+    await fs.copyFile(path.join(REPO_ROOT, 'shared', 'logger.mjs'), path.join(pd, 'logger.mjs'));
+    const clientsSrc = path.join(REPO_ROOT, 'shared', 'clients');
+    const clientsDst = path.join(pd, 'clients');
+    await fs.mkdir(clientsDst, { recursive: true });
+    for (const file of ['base.mjs', 'utils.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'codex.mjs', 'registry.mjs']) {
+      await fs.copyFile(path.join(clientsSrc, file), path.join(clientsDst, file));
+    }
+    await fs.writeFile(path.join(pd, '.midbrain-repo-root'), REPO_ROOT + '\n', 'utf8');
+    return ['  ~ OpenCode plugin files repaired (re-copied)'];
   }
 }
 

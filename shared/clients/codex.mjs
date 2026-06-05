@@ -179,4 +179,30 @@ export class Codex extends BaseClient {
   projectConfigFiles(_projectDir) {
     return ['.codex/config.toml'];
   }
+
+  /**
+   * Check if hooks point to the current REPO_ROOT. Returns true if fresh.
+   */
+  async isFresh() {
+    try {
+      const data = (await readJson(hooksPath())) || {};
+      const hooks = data.hooks?.UserPromptSubmit;
+      if (!Array.isArray(hooks) || hooks.length === 0) return true;
+      const hook = hooks[0]?.hooks?.[0];
+      if (!hook?.command) return true;
+      const expectedPath = path.join(REPO_ROOT, 'plugins', 'codex', 'capture-user.mjs');
+      return hook.command.includes(expectedPath);
+    } catch { return true; }
+  }
+
+  /**
+   * Repair stale hooks by rewriting with current REPO_ROOT paths.
+   */
+  async repairHooks() {
+    const hp = hooksPath();
+    const data = (await readJson(hp)) || {};
+    patchHooks(data);
+    await writeJson(hp, data);
+    return ['  ~ Codex hooks repaired (paths updated)'];
+  }
 }

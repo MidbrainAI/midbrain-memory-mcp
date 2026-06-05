@@ -39,7 +39,7 @@ try {
 
 export { PKG_VERSION };
 
-// --- Update check ---
+// --- Update check + hook freshness ---
 
 const NPM_REGISTRY_URL = 'https://registry.npmjs.org/midbrain-memory-mcp/latest';
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -66,8 +66,40 @@ async function isUpdateCacheFresh(cachePath) {
   } catch { return false; }
 }
 
+/**
+ * Detect and repair stale hooks/plugins for all installed clients.
+ * Fire-and-forget: never throws, logs repairs to stderr.
+ */
+async function ensureHooksFresh() {
+  const { detectClients } = await import('./shared/clients/registry.mjs');
+  const clients = detectClients();
+  for (const client of clients) {
+    try {
+      if (typeof client.isFresh !== 'function') continue;
+      if (await client.isFresh()) continue;
+
+      // Client has stale hooks/plugins — repair
+      let lines = [];
+      if (typeof client.repairHooks === 'function') {
+        lines = await client.repairHooks();
+      } else if (typeof client.repairPlugins === 'function') {
+        lines = await client.repairPlugins();
+      }
+      for (const line of lines) console.error(`[midbrain]${line}`);
+    } catch { /* never crash — skip this client */ }
+  }
+}
+
+/**
+ * Combined startup check: repair stale hooks, then check for npm updates.
+ * Fire-and-forget: called from index.js after server.connect(), never throws.
+ */
 export async function checkForUpdate() {
   try {
+    // Phase 1: Hook/plugin freshness (always, local I/O only)
+    await ensureHooksFresh();
+
+    // Phase 2: npm version notification (throttled, skip for npx users)
     if (__dirname.includes(NPX_CACHE_MARKER)) return;
     const cachePath = path.join(os.tmpdir(), UPDATE_CACHE_FILENAME);
     if (await isUpdateCacheFresh(cachePath)) return;

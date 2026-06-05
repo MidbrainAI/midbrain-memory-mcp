@@ -158,6 +158,34 @@ export class Claude extends BaseClient {
     return [".mcp.json"];
   }
 
+  /**
+   * Check if hooks point to the current REPO_ROOT. Returns true if fresh.
+   * Returns false if stale or not installed.
+   */
+  async isFresh() {
+    try {
+      const data = (await readJson(claudeSettingsPath())) || {};
+      if (!hooksAlreadyPresent(data)) return true; // no hooks = nothing to repair
+      const hook = data.hooks?.UserPromptSubmit?.[0]?.hooks?.[0];
+      if (!hook?.command) return true;
+      const expectedPath = path.join(REPO_ROOT, 'plugins', 'claude-code', 'capture-user.mjs');
+      return hook.command.includes(expectedPath);
+    } catch { return true; } // if we can't read, don't repair
+  }
+
+  /**
+   * Repair stale hooks by rewriting with current REPO_ROOT paths.
+   * Returns summary lines or empty array if nothing to repair.
+   */
+  async repairHooks() {
+    const csp = claudeSettingsPath();
+    const data = (await readJson(csp)) || {};
+    if (!hooksAlreadyPresent(data)) return [];
+    data.hooks = buildHooks();
+    await writeJson(csp, data);
+    return ['  ~ Claude Code hooks repaired (paths updated)'];
+  }
+
   // --- Private helpers ---
 
   async _installClaudeJson(summary, { isDev }) {
