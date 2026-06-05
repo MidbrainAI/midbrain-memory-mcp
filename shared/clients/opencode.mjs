@@ -138,24 +138,21 @@ export class OpenCode extends BaseClient {
     const { isDev = false } = opts;
     const summary = [];
 
-    // Copy plugin + shared files
+    // Copy plugin + bundled shared code (2 files, no transformation needed)
     const pd = pluginsDir();
     await fs.mkdir(pd, { recursive: true });
-    await fs.copyFile(path.join(REPO_ROOT, 'plugins', 'opencode', 'midbrain-memory.ts'), path.join(pd, 'midbrain-memory.ts'));
-    summary.push('  + Plugin copied: ~/.config/opencode/plugins/midbrain-memory.ts');
-    await fs.copyFile(path.join(REPO_ROOT, 'shared', 'midbrain-api.mjs'), path.join(pd, 'midbrain-api.mjs'));
-    summary.push('  + API client copied: ~/.config/opencode/plugins/midbrain-api.mjs');
-    await fs.copyFile(path.join(REPO_ROOT, 'shared', 'logger.mjs'), path.join(pd, 'logger.mjs'));
-    summary.push('  + Logger copied: ~/.config/opencode/plugins/logger.mjs');
 
-    // Copy client adapters (plugin imports ./clients/registry.mjs for key resolution)
-    const clientsSrc = path.join(REPO_ROOT, 'shared', 'clients');
-    const clientsDst = path.join(pd, 'clients');
-    await fs.mkdir(clientsDst, { recursive: true });
-    for (const file of ['base.mjs', 'utils.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'codex.mjs', 'registry.mjs']) {
-      await fs.copyFile(path.join(clientsSrc, file), path.join(clientsDst, file));
-    }
-    summary.push('  + Client adapters copied: ~/.config/opencode/plugins/clients/');
+    await fs.copyFile(
+      path.join(REPO_ROOT, 'plugins', 'opencode', 'midbrain-memory.ts'),
+      path.join(pd, 'midbrain-memory.ts'),
+    );
+    summary.push('  + Plugin installed: ~/.config/opencode/plugins/midbrain-memory.ts');
+
+    await fs.copyFile(
+      path.join(REPO_ROOT, 'dist', 'midbrain-shared.mjs'),
+      path.join(pd, 'midbrain-shared.mjs'),
+    );
+    summary.push('  + Bundle copied: ~/.config/opencode/plugins/midbrain-shared.mjs');
 
     // Write freshness marker for staleness detection
     await fs.writeFile(path.join(pd, '.midbrain-repo-root'), REPO_ROOT + '\n', 'utf8');
@@ -251,15 +248,16 @@ export class OpenCode extends BaseClient {
   async repairPlugins() {
     const pd = pluginsDir();
     await fs.mkdir(pd, { recursive: true });
-    await fs.copyFile(path.join(REPO_ROOT, 'plugins', 'opencode', 'midbrain-memory.ts'), path.join(pd, 'midbrain-memory.ts'));
-    await fs.copyFile(path.join(REPO_ROOT, 'shared', 'midbrain-api.mjs'), path.join(pd, 'midbrain-api.mjs'));
-    await fs.copyFile(path.join(REPO_ROOT, 'shared', 'logger.mjs'), path.join(pd, 'logger.mjs'));
-    const clientsSrc = path.join(REPO_ROOT, 'shared', 'clients');
-    const clientsDst = path.join(pd, 'clients');
-    await fs.mkdir(clientsDst, { recursive: true });
-    for (const file of ['base.mjs', 'utils.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'codex.mjs', 'registry.mjs']) {
-      await fs.copyFile(path.join(clientsSrc, file), path.join(clientsDst, file));
-    }
+
+    await fs.copyFile(
+      path.join(REPO_ROOT, 'plugins', 'opencode', 'midbrain-memory.ts'),
+      path.join(pd, 'midbrain-memory.ts'),
+    );
+    await fs.copyFile(
+      path.join(REPO_ROOT, 'dist', 'midbrain-shared.mjs'),
+      path.join(pd, 'midbrain-shared.mjs'),
+    );
+
     await fs.writeFile(path.join(pd, '.midbrain-repo-root'), REPO_ROOT + '\n', 'utf8');
     return ['  ~ OpenCode plugin files repaired (re-copied)'];
   }

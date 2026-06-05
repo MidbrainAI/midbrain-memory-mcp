@@ -1,4 +1,5 @@
 node_modules/
+dist/
 .midbrain-key
 .midbrain-account-key
 .DS_Store

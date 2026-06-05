@@ -24,6 +24,7 @@
     "install.mjs",
     "shared/",
     "plugins/",
+    "dist/",
     "README.md"
   ],
   "keywords": [
@@ -43,13 +44,14 @@
   "scripts": {
     "start": "node index.js",
     "setup": "node install.mjs",
-    "bootstrap": "npm install && husky",
+    "build:plugin": "esbuild shared/plugin-entry.mjs --bundle --format=esm --platform=node --external:jsonc-parser --external:smol-toml --outfile=dist/midbrain-shared.mjs",
+    "bootstrap": "npm install && npm run build:plugin && husky",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "eslint . && vitest run && bash scripts/check-pinned-spec.sh",
-    "prepublishOnly": "node -e \"JSON.parse(require('fs').readFileSync('package.json','utf8'))\""
+    "check": "npm run build:plugin && eslint . && vitest run && bash scripts/check-pinned-spec.sh",
+    "prepublishOnly": "npm run build:plugin && node -e \"JSON.parse(require('fs').readFileSync('package.json','utf8'))\""
   },
   "lint-staged": {
     "*.{js,mjs}": "eslint --max-warnings 0"
@@ -62,6 +64,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "esbuild": "^0.28.0",
     "eslint": "^10.2.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",

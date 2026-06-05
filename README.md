@@ -78,7 +78,8 @@ memory to a specific project, then tells the user to restart.
 | `get_episodic_memories_by_date` | Conversation history by date range |
 | `list_files` | Browse semantic memory documents |
 | `read_file` | Read a semantic memory document by line range |
-| `check_session_status` | Check for recent activity from other clients |
+| `check_session_status` | Check for recent activity from other clients/sessions |
+| `procedural_knowledge` | List learned procedures and workflows |
 | `memory_setup_project` | Configure per-project memory scoping |
 
 ---
@@ -142,6 +143,21 @@ next restart picks it up automatically.
 | `midbrain-memory-mcp@latest` | Auto-updates on every cold start (recommended) |
 | `midbrain-memory-mcp@0.3.2` | Pinned — you are responsible for bumping |
 | `midbrain-memory-mcp` (bare) | Looks auto-updating but is sticky on first resolved version — avoid |
+
+### Automatic Hook & Plugin Repair
+
+When the MCP server starts, it detects whether installed hooks and plugin
+files point to the current package location. If they are stale (e.g., the
+npm package resolved to a new cache directory), they are automatically
+repaired — no manual `install` needed. This covers:
+
+- **Claude Code:** Rewrites hook paths in `~/.claude/settings.json`
+- **Codex:** Rewrites hook paths in `~/.codex/hooks.json`
+- **OpenCode:** Re-copies the plugin bundle to `~/.config/opencode/plugins/`
+
+Repair happens silently on startup (fire-and-forget, never blocks). If
+something goes wrong, the server continues normally — repair failures are
+logged to stderr but never crash the process.
 
 Run `npx -y midbrain-memory-mcp@latest --version` to check your resolved
 version. The MCP server also logs its version to stderr on startup:
@@ -264,9 +280,18 @@ Add to your project's `AGENTS.md` or `CLAUDE.md`:
 ```markdown
 ## MidBrain Memory Rules
 - Use memory_search at session start to load relevant context
+- Use check_session_status at session start to detect recent activity from
+  other sessions or clients. If it reports recent activity, use
+  get_episodic_memories_by_date to fetch full context.
 - Use grep for exact pattern matches (names, IDs, code, URLs)
 - Use list_files and read_file to browse semantic memory documents
 - Use get_episodic_memories_by_date for conversation history by date
+- Use procedural_knowledge to recall learned procedures and workflows
+- When the user asks to "continue", "pick up where we left off", or similar,
+  use get_episodic_memories_by_date with today's date to retrieve recent context.
+- If a tool response includes a recency hint about newer episodic memories on
+  the server, consider fetching them with get_episodic_memories_by_date if
+  relevant to the user's current intent.
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
 - The only memory tools available are search and setup. Use them proactively.
@@ -344,8 +369,12 @@ Auth: `Authorization: Bearer <key>` (except `/health`)
 | GET | `/api/v1/memories/episodic` | `?page=1&limit=100&start_date=...&end_date=...` | `{items, total, page, limit}` |
 | GET | `/api/v1/memories/semantic/files` | -- | `[{source, chunk_count}]` |
 | GET | `/api/v1/memories/semantic/files/{path}` | `?start_line=1&num_lines=200` | `{path, start_line, content}` |
-| POST | `/api/v1/memories/episodic` | `{"text": "...", "role": "user\|assistant"}` | Created memory |
+| GET | `/api/v1/memories/procedural` | -- | `[{id, title, content, source_ids, updated_at}]` |
+| POST | `/api/v1/memories/episodic` | `{"text": "...", "role": "user\|assistant", "memory_metadata": {"client": "opencode"}}` | Created memory |
 | GET | `/health` | -- | `{"status": "ok"}` |
+
+`memory_metadata` on POST is optional. Values must be strings. Capture hooks
+tag each memory with the originating client (`opencode`, `claude`, or `codex`).
 
 ---
 
@@ -375,12 +404,13 @@ This writes absolute paths into configs instead of `npx @latest`.
 
 | Command | Purpose |
 |---|---|
-| `npm run bootstrap` | First-time setup: deps + git hooks |
+| `npm run bootstrap` | First-time setup: deps + build + git hooks |
+| `npm run build:plugin` | Bundle shared/ into dist/midbrain-shared.mjs |
 | `npm test` | Full test suite (vitest) |
 | `npm run test:watch` | Watch mode |
 | `npm run lint` | ESLint |
 | `npm run lint:fix` | Auto-fix lint issues |
-| `npm run check` | Lint + tests + doc-regression checks |
+| `npm run check` | Build + lint + tests + doc-regression checks |
 
 ### Pre-commit hook
 
@@ -392,11 +422,13 @@ test suite. Commit is rejected if either fails.
 ```
 index.js                       MCP server (Node 20, plain JS, stdio)
 mcp.mjs                        MCP tool definitions (createServer factory)
-install.mjs                    Installer CLI + --project mode
+install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
   midbrain-api.mjs             MidbrainApi class — ALL API calls go here
   logger.mjs                   makeDebugLogger()
+  plugin-entry.mjs             esbuild bundle entry point
   clients/
+    utils.mjs                  Shared constants + utilities (deduplication)
     base.mjs                   BaseClient — owns the full key resolution chain
     opencode.mjs               OpenCode adapter (JSONC config, plugin copy)
     claude.mjs                 Claude Code adapter (hooks, .mcp.json)
@@ -404,9 +436,13 @@ shared/
     generic.mjs                Fallback adapter
     registry.mjs               getClient(id), detectClients()
 plugins/
-  opencode/midbrain-memory.ts  OpenCode plugin (Bun/TS, episodic capture)
+  opencode/
+    midbrain-memory.ts         OpenCode plugin (Bun/TS, episodic capture)
+    midbrain-shared.mjs        Dev shim (re-exports from ../../shared/)
   claude-code/                 Claude Code hook scripts (Node 20, episodic capture)
   codex/                       Codex hook scripts (Node 20, episodic capture)
+dist/
+  midbrain-shared.mjs          Built bundle (all of shared/ in one file)
 scripts/                       CI guards (pinned-spec regression)
 tests/                         vitest (unit, integration, installer, doc-regression)
 ```
@@ -417,6 +453,12 @@ OpenCode plugin, Claude Code hooks, and Codex hooks — must call
 `MidbrainApi.create(getClient(id), projectDir)`. Direct `fs.readFile`
 calls for key files or manual env var checks are forbidden.
 
+**Plugin bundling:** The OpenCode plugin imports from `./midbrain-shared.mjs`.
+In development, this resolves to a 5-line re-export shim. At install time,
+the esbuild bundle (`dist/midbrain-shared.mjs`) is copied in its place.
+Only 2 files are ever copied to `~/.config/opencode/plugins/` regardless of
+how many modules exist in `shared/`.
+
 ### Dependencies
 
 | Package | Purpose |
@@ -426,7 +468,8 @@ calls for key files or manual env var checks are forbidden.
 | `smol-toml` | Codex `config.toml` parsing and serialization |
 | `zod` | Schema validation |
 
-Dev: eslint, vitest, husky, lint-staged. Not shipped to users.
+Dev: esbuild (plugin bundler), eslint, vitest, husky, lint-staged.
+Not shipped to users.
 
 ---
 
