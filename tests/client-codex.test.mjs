@@ -39,6 +39,7 @@ const readFileReturns = makeReadFileReturns(mocks);
 
 const { BaseClient } = await import("../shared/clients/base.mjs");
 const { Codex } = await import("../shared/clients/codex.mjs");
+const TOML = await import("smol-toml");
 
 const HOME = os.homedir();
 
@@ -144,5 +145,187 @@ describe("Codex.projectConfigFiles", () => {
 
   it("reports only the project TOML config path", () => {
     expect(codex.projectConfigFiles("/repo")).toEqual([".codex/config.toml"]);
+  });
+});
+
+describe("Codex.installGlobal", () => {
+  const codex = new Codex();
+  beforeEach(resetMocks);
+
+  function writtenToml() {
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfig);
+    expect(writeCall).toBeDefined();
+    return TOML.parse(writeCall[1]);
+  }
+
+  function writtenHooks() {
+    const hooksPath = path.join(PATHS.codexDir, "hooks.json");
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === hooksPath);
+    expect(writeCall).toBeDefined();
+    return JSON.parse(writeCall[1]);
+  }
+
+  it("writes global config.toml with the default npx @latest MCP entry", async () => {
+    await codex.installGlobal();
+
+    const entry = writtenToml().mcp_servers["midbrain-memory"];
+    expect(entry.command).toBe("npx");
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    expect(entry.env.MIDBRAIN_CLIENT).toBe("codex");
+  });
+
+  it("--dev writes process.execPath and absolute index.js", async () => {
+    await codex.installGlobal({ isDev: true });
+
+    const entry = writtenToml().mcp_servers["midbrain-memory"];
+    expect(entry.command).toBe(process.execPath);
+    expect(path.isAbsolute(entry.args[0])).toBe(true);
+    expect(entry.args[0]).toContain("index.js");
+  });
+
+  it("writes hooks.json for UserPromptSubmit, PostToolUse, and Stop", async () => {
+    await codex.installGlobal();
+
+    const hooks = writtenHooks().hooks;
+    for (const event of ["UserPromptSubmit", "PostToolUse", "Stop"]) {
+      expect(hooks[event]).toHaveLength(1);
+      const hook = hooks[event][0].hooks[0];
+      expect(hook.type).toBe("command");
+      expect(hook.command).toContain(process.execPath);
+      expect(hook).not.toHaveProperty("async");
+    }
+    expect(hooks.UserPromptSubmit[0].hooks[0].command).toContain("capture-user.mjs");
+    expect(hooks.PostToolUse[0].hooks[0].command).toContain("capture-tool.mjs");
+    expect(hooks.Stop[0].hooks[0].command).toContain("capture-assistant.mjs");
+  });
+
+  it("does not write deprecated codex_hooks for new config", async () => {
+    await codex.installGlobal();
+
+    const parsed = writtenToml();
+    expect(parsed.features?.codex_hooks).toBeUndefined();
+    expect(JSON.stringify(parsed)).not.toContain("codex_hooks");
+  });
+
+  it("migrates deprecated codex_hooks to canonical hooks", async () => {
+    existsFor(PATHS.codexConfig);
+    readFileReturns({ [PATHS.codexConfig]: "[features]\ncodex_hooks = true\nother = true\n" });
+
+    await codex.installGlobal();
+
+    const parsed = writtenToml();
+    expect(parsed.features.codex_hooks).toBeUndefined();
+    expect(parsed.features.hooks).toBe(true);
+    expect(parsed.features.other).toBe(true);
+  });
+
+  it("enables canonical hooks when hooks were disabled", async () => {
+    existsFor(PATHS.codexConfig);
+    readFileReturns({ [PATHS.codexConfig]: "[features]\nhooks = false\n" });
+
+    await codex.installGlobal();
+
+    expect(writtenToml().features.hooks).toBe(true);
+  });
+
+  it("preserves foreign config keys and custom MCP env vars", async () => {
+    existsFor(PATHS.codexConfig);
+    readFileReturns({
+      [PATHS.codexConfig]:
+        'model = "gpt-5.5"\n[mcp_servers.midbrain-memory.env]\nCUSTOM_VAR = "keep-me"\nMIDBRAIN_PROJECT_DIR = "/old"\n',
+    });
+
+    await codex.installGlobal();
+
+    const parsed = writtenToml();
+    const entry = parsed.mcp_servers["midbrain-memory"];
+    expect(parsed.model).toBe("gpt-5.5");
+    expect(entry.env.CUSTOM_VAR).toBe("keep-me");
+    expect(entry.env.MIDBRAIN_CLIENT).toBe("codex");
+    expect(entry.env.MIDBRAIN_PROJECT_DIR).toBeUndefined();
+  });
+
+  it("preserves pinned midbrain-memory-mcp versions", async () => {
+    existsFor(PATHS.codexConfig);
+    readFileReturns({
+      [PATHS.codexConfig]:
+        '[mcp_servers.midbrain-memory]\ncommand = "npx"\nargs = ["-y", "midbrain-memory-mcp@1.2.3"]\n',
+    });
+
+    const lines = await codex.installGlobal();
+
+    const entry = writtenToml().mcp_servers["midbrain-memory"];
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@1.2.3"]);
+    expect(lines.some((line) => line.includes("pinned version preserved"))).toBe(true);
+  });
+
+  it("migrates unpinned npx entries to @latest", async () => {
+    existsFor(PATHS.codexConfig);
+    readFileReturns({
+      [PATHS.codexConfig]:
+        '[mcp_servers.midbrain-memory]\ncommand = "npx"\nargs = ["-y", "midbrain-memory-mcp"]\n',
+    });
+
+    await codex.installGlobal();
+
+    expect(writtenToml().mcp_servers["midbrain-memory"].args)
+      .toEqual(["-y", "midbrain-memory-mcp@latest"]);
+  });
+
+  it("migrates stale absolute server.js entries to current shape", async () => {
+    existsFor(PATHS.codexConfig);
+    readFileReturns({
+      [PATHS.codexConfig]:
+        '[mcp_servers.midbrain-memory]\ncommand = "node"\nargs = ["/old/server.js"]\n',
+    });
+
+    await codex.installGlobal();
+
+    const entry = writtenToml().mcp_servers["midbrain-memory"];
+    expect(entry.command).toBe("npx");
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+  });
+
+  it("preserves foreign hooks and replaces duplicate MidBrain hooks", async () => {
+    const hooksPath = path.join(PATHS.codexDir, "hooks.json");
+    existsFor(hooksPath);
+    readFileReturns({
+      [hooksPath]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [
+            { hooks: [{ type: "command", command: "/bin/echo foreign" }] },
+            { hooks: [{ type: "command", command: "old capture-user.mjs" }] },
+          ],
+        },
+      }),
+    });
+
+    await codex.installGlobal();
+
+    const groups = writtenHooks().hooks.UserPromptSubmit;
+    const commands = groups.flatMap((g) => g.hooks.map((h) => h.command));
+    expect(commands).toContain("/bin/echo foreign");
+    expect(commands.filter((cmd) => cmd.includes("capture-user.mjs"))).toHaveLength(1);
+  });
+
+  it("backs up existing TOML and hooks files before writing", async () => {
+    const hooksPath = path.join(PATHS.codexDir, "hooks.json");
+    existsFor(PATHS.codexConfig, hooksPath);
+    readFileReturns({ [PATHS.codexConfig]: "", [hooksPath]: '{"hooks":{}}' });
+
+    await codex.installGlobal();
+
+    expect(fs.copyFile).toHaveBeenCalledWith(PATHS.codexConfig, PATHS.codexConfig + ".bak");
+    expect(fs.copyFile).toHaveBeenCalledWith(hooksPath, hooksPath + ".bak");
+  });
+
+  it("fails closed on corrupt TOML without overwriting config.toml", async () => {
+    existsFor(PATHS.codexConfig);
+    readFileReturns({ [PATHS.codexConfig]: "bad toml = = =" });
+
+    await expect(codex.installGlobal()).rejects.toThrow(/Failed to parse/);
+
+    const configWrites = fs.writeFile.mock.calls.filter(([p]) => p === PATHS.codexConfig);
+    expect(configWrites).toHaveLength(0);
   });
 });

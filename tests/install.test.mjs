@@ -50,8 +50,10 @@ const PATHS = {
   globalKey:        path.join(HOME, ".config", "midbrain", ".midbrain-key"),
   opencodeKey:      path.join(HOME, ".config", "opencode", ".midbrain-key"),
   claudeKey:        path.join(HOME, ".config", "claude", ".midbrain-key"),
+  codexKey:         path.join(HOME, ".config", "codex", ".midbrain-key"),
   opencodeConfig:   path.join(HOME, ".config", "opencode", "opencode.json"),
   claudeJson:       path.join(HOME, ".claude.json"),
+  codexConfig:      path.join(HOME, ".codex", "config.toml"),
 };
 
 const PROJECT_DIR = "/home/testuser/myproject";
@@ -131,6 +133,23 @@ describe("main — per-client key writing", () => {
     const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
     expect(ocWrite).toBeDefined();
     expect(ccWrite).toBeDefined();
+  });
+
+  it("writes global key AND per-client key for Codex", async () => {
+    existsFor(PATHS.codexConfig);
+    readFileReturns({ [PATHS.codexKey]: "my-codex-key\n" });
+
+    await main();
+
+    const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+    expect(globalWrite).toBeDefined();
+
+    const codexWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexKey);
+    expect(codexWrite).toBeDefined();
+    expect(codexWrite[1]).toBe("my-codex-key\n");
+
+    const configWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfig);
+    expect(configWrite).toBeDefined();
   });
 });
 
