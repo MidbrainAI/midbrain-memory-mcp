@@ -209,7 +209,19 @@ export class Codex extends BaseClient {
   }
 
   async installProject(_projectDir, _opts = {}) {
-    return [];
+    const opts = {
+      isDev: _opts.isDev === true,
+      projectDir: _projectDir,
+    };
+    const configFile = path.join(_projectDir, '.codex', 'config.toml');
+    const config = await readToml(configFile);
+    const { exists, pinned } = patchMcpEntry(config, opts);
+    await backup(configFile);
+    await writeToml(configFile, config);
+    return [
+      formatMigrationLine(configFile, exists, pinned),
+      'Codex project trust required: restart Codex and trust this project config if prompted.',
+    ];
   }
 
   projectConfigFiles(_projectDir) {

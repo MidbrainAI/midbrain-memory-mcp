@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { parse as jsoncParse } from "jsonc-parser";
+import { parse as parseToml } from "smol-toml";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "fs";
@@ -221,6 +222,47 @@ describe("MCP server tool listing", () => {
       "memory_setup_project",
       "read_file",
     ]);
+  });
+});
+
+describe("memory_setup_project — Codex project config", () => {
+  let fakeHome;
+  let projectDir;
+  let savedHome;
+
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-home-"));
+    projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-project-")));
+    fs.mkdirSync(path.join(fakeHome, ".codex"), { recursive: true });
+    process.env.HOME = fakeHome;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("writes project .codex/config.toml with project env and no hooks.json", async () => {
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: projectDir, api_key: "codex-project-key" },
+    });
+
+    const configPath = path.join(projectDir, ".codex", "config.toml");
+    expect(fs.existsSync(configPath)).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, ".codex", "hooks.json"))).toBe(false);
+
+    const parsed = parseToml(fs.readFileSync(configPath, "utf8"));
+    const entry = parsed.mcp_servers["midbrain-memory"];
+    expect(entry.command).toBe("npx");
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    expect(entry.env.MIDBRAIN_CLIENT).toBe("codex");
+    expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(projectDir);
+    expect(result.content[0].text).toContain("Codex");
+    expect(result.content[0].text).toContain("project trust");
   });
 });
 

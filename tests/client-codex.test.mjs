@@ -329,3 +329,63 @@ describe("Codex.installGlobal", () => {
     expect(configWrites).toHaveLength(0);
   });
 });
+
+describe("Codex.installProject", () => {
+  const codex = new Codex();
+  const PROJECT_DIR = "/home/testuser/codex-project";
+  const projectToml = path.join(PROJECT_DIR, ".codex", "config.toml");
+  const projectHooks = path.join(PROJECT_DIR, ".codex", "hooks.json");
+  beforeEach(resetMocks);
+
+  function writtenProjectToml() {
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === projectToml);
+    expect(writeCall).toBeDefined();
+    return TOML.parse(writeCall[1]);
+  }
+
+  it("writes project .codex/config.toml with MIDBRAIN_PROJECT_DIR", async () => {
+    const lines = await codex.installProject(PROJECT_DIR);
+
+    const entry = writtenProjectToml().mcp_servers["midbrain-memory"];
+    expect(entry.command).toBe("npx");
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    expect(entry.env.MIDBRAIN_CLIENT).toBe("codex");
+    expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(PROJECT_DIR);
+    expect(lines.some((line) => line.includes("project trust"))).toBe(true);
+  });
+
+  it("--dev writes process.execPath and absolute index.js", async () => {
+    await codex.installProject(PROJECT_DIR, { isDev: true });
+
+    const entry = writtenProjectToml().mcp_servers["midbrain-memory"];
+    expect(entry.command).toBe(process.execPath);
+    expect(path.isAbsolute(entry.args[0])).toBe(true);
+    expect(entry.args[0]).toContain("index.js");
+  });
+
+  it("does not write project-local hooks.json", async () => {
+    await codex.installProject(PROJECT_DIR);
+
+    const hookWrites = fs.writeFile.mock.calls.filter(([p]) => p === projectHooks);
+    expect(hookWrites).toHaveLength(0);
+  });
+
+  it("preserves foreign project TOML keys", async () => {
+    existsFor(projectToml);
+    readFileReturns({ [projectToml]: 'approval_policy = "on-request"\n' });
+
+    await codex.installProject(PROJECT_DIR);
+
+    expect(writtenProjectToml().approval_policy).toBe("on-request");
+  });
+
+  it("fails closed on corrupt project TOML", async () => {
+    existsFor(projectToml);
+    readFileReturns({ [projectToml]: "bad toml = = =" });
+
+    await expect(codex.installProject(PROJECT_DIR)).rejects.toThrow(/Failed to parse/);
+
+    const configWrites = fs.writeFile.mock.calls.filter(([p]) => p === projectToml);
+    expect(configWrites).toHaveLength(0);
+  });
+});
