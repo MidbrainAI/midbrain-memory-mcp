@@ -84,6 +84,8 @@ async function ensureHooksFresh() {
         lines = await client.repairHooks();
       } else if (typeof client.repairPlugins === 'function') {
         lines = await client.repairPlugins();
+      } else if (typeof client.repairSkill === 'function') {
+        lines = await client.repairSkill();
       }
       for (const line of lines) console.error(`[midbrain]${line}`);
     } catch { /* never crash — skip this client */ }
@@ -140,9 +142,12 @@ async function prompt(question) {
 
 /**
  * Resolves keys for all detected clients. Prompts user when no key is found.
+ * In non-interactive mode (explicit flag or no TTY), skips prompts — uses
+ * existing key files or env var only.
  * Returns Map<clientId, string>.
  */
-async function resolveKeys(clients) {
+async function resolveKeys(clients, { nonInteractive = false } = {}) {
+  const interactive = !nonInteractive && process.stdin.isTTY;
   const keys = new Map();
 
   for (const client of clients) {
@@ -150,10 +155,12 @@ async function resolveKeys(clients) {
     if (existing) {
       console.log(`Found ${client.displayName} key: ${existing.source}`);
       keys.set(client.id, existing.key);
-    } else {
-      const key = await prompt(`Enter ${client.displayName} API key: `);
-      if (!key) throw new Error(`${client.displayName} API key is required. Aborting.`);
+    } else if (interactive) {
+      const key = await prompt(`Enter MidBrain API key for ${client.displayName}: `);
+      if (!key) throw new Error(`MidBrain API key for ${client.displayName} is required. Aborting.`);
       keys.set(client.id, key);
+    } else {
+      console.error(`WARN: no key found for ${client.displayName} (non-interactive mode, skipping)`);
     }
   }
 
@@ -186,7 +193,7 @@ function printSummary(keyLines, clientSummaries) {
 // Main (interactive mode)
 // ---------------------------------------------------------------------------
 async function main(opts = {}) {
-  const { isDev = false } = opts;
+  const { isDev = false, nonInteractive = false } = opts;
   const clients = detectClients();
 
   if (clients.length === 0) {
@@ -196,7 +203,7 @@ async function main(opts = {}) {
   }
 
   // Resolve and write keys
-  const keys = await resolveKeys(clients);
+  const keys = await resolveKeys(clients, { nonInteractive });
   const keyLines = [];
   keyLines.push(await getClient('generic').writeKey(keys.values().next().value));
   for (const client of clients) {
@@ -331,16 +338,20 @@ MidBrain Memory MCP — installer
 Usage:
   npx midbrain-memory-mcp install                            Interactive install
   npx midbrain-memory-mcp install --project <absolute-path>  Per-project setup (non-interactive)
+  npx midbrain-memory-mcp install --non-interactive           Non-interactive install (uses existing keys/env)
   npx midbrain-memory-mcp install --help                     Show this help
 
 Development (clone-local):
-  node install.mjs [--help | --project <path> | --dev]
+  node install.mjs [--help | --project <path> | --dev | --non-interactive]
 
 Flags:
   --project <path>    Absolute path to the project root directory.
   --dev               Write absolute-path configs pointing at this clone.
                       (For repository contributors. Default is npx @latest,
                       which is auto-updating and portable across machines.)
+  --non-interactive   Skip all prompts. Uses existing key files or
+                      MIDBRAIN_API_KEY env var. Useful for Docker entrypoints
+                      and CI environments.
   --help, -h          Show this help text.
 
 By default, the installer writes 'npx -y midbrain-memory-mcp@latest' as the
@@ -374,6 +385,7 @@ async function runInstallerCli(argv) {
     process.exit(0);
   }
   const isDev = argv.includes('--dev');
+  const nonInteractive = argv.includes('--non-interactive');
   const projectFlagIdx = argv.indexOf('--project');
   if (projectFlagIdx !== -1) {
     const projectArg = argv[projectFlagIdx + 1];
@@ -394,7 +406,7 @@ async function runInstallerCli(argv) {
     }
   } else {
     try {
-      await main({ isDev });
+      await main({ isDev, nonInteractive });
     } catch (err) {
       console.error('Fatal error:', err.message);
       process.exit(1);
