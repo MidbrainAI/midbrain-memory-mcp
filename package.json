@@ -24,6 +24,7 @@
     "install.mjs",
     "shared/",
     "plugins/",
+    "skills/",
     "dist/",
     "README.md"
   ],
