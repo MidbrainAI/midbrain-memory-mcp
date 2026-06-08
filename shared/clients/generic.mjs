@@ -6,21 +6,10 @@
  * Config-writing methods are no-ops (only named clients write configs).
  */
 
-import { writeFile, mkdir, chmod } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
-import { BaseClient, readKeyFile } from './base.mjs';
-
-const KEY_FILENAME = ".midbrain-key";
-
-const MIDBRAIN_DIR = '.midbrain';
-
-/** Write a key file with chmod 600 (creates parent dirs). */
-async function writeSecure(filePath, key) {
-  await mkdir(join(filePath, '..'), { recursive: true });
-  await writeFile(filePath, key + '\n', 'utf8');
-  await chmod(filePath, 0o600);
-}
+import { BaseClient } from './base.mjs';
+import { KEY_FILENAME, MIDBRAIN_DIR, writeSecure, resolveProjectKey } from './utils.mjs';
 
 export class Generic extends BaseClient {
   get id() { return 'generic'; }
@@ -39,15 +28,7 @@ export class Generic extends BaseClient {
 
   /** Check if a project-level key file exists. */
   async getProjectKey(projectDir) {
-    const subPath = join(projectDir, MIDBRAIN_DIR, KEY_FILENAME);
-    const subKey = await readKeyFile(subPath);
-    if (subKey) return { key: subKey, source: subPath };
-
-    const flatPath = join(projectDir, KEY_FILENAME);
-    const flatKey = await readKeyFile(flatPath);
-    if (flatKey) return { key: flatKey, source: flatPath };
-
-    return null;
+    return resolveProjectKey(projectDir);
   }
 
   /** Write the project-level key. Returns the file path written. */

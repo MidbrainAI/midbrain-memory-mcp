@@ -1,4 +1,5 @@
 node_modules/
+dist/
 .midbrain-key
 .midbrain-account-key
 .DS_Store
@@ -9,6 +10,7 @@ node_modules/
 *~
 .env
 .env.*
+.codex/
 BACKLOG.md
 tasks/
 team-rollout-*.md

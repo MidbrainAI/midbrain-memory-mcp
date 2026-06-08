@@ -16,12 +16,8 @@
  */
 
 import { type Plugin } from "@opencode-ai/plugin";
-// @ts-ignore — shared modules are copied alongside this file at install time
-import { MidbrainApi } from "./midbrain-api.mjs";
-// @ts-ignore
-import { makeDebugLogger } from "./logger.mjs";
-// @ts-ignore
-import { getClient } from "./clients/registry.mjs";
+// @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
+import { MidbrainApi, makeDebugLogger, getClient } from "./midbrain-shared.mjs";
 
 // --- Plugin ---
 

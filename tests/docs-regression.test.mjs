@@ -14,7 +14,9 @@
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -79,5 +81,34 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     // The residual must still match the bare-package regex.
     const bareRegex = /midbrain-memory-mcp([^@a-zA-Z0-9_/.-]|$)/;
     expect(stripped).toMatch(bareRegex);
+  });
+
+  it("D-7: README.md and AGENTS.md contain no deprecated codex_hooks docs", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+    expect(readme).not.toContain("codex_hooks");
+    expect(agents).not.toContain("codex_hooks");
+  });
+
+  it("D-8: npm package dry-run includes Codex runtime and excludes task/test files", () => {
+    const cacheDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "midbrain-npm-cache-"));
+    try {
+      const result = spawnSync("npm", ["pack", "--dry-run", "--json"], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        env: { ...process.env, npm_config_cache: cacheDir },
+        timeout: 10000,
+      });
+      expect(result.status).toBe(0);
+      const [{ files }] = JSON.parse(result.stdout);
+      const names = files.map((file) => file.path);
+      expect(names).toContain("plugins/codex/common.mjs");
+      expect(names).toContain("plugins/codex/capture-user.mjs");
+      expect(names).not.toContain("tests/codex-hooks.test.mjs");
+      expect(names.some((name) => name.startsWith("tasks/"))).toBe(false);
+      expect(names.some((name) => name.includes(".midbrain-key"))).toBe(false);
+    } finally {
+      fsSync.rmSync(cacheDir, { recursive: true, force: true });
+    }
   });
 });

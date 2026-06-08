@@ -20,8 +20,6 @@ import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 
-// --- Base client class ---
-
 const KEY_FILENAME = ".midbrain-key";
 const MIDBRAIN_DIR = '.midbrain';
 const ENV_VAR = 'MIDBRAIN_API_KEY';
@@ -45,7 +43,7 @@ export async function readKeyFile(filePath) {
 }
 
 export class BaseClient {
-  /** @returns {string} Machine-readable identifier ("opencode", "claude") */
+  /** @returns {string} Machine-readable identifier ("opencode", "claude", "codex") */
   get id() { throw new Error("BaseClient.id not implemented"); }
 
   /** @returns {string} Human-readable name for user-facing output */

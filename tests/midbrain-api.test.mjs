@@ -35,7 +35,7 @@ describe("MidbrainApi.storeEpisodic", () => {
   let api;
 
   beforeEach(() => {
-    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({ status: 200 });
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, status: 200 });
     api = new MidbrainApi("test-key", "test-source");
   });
 
@@ -56,19 +56,22 @@ describe("MidbrainApi.storeEpisodic", () => {
     expect(JSON.parse(opts.body)).toEqual({ text: "hello world", role: "user" });
   });
 
-  it("includes memory_metadata in POST body when metadata provided", async () => {
-    const log = vi.fn();
-    api.storeEpisodic("hello", "assistant", log, { client: "opencode" });
+  it.each(["opencode", "claude", "codex"])(
+    "includes %s client memory_metadata in POST body",
+    async (client) => {
+      const log = vi.fn();
+      api.storeEpisodic("hello", "assistant", log, { client });
 
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
 
-    const [, opts] = fetchSpy.mock.calls[0];
-    expect(JSON.parse(opts.body)).toEqual({
-      text: "hello",
-      role: "assistant",
-      memory_metadata: { client: "opencode" },
-    });
-  });
+      const [, opts] = fetchSpy.mock.calls[0];
+      expect(JSON.parse(opts.body)).toEqual({
+        text: "hello",
+        role: "assistant",
+        memory_metadata: { client },
+      });
+    },
+  );
 
   it("omits memory_metadata from POST body when metadata not provided", async () => {
     const log = vi.fn();
@@ -89,12 +92,43 @@ describe("MidbrainApi.storeEpisodic", () => {
     await vi.waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining("STORED")));
   });
 
-  it("calls debug log function on fetch error", async () => {
+  it("returns the POST promise so hook callers can await storage", async () => {
+    let resolveFetch;
+    fetchSpy.mockReturnValueOnce(new Promise((resolve) => { resolveFetch = resolve; }));
+    const log = vi.fn();
+
+    const promise = api.storeEpisodic("msg", "assistant", log);
+    let settled = false;
+    promise.then(() => { settled = true; });
+    await Promise.resolve();
+
+    expect(promise).toBeInstanceOf(Promise);
+    expect(settled).toBe(false);
+
+    resolveFetch({ ok: true, status: 201 });
+    await expect(promise).resolves.toBe(true);
+
+    expect(log).toHaveBeenCalledWith("STORED: status=201");
+  });
+
+  it("returns false and logs when fetch fails", async () => {
     fetchSpy.mockRejectedValueOnce(new Error("network down"));
     const log = vi.fn();
-    api.storeEpisodic("msg", "user", log);
 
-    await vi.waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR")));
+    await expect(api.storeEpisodic("msg", "user", log)).resolves.toBe(false);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR"));
+  });
+
+  it("returns false and logs when the API returns a non-2xx status", async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: vi.fn().mockResolvedValue("temporarily unavailable"),
+    });
+    const log = vi.fn();
+
+    await expect(api.storeEpisodic("msg", "user", log)).resolves.toBe(false);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR: status=503"));
   });
 });
 

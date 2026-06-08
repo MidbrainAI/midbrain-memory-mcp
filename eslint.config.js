@@ -34,7 +34,7 @@ export default [
     },
   },
   {
-    // Exclude plugin (TypeScript, runs in Bun) and node_modules
-    ignores: ["plugin/**", "node_modules/**"],
+    // Exclude generated bundle output, plugin TS source, and dependencies.
+    ignores: ["dist/**", "plugin/**", "node_modules/**"],
   },
 ];

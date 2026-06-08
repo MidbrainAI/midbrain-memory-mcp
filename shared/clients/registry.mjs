@@ -7,9 +7,10 @@
 
 import { OpenCode } from './opencode.mjs';
 import { Claude } from './claude.mjs';
+import { Codex } from './codex.mjs';
 import { Generic } from './generic.mjs';
 
-const CLIENTS = [new OpenCode(), new Claude()];
+const CLIENTS = [new OpenCode(), new Claude(), new Codex()];
 const FALLBACK = new Generic();
 
 /** Returns all registered client adapters (excludes generic fallback). */
@@ -38,6 +39,10 @@ function inferClientId() {
   if (dir.includes('claude')) {
     console.error('[midbrain] WARN: MIDBRAIN_CLIENT not set, inferred "claude" from MIDBRAIN_CONFIG_DIR. Re-run: npx midbrain-memory-mcp install');
     return 'claude';
+  }
+  if (dir.includes('codex')) {
+    console.error('[midbrain] WARN: MIDBRAIN_CLIENT not set, inferred "codex" from MIDBRAIN_CONFIG_DIR. Re-run: npx midbrain-memory-mcp install');
+    return 'codex';
   }
   return null;
 }

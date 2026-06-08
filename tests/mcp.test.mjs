@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { parse as jsoncParse } from "jsonc-parser";
+import { parse as parseToml } from "smol-toml";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "fs";
@@ -75,6 +76,24 @@ const MOCK_DATA = {
     content: "1: # Setup Guide\n2: Install with npm.",
     chunks_used: 1,
   },
+  procedural: [
+    {
+      id: 1,
+      title: "Deploy to production",
+      content: "Run npm run build && npm publish",
+      source_ids: [10, 11],
+      created_at: "2025-05-01T10:00:00Z",
+      updated_at: "2025-05-20T14:30:00Z",
+    },
+    {
+      id: 2,
+      title: "Run tests",
+      content: "Use npm test for full suite, npm run test:watch for dev",
+      source_ids: [],
+      created_at: "2025-04-15T08:00:00Z",
+      updated_at: "2025-04-15T08:00:00Z",
+    },
+  ],
 };
 
 /** Build a fake Response object matching the fetch() API. */
@@ -146,6 +165,9 @@ function mockFetch(url, _opts) {
     }
     return Promise.resolve(jsonResponse(MOCK_DATA.readFile));
   }
+  if (p === "/api/v1/memories/procedural") {
+    return Promise.resolve(jsonResponse(MOCK_DATA.procedural));
+  }
   return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
 }
 
@@ -204,9 +226,9 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP server tool listing", () => {
-  it("exposes exactly 7 tools", async () => {
+  it("exposes exactly 8 tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(8);
   });
 
   it("exposes the expected tool names", async () => {
@@ -219,8 +241,50 @@ describe("MCP server tool listing", () => {
       "list_files",
       "memory_search",
       "memory_setup_project",
+      "procedural_knowledge",
       "read_file",
     ]);
+  });
+});
+
+describe("memory_setup_project — Codex project config", () => {
+  let fakeHome;
+  let projectDir;
+  let savedHome;
+
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-home-"));
+    projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-project-")));
+    fs.mkdirSync(path.join(fakeHome, ".codex"), { recursive: true });
+    process.env.HOME = fakeHome;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("writes project .codex/config.toml with project env and no hooks.json", async () => {
+    const result = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: projectDir, api_key: "codex-project-key" },
+    });
+
+    const configPath = path.join(projectDir, ".codex", "config.toml");
+    expect(fs.existsSync(configPath)).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, ".codex", "hooks.json"))).toBe(false);
+
+    const parsed = parseToml(fs.readFileSync(configPath, "utf8"));
+    const entry = parsed.mcp_servers["midbrain-memory"];
+    expect(entry.command).toBe("npx");
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    expect(entry.env.MIDBRAIN_CLIENT).toBe("codex");
+    expect(entry.env.MIDBRAIN_PROJECT_DIR).toBe(projectDir);
+    expect(result.content[0].text).toContain("Codex");
+    expect(result.content[0].text).toContain("project trust");
   });
 });
 
@@ -1621,6 +1685,29 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// procedural_knowledge tool
+// ---------------------------------------------------------------------------
+
+describe("procedural_knowledge tool", () => {
+  it("returns formatted procedural entries", async () => {
+    const result = await client.callTool({ name: "procedural_knowledge", arguments: {} });
+    const text = result.content[0].text;
+    expect(text).toContain("Procedural knowledge (2):");
+    expect(text).toContain("[1] Deploy to production");
+    expect(text).toContain("Run npm run build && npm publish");
+    expect(text).toContain("(2 sources)");
+    expect(text).toContain("[2] Run tests");
+  });
+
+  it("does not include timestamps in concise listing", async () => {
+    const result = await client.callTool({ name: "procedural_knowledge", arguments: {} });
+    const text = result.content[0].text;
+    // Procedural entries show title + content, not timestamps
+    expect(text).not.toContain("2025-05-20");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // check_session_status tool
 // ---------------------------------------------------------------------------
 
@@ -1629,6 +1716,7 @@ describe("check_session_status tool", () => {
   let rcServer;
   let rcFetchSpy;
   let recentTimestamp;
+  let recentClient;
   const rcSavedEnv = {};
 
   function sessionStatusMockFetch(url, opts) {
@@ -1642,7 +1730,7 @@ describe("check_session_status tool", () => {
           role: "assistant",
           text: "Implemented the auth module",
           occurred_at: recentTimestamp,
-          memory_metadata: { client: "opencode" },
+          memory_metadata: { client: recentClient },
         }],
         total: 1, page: 1, limit: 1,
       }));
@@ -1652,6 +1740,7 @@ describe("check_session_status tool", () => {
 
   beforeEach(async () => {
     recentTimestamp = new Date(Date.now() - 5 * 60_000).toISOString();
+    recentClient = "opencode";
     rcFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(sessionStatusMockFetch);
     for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
       rcSavedEnv[k] = process.env[k];
@@ -1683,6 +1772,15 @@ describe("check_session_status tool", () => {
     expect(text).toContain("min ago");
     expect(text).toContain("client: opencode");
     expect(text).toContain("get_episodic_memories_by_date");
+  });
+
+  it("returns Codex as a recent activity client label", async () => {
+    recentClient = "codex";
+
+    const result = await rcClient.callTool({ name: "check_session_status", arguments: {} });
+    const text = result.content[0].text;
+
+    expect(text).toContain("client: codex");
   });
 
   it("suppresses recency hint on subsequent tool calls (markEpisodicSeen)", async () => {

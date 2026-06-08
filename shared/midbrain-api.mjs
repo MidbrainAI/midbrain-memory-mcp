@@ -22,6 +22,7 @@ const ENDPOINTS = {
   SEARCH_LEXICAL:  `${API_V1}/memories/search/lexical`,
   EPISODIC:        `${API_V1}/memories/episodic`,
   SEMANTIC_FILES:  `${API_V1}/memories/semantic/files`,
+  PROCEDURAL:      `${API_V1}/memories/procedural`,
 };
 
 const DEFAULT_SEARCH_LIMIT = 10;
@@ -97,24 +98,35 @@ export class MidbrainApi {
   }
 
   /**
-   * Fire-and-forget POST of an episodic memory.
+   * POST an episodic memory. Callers may ignore the returned promise for
+   * fire-and-forget capture, or await its boolean result for retry decisions.
    * @param {string} text
    * @param {"user"|"assistant"} role
    * @param {function(string): void} debugLogFn
-   * @param {Record<string, string>} [memoryMetadata] - Optional metadata (e.g. { client: "opencode" }).
+   * @param {Record<string, string>} [memoryMetadata] - Optional metadata (e.g. { client: "codex" }).
    */
-  storeEpisodic(text, role, debugLogFn, memoryMetadata) {
+  async storeEpisodic(text, role, debugLogFn, memoryMetadata) {
     debugLogFn(`STORE: role=${role} textLen=${text.length}`);
-    fetch(ENDPOINTS.EPISODIC, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.#key}`,
-      },
-      body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
-    })
-      .then((r) => debugLogFn(`STORED: status=${r.status}`))
-      .catch((e) => debugLogFn(`STORE ERROR: ${e instanceof Error ? e.message : String(e)}`));
+    try {
+      const response = await fetch(ENDPOINTS.EPISODIC, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.#key}`,
+        },
+        body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => "(no body)");
+        debugLogFn(`STORE ERROR: status=${response.status} body=${body}`);
+        return false;
+      }
+      debugLogFn(`STORED: status=${response.status}`);
+      return true;
+    } catch (err) {
+      debugLogFn(`STORE ERROR: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
   }
 
   // --- Static endpoint constants (for callers that build URLs directly) ---
@@ -123,6 +135,7 @@ export class MidbrainApi {
   static get SEARCH_LEXICAL()   { return ENDPOINTS.SEARCH_LEXICAL; }
   static get EPISODIC()         { return ENDPOINTS.EPISODIC; }
   static get SEMANTIC_FILES()   { return ENDPOINTS.SEMANTIC_FILES; }
+  static get PROCEDURAL()       { return ENDPOINTS.PROCEDURAL; }
   static get DEFAULT_SEARCH_LIMIT() { return DEFAULT_SEARCH_LIMIT; }
   static get API_BASE_URL()     { return API_BASE; }
 }

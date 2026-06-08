@@ -10,13 +10,14 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
+import {
+  KEY_FILENAME, MCP_KEY, REPO_ROOT, PKG_NAME, PKG_VERSION,
+  home, backup, classifyEntry, formatMigrationLine,
+} from './utils.mjs';
 
-const KEY_FILENAME = ".midbrain-key";
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import os from 'os';
-import { fileURLToPath } from 'url';
 
 // Lazy-loaded: jsonc-parser is only needed for config writing, not key
 // resolution. Keeping it lazy lets the plugin/hook runtime import this
@@ -27,21 +28,34 @@ async function jsonc() {
   return _jsonc;
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-
-const MCP_KEY = 'midbrain-memory';
 const JSONC_FORMAT = { tabSize: 2, insertSpaces: true, eol: '\n' };
-
-const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR', 'MIDBRAIN_CLIENT']);
 
 // Lazy accessors — must resolve at call time, not module load time,
 // because tests override process.env.HOME.
-function home() { return os.homedir(); }
 function configDir() { return path.join(home(), '.config', 'opencode'); }
 function pluginsDir() { return path.join(configDir(), 'plugins'); }
 function ownKeyPath() { return path.join(configDir(), KEY_FILENAME); }
+
+// --- Plugin deploy constants (single source of truth for copy + cleanup) ---
+const PLUGIN_FILE = 'midbrain-memory.ts';
+const BUNDLE_FILE = 'midbrain-shared.mjs';
+const MARKER_FILE = '.midbrain-repo-root';
+const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}:${REPO_ROOT}`;
+const EXPECTED_PLUGIN_FILES = new Set([PLUGIN_FILE, BUNDLE_FILE, MARKER_FILE]);
+
+/** Remove stale midbrain plugin files that aren't part of the current release. */
+async function cleanStalePlugins(pd) {
+  try {
+    const entries = await fs.readdir(pd);
+    for (const entry of entries) {
+      if (entry.startsWith('midbrain-') || entry.startsWith('.midbrain-') || entry === 'clients') {
+        if (!EXPECTED_PLUGIN_FILES.has(entry)) {
+          await fs.rm(path.join(pd, entry), { recursive: true, force: true });
+        }
+      }
+    }
+  } catch { /* ignore — dir may not exist yet */ }
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -92,36 +106,6 @@ async function patchJsonFile(filePath, modifications) {
   await fs.writeFile(filePath, text, 'utf8');
 }
 
-/** Back up a file (no-op if source missing). */
-async function backup(filePath) {
-  if (existsSync(filePath)) {
-    await fs.copyFile(filePath, filePath + '.bak');
-  }
-}
-
-/** Extracts non-reserved env keys from an existing MCP entry. */
-function extractCustomEnv(entry) {
-  const source = entry && typeof entry === 'object' && entry.environment;
-  if (!source || typeof source !== 'object') return {};
-  const out = {};
-  for (const [k, v] of Object.entries(source)) {
-    if (!RESERVED_ENV_KEYS.has(k)) out[k] = v;
-  }
-  return out;
-}
-
-const PINNED_RE = /midbrain-memory-mcp@\d+\.\d+\.\d+/;
-
-/** Classifies an existing entry for custom env extraction. */
-function classifyEntry(entry) {
-  if (!entry || typeof entry !== 'object') {
-    return { exists: false, pinned: false, extraEnv: {} };
-  }
-  const args = Array.isArray(entry.command) ? entry.command : [];
-  const pinned = args.some((a) => PINNED_RE.test(a));
-  return { exists: true, pinned, extraEnv: extractCustomEnv(entry) };
-}
-
 /** Builds the MCP entry for this client. */
 function buildEntry({ isDev = false, projectDir } = {}) {
   if (isDev) {
@@ -142,14 +126,6 @@ function buildEntry({ isDev = false, projectDir } = {}) {
     environment,
     enabled: true,
   };
-}
-
-/** Builds a status line for install summary. */
-function formatMigrationLine(label, exists, pinned) {
-  if (pinned) return `${label}: midbrain-memory pinned version preserved (no change)`;
-  return exists
-    ? `${label}: midbrain-memory updated`
-    : `${label}: midbrain-memory entry added`;
 }
 
 // ---------------------------------------------------------------------------
@@ -183,24 +159,25 @@ export class OpenCode extends BaseClient {
     const { isDev = false } = opts;
     const summary = [];
 
-    // Copy plugin + shared files
+    // Copy plugin + bundled shared code (2 files, no transformation needed)
     const pd = pluginsDir();
     await fs.mkdir(pd, { recursive: true });
-    await fs.copyFile(path.join(REPO_ROOT, 'plugins', 'opencode', 'midbrain-memory.ts'), path.join(pd, 'midbrain-memory.ts'));
-    summary.push('  + Plugin copied: ~/.config/opencode/plugins/midbrain-memory.ts');
-    await fs.copyFile(path.join(REPO_ROOT, 'shared', 'midbrain-api.mjs'), path.join(pd, 'midbrain-api.mjs'));
-    summary.push('  + API client copied: ~/.config/opencode/plugins/midbrain-api.mjs');
-    await fs.copyFile(path.join(REPO_ROOT, 'shared', 'logger.mjs'), path.join(pd, 'logger.mjs'));
-    summary.push('  + Logger copied: ~/.config/opencode/plugins/logger.mjs');
+    await cleanStalePlugins(pd);
 
-    // Copy client adapters (plugin imports ./clients/registry.mjs for key resolution)
-    const clientsSrc = path.join(REPO_ROOT, 'shared', 'clients');
-    const clientsDst = path.join(pd, 'clients');
-    await fs.mkdir(clientsDst, { recursive: true });
-    for (const file of ['base.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'registry.mjs']) {
-      await fs.copyFile(path.join(clientsSrc, file), path.join(clientsDst, file));
-    }
-    summary.push('  + Client adapters copied: ~/.config/opencode/plugins/clients/');
+    await fs.copyFile(
+      path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE),
+      path.join(pd, PLUGIN_FILE),
+    );
+    summary.push(`  + Plugin installed: ~/.config/opencode/plugins/${PLUGIN_FILE}`);
+
+    await fs.copyFile(
+      path.join(REPO_ROOT, 'dist', BUNDLE_FILE),
+      path.join(pd, BUNDLE_FILE),
+    );
+    summary.push(`  + Bundle copied: ~/.config/opencode/plugins/${BUNDLE_FILE}`);
+
+    // Write freshness marker for staleness detection
+    await fs.writeFile(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n', 'utf8');
 
     // Patch opencode config (.json or .jsonc)
     const configPath = resolveConfig(configDir());
@@ -219,7 +196,7 @@ export class OpenCode extends BaseClient {
     }
 
     const existing = config.mcp && config.mcp[MCP_KEY];
-    const { exists, pinned, extraEnv: customEnv } = classifyEntry(existing);
+    const { exists, pinned, extraEnv: customEnv } = classifyEntry(existing, 'environment');
     if (!pinned) {
       const entry = buildEntry({ isDev });
       entry.environment = { ...customEnv, ...entry.environment };
@@ -245,7 +222,7 @@ export class OpenCode extends BaseClient {
     const config = (await readJson(configPath)) || {};
 
     const existingEntry = config.mcp && config.mcp[MCP_KEY];
-    const { exists, pinned, extraEnv } = classifyEntry(existingEntry);
+    const { exists, pinned, extraEnv } = classifyEntry(existingEntry, 'environment');
 
     const modifications = [];
     if (!config['$schema']) {
@@ -272,6 +249,40 @@ export class OpenCode extends BaseClient {
   projectConfigFiles(projectDir) {
     const configPath = resolveConfig(projectDir);
     return [path.basename(configPath)];
+  }
+
+  /**
+   * Check if plugin files are fresh by comparing a version marker.
+   * Returns true if fresh (marker matches REPO_ROOT), false if stale.
+   */
+  async isFresh() {
+    try {
+      const markerPath = path.join(pluginsDir(), MARKER_FILE);
+      const raw = await fs.readFile(markerPath, 'utf8');
+      return raw.trim() === MARKER_VALUE;
+    } catch { return false; }
+  }
+
+  /**
+   * Repair stale plugin files by re-copying from current REPO_ROOT.
+   * Also writes a freshness marker.
+   */
+  async repairPlugins() {
+    const pd = pluginsDir();
+    await fs.mkdir(pd, { recursive: true });
+    await cleanStalePlugins(pd);
+
+    await fs.copyFile(
+      path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE),
+      path.join(pd, PLUGIN_FILE),
+    );
+    await fs.copyFile(
+      path.join(REPO_ROOT, 'dist', BUNDLE_FILE),
+      path.join(pd, BUNDLE_FILE),
+    );
+
+    await fs.writeFile(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n', 'utf8');
+    return ['  ~ OpenCode plugin files repaired (re-copied)'];
   }
 }
 
