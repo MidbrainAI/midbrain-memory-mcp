@@ -138,7 +138,7 @@ describe("OpenCode.installGlobal", () => {
     existsFor(PATHS.opencodeConfig);
   }
 
-  it("copies plugin and shared lib to plugins dir", async () => {
+  it("copies plugin and bundled shared lib to plugins dir", async () => {
     setupConfig({ $schema: "https://opencode.ai/config.json" });
     await oc.installGlobal();
 
@@ -147,9 +147,7 @@ describe("OpenCode.installGlobal", () => {
       path.basename(dst),
     ]);
     expect(copyArgs).toContainEqual(["midbrain-memory.ts", "midbrain-memory.ts"]);
-    expect(copyArgs).toContainEqual(["midbrain-api.mjs", "midbrain-api.mjs"]);
-    expect(copyArgs).toContainEqual(["logger.mjs", "logger.mjs"]);
-    expect(copyArgs).toContainEqual(["codex.mjs", "codex.mjs"]);
+    expect(copyArgs).toContainEqual(["midbrain-shared.mjs", "midbrain-shared.mjs"]);
   });
 
   it("creates plugins directory", async () => {
