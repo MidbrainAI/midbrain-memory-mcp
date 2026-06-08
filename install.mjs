@@ -204,10 +204,14 @@ async function main(opts = {}) {
 
   // Resolve and write keys
   const keys = await resolveKeys(clients, { nonInteractive });
+  if (keys.size === 0) {
+    throw new Error("No API key found. Run the installer interactively first or set MIDBRAIN_API_KEY.");
+  }
   const keyLines = [];
   keyLines.push(await getClient('generic').writeKey(keys.values().next().value));
   for (const client of clients) {
-    keyLines.push(await client.writeKey(keys.get(client.id)));
+    const key = keys.get(client.id);
+    if (key) keyLines.push(await client.writeKey(key));
   }
 
   // Install each detected client
