@@ -5,122 +5,113 @@ description: Add MidBrain persistent memory. Agents recall past conversations an
 
 # Add MidBrain Memory
 
-Installs [midbrain-memory-mcp](https://github.com/MidbrainAI/midbrain-memory-mcp) for the agent group. Memory is stored server-side via the MidBrain API (https://memory.midbrain.ai) and persists across container restarts, agent groups, and clients.
+Installs [`midbrain-memory-mcp@latest`](https://github.com/MidbrainAI/midbrain-memory-mcp) for one NanoClaw agent group. Memory is stored server-side via the MidBrain API and persists across container restarts, agent groups, and clients.
+
+## Safety Rules
+
+- Ask the operator before changing a group, rebuilding an image, or restarting NanoClaw.
+- Never print, paste, or store the real MidBrain API key in chat output.
+- When showing hook commands, always redact inline keys as `MIDBRAIN_API_KEY=<redacted>`.
+- Preserve existing MCP servers, settings, hooks, and environment values.
+- Use the direct `.claude-shared/settings.json` settings merge design. Do not add container boot scripts.
 
 ## Prerequisites
 
-- A MidBrain API key (get one at https://memory.midbrain.ai)
-- Agent group using the default Claude provider (`AGENT_PROVIDER=claude`)
+- A MidBrain API key from https://memory.midbrain.ai.
+- A NanoClaw agent group using the Claude provider.
+- Access to NanoClaw self-mod tools, or operator approval to run the equivalent commands.
 
-## Phase 1: Pre-flight
+## Phase 1: Choose The Agent Group
 
-### Check if already applied
+List groups:
 
 ```bash
-bash bin/ncl groups list --json 2>/dev/null | grep -q 'midbrain-memory' && echo "MCP already wired" || echo "Not applied"
+bash bin/ncl groups list --json
 ```
 
-If already applied, skip to Phase 3 (Verify).
+If exactly one group exists, you may select it and say which group was selected.
 
-## Phase 2: Apply
+If multiple agent groups exist, ask the operator to choose the target group by ID or name. Do not silently choose the first group.
 
-### 1. Collect the MidBrain API key
+Set:
 
-Ask the user for their MidBrain API key (from https://memory.midbrain.ai).
-It starts with `mb-` or is a UUID-style string. Store it for use in steps
-2-4. Be explicit: "What is your MidBrain API key?"
-
-### 2. Install the package into the container image
-
-Use the `install_packages` self-mod tool to bake midbrain-memory-mcp into
-the per-group container image:
-
-```
-install_packages({ npm: ["midbrain-memory-mcp"], reason: "MidBrain persistent memory" })
+```bash
+AGENT_GROUP_ID="<operator-selected-group-id>"
+SETTINGS_DIR="data/v2-sessions/${AGENT_GROUP_ID}/.claude-shared"
+SETTINGS_FILE="${SETTINGS_DIR}/settings.json"
+mkdir -p "$SETTINGS_DIR"
 ```
 
-This requires admin approval. Wait for approval before continuing.
+## Phase 2: Collect The Key
 
-### 3. Wire the MCP server
+Ask the operator for their MidBrain API key. Keep it only in local shell variables or the approved NanoClaw config files. Do not echo it back.
 
-Use the `add_mcp_server` self-mod tool:
-
+```bash
+MIDBRAIN_API_KEY="<operator-provided-key>"
 ```
+
+## Phase 3: Install MCP For The Group
+
+Use NanoClaw self-mod tooling when available:
+
+```text
+install_packages({ npm: ["midbrain-memory-mcp@latest"], reason: "MidBrain persistent memory" })
+```
+
+Then add the MCP server for the selected group:
+
+```text
 add_mcp_server({
   name: "midbrain-memory",
   command: "npx",
   args: ["-y", "midbrain-memory-mcp@latest"],
   env: {
     MIDBRAIN_CLIENT: "claude",
-    MIDBRAIN_API_KEY: "<the-key-from-step-1>"
+    MIDBRAIN_API_KEY: "<redacted>"
   }
 })
 ```
 
-This requires admin approval.
+If using the NanoClaw CLI instead of self-mod tooling, preserve existing group config and run the equivalent `bash bin/ncl groups config add-mcp-server` command for the selected `AGENT_GROUP_ID`.
 
-### 4. Wire episodic capture hooks
+## Phase 4: Discover Hook Paths In The Container
 
-The `.claude/` directory is mounted from the host into the container at
-`/home/node/.claude`. Writing hook configs to the host-side settings file
-makes them persistent across container restarts.
-
-#### 4a. Find the agent group ID and settings path
-
-```bash
-AGENT_GROUP_ID=$(bash bin/ncl groups list --json | jq -r '.[0].id')
-SETTINGS_DIR="data/v2-sessions/${AGENT_GROUP_ID}/.claude-shared"
-SETTINGS_FILE="${SETTINGS_DIR}/settings.json"
-mkdir -p "$SETTINGS_DIR"
-```
-
-#### 4b. Discover the hook script paths inside the container
-
-Wait for the container to restart after steps 2-3, then resolve the
-package path via pnpm. The hook directory varies by version:
-
-- v0.3.x: `<pnpm-root>/midbrain-memory-mcp/claude-code/`
-- v0.4.0+: `<pnpm-root>/midbrain-memory-mcp/plugins/claude-code/`
-
-Discover the correct path:
+After the package install completes and the group image is available, find the running container and installed package root:
 
 ```bash
 CONTAINER=$(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1)
-PKG_ROOT=$(docker exec "$CONTAINER" sh -c 'echo "$(pnpm root -g)/midbrain-memory-mcp"')
+PKG_NAME="midbrain-memory-mcp"
+PKG_ROOT=$(docker exec "$CONTAINER" sh -c "echo \"$(pnpm root -g)/${PKG_NAME}\"")
 
-# Check which path structure exists
 if docker exec "$CONTAINER" test -d "$PKG_ROOT/plugins/claude-code"; then
   HOOK_DIR="$PKG_ROOT/plugins/claude-code"
 else
   HOOK_DIR="$PKG_ROOT/claude-code"
 fi
-echo "Hook directory: $HOOK_DIR"
+
+NODE_BIN=$(docker exec "$CONTAINER" sh -c "command -v node")
+docker exec "$CONTAINER" test -f "$HOOK_DIR/capture-user.mjs"
+docker exec "$CONTAINER" test -f "$HOOK_DIR/capture-assistant.mjs"
 ```
 
-Verify the hooks exist inside the container:
+## Phase 5: Direct Settings Merge
 
-```bash
-docker exec "$CONTAINER" ls "$HOOK_DIR/capture-user.mjs" "$HOOK_DIR/capture-assistant.mjs"
-```
-
-Both files should be listed. If not, `install_packages` may not have
-completed — wait for the per-group image build to finish and restart.
-
-#### 4c. Write hooks to the mounted settings
-
-Read the existing settings (or start with empty object):
+Merge MidBrain hooks directly into the mounted Claude settings file:
 
 ```bash
 cat "$SETTINGS_FILE" 2>/dev/null || echo '{}'
 ```
 
-Merge the following hook entries into the `hooks` key of the settings JSON.
-**Preserve any existing hooks** (like mnemon). Append to existing arrays,
-don't replace them. Use `$HOOK_DIR` from step 4b and `<MIDBRAIN_API_KEY>`
-from step 1.
+Rules for the merge:
 
-**Important:** The API key must be inline in the hook command because
-container-level env vars are not passed to hook child processes.
+- Preserve every existing top-level setting.
+- Preserve every non-MidBrain hook entry.
+- Replace old MidBrain hook entries instead of duplicating them.
+- Add `UserPromptSubmit` and `Stop` command hooks.
+- Use inline `MIDBRAIN_API_KEY` only in the local mounted settings file.
+- Redact inline keys in all summaries, diffs, and chat messages.
+
+The resulting settings must contain commands equivalent to this redacted shape:
 
 ```json
 {
@@ -131,7 +122,7 @@ container-level env vars are not passed to hook child processes.
         "hooks": [
           {
             "type": "command",
-            "command": "MIDBRAIN_API_KEY=<the-key-from-step-1> node <HOOK_DIR>/capture-user.mjs"
+            "command": "MIDBRAIN_API_KEY=<redacted> ${NODE_BIN} ${HOOK_DIR}/capture-user.mjs"
           }
         ]
       }
@@ -142,7 +133,7 @@ container-level env vars are not passed to hook child processes.
         "hooks": [
           {
             "type": "command",
-            "command": "MIDBRAIN_API_KEY=<the-key-from-step-1> node <HOOK_DIR>/capture-assistant.mjs"
+            "command": "MIDBRAIN_API_KEY=<redacted> ${NODE_BIN} ${HOOK_DIR}/capture-assistant.mjs"
           }
         ]
       }
@@ -151,69 +142,49 @@ container-level env vars are not passed to hook child processes.
 }
 ```
 
-Replace `<the-key-from-step-1>` with the actual MidBrain API key and
-`<HOOK_DIR>` with the actual path discovered in step 4b.
+When writing the real file, replace `<redacted>` with the local key value and expand `NODE_BIN` and `HOOK_DIR`. Do not show the real command afterward.
 
-Write the merged settings back to `$SETTINGS_FILE`.
+## Phase 6: Environment File
 
-### 5. Add the API key to .env
-
-Add to `.env` (skip if already present):
+If the group also needs an env file, add the key without printing it:
 
 ```bash
-MIDBRAIN_API_KEY=<the-key-from-step-1>
+printf 'MIDBRAIN_API_KEY=%s\n' "$MIDBRAIN_API_KEY" >> .env
+mkdir -p data/env
+cp .env data/env/env
 ```
 
-Sync to container: `mkdir -p data/env && cp .env data/env/env`
+Do not commit `.env`, `data/env/env`, or any NanoClaw group settings.
 
-### 6. Restart the service
+## Phase 7: Restart With Approval
+
+Ask the operator before restarting the selected group or service. Use the NanoClaw command appropriate for the local installation.
+
+## Phase 8: Verify
+
+Verify MCP tools:
 
 ```bash
-source setup/lib/install-slug.sh
-systemctl --user restart $(systemd_unit)              # Linux
-# launchctl kickstart -k gui/$(id -u)/$(launchd_label)   # macOS
+bash bin/ncl groups config get --id "$AGENT_GROUP_ID" | grep midbrain-memory
 ```
 
-## Phase 3: Verify
-
-### Confirm MCP server is wired
+Verify hook registration without printing keys:
 
 ```bash
-docker logs $(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1) 2>&1 | grep -i midbrain
+grep -E 'capture-user\.mjs|capture-assistant\.mjs' "$SETTINGS_FILE"
 ```
 
-Should show `Additional MCP server: midbrain-memory (npx)`.
+Verify memory search from the agent:
 
-### Confirm hooks are registered
-
-```bash
-AGENT_GROUP_ID=$(bash bin/ncl groups list --json | jq -r '.[0].id')
-cat "data/v2-sessions/${AGENT_GROUP_ID}/.claude-shared/settings.json" | grep capture
-```
-
-Should show `capture-user.mjs` and `capture-assistant.mjs`.
-
-### Test memory capture and search
-
-1. Send a test message:
-
-```bash
-pnpm run chat "Remember this: the test code is alpha99"
-```
-
-2. Search for it (wait ~30 seconds for indexing):
-
-```bash
-pnpm run chat "Use the memory_search tool to search for alpha99"
-```
-
-If the search finds the test message, the full pipeline is working.
+1. Send a harmless test phrase.
+2. Wait for indexing.
+3. Use `memory_search` to find the phrase.
 
 ## MCP Tools Available
 
 | Tool | Purpose |
 |------|---------|
-| `memory_search` | Semantic search across all memories |
+| `memory_search` | Semantic search across memories |
 | `grep` | Exact pattern matching |
 | `get_episodic_memories_by_date` | Conversation history by date |
 | `check_session_status` | Detect recent activity from other sessions |
@@ -224,69 +195,33 @@ If the search finds the test message, the full pipeline is working.
 
 ## Troubleshooting
 
-### `memory_search` returns "No memories found"
+### MCP server not available
 
-The MCP server is running but no conversations have been captured yet.
-Send a few messages first, then search.
-
-### Hooks not capturing conversations
-
-Verify the hooks are in the mounted settings:
+Check the selected group config:
 
 ```bash
-AGENT_GROUP_ID=$(bash bin/ncl groups list --json | jq -r '.[0].id')
-cat "data/v2-sessions/${AGENT_GROUP_ID}/.claude-shared/settings.json" | grep capture
+bash bin/ncl groups config get --id "$AGENT_GROUP_ID" | grep midbrain-memory
 ```
 
-If absent, re-run Phase 2 step 4.
+### Hooks not capturing
 
-### Invalid API key errors
+Check mounted settings and redact any inline key before sharing output:
 
 ```bash
-curl -H "Authorization: Bearer <your-key>" https://memory.midbrain.ai/health
+grep -E 'capture-user\.mjs|capture-assistant\.mjs' "$SETTINGS_FILE"
 ```
 
-Should return `{"status": "ok"}`.
+### Hook scripts not found
 
-### MCP server not available to agent
+Verify the package in the container:
 
 ```bash
-bash bin/ncl groups config get --id <agent-group-id> | grep midbrain
+PKG_NAME="midbrain-memory-mcp"
+docker exec "$CONTAINER" pnpm ls -g "$PKG_NAME"
 ```
 
-If absent, re-run Phase 2 step 3.
-
-### Hook scripts not found in container
-
-The package may not be installed in the per-group image. Verify:
-
-```bash
-CONTAINER=$(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1)
-docker exec "$CONTAINER" pnpm ls -g midbrain-memory-mcp
-```
-
-If not listed, re-run Phase 2 step 2 (`install_packages`).
+If missing, re-run the package installation step and wait for the image build to complete.
 
 ## Removing MidBrain Memory
 
-### Remove MCP server
-
-```bash
-bash bin/ncl groups config remove-mcp-server --id <agent-group-id> --name midbrain-memory
-```
-
-### Remove hooks
-
-Edit `data/v2-sessions/<groupId>/.claude-shared/settings.json` and remove
-the `capture-user.mjs` and `capture-assistant.mjs` hook entries.
-
-### Remove from environment
-
-Remove `MIDBRAIN_API_KEY` from `.env` and `data/env/env`.
-
-### Restart
-
-```bash
-source setup/lib/install-slug.sh
-systemctl --user restart $(systemd_unit)
-```
+Remove the MidBrain MCP server from the selected group, remove only MidBrain hook entries from `data/v2-sessions/<group-id>/.claude-shared/settings.json`, remove local key env entries, and restart with operator approval.

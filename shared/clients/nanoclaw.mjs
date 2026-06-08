@@ -12,7 +12,7 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
-import { KEY_FILENAME, REPO_ROOT, home } from './utils.mjs';
+import { KEY_FILENAME, REPO_ROOT, home, writeSecure } from './utils.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -26,6 +26,8 @@ const NANOCLAW_DIRS = ['nanoclaw-v2', 'nanoclaw', 'NanoClaw'];
 
 function cfgDir() { return path.join(home(), '.config', 'nanoclaw'); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
+function skillDir(root) { return path.join(root, '.claude', 'skills', SKILL_NAME); }
+function skillFile(root) { return path.join(skillDir(root), 'SKILL.md'); }
 
 /**
  * Resolve the NanoClaw project root directory.
@@ -63,9 +65,7 @@ export class NanoClaw extends BaseClient {
 
   async writeKey(key) {
     const kfp = keyFilePath();
-    await fs.mkdir(path.dirname(kfp), { recursive: true });
-    await fs.writeFile(kfp, key + '\n', 'utf8');
-    await fs.chmod(kfp, 0o600);
+    await writeSecure(kfp, key);
     return `Key: ~/.config/nanoclaw/${KEY_FILENAME} (chmod 600)`;
   }
 
@@ -75,10 +75,10 @@ export class NanoClaw extends BaseClient {
     if (!root) return summary;
 
     // Copy the /add-midbrain skill into NanoClaw's skills directory
-    const skillDst = path.join(root, '.claude', 'skills', SKILL_NAME);
+    const skillDst = skillDir(root);
     await fs.mkdir(skillDst, { recursive: true });
-    await fs.copyFile(SKILL_SRC, path.join(skillDst, 'SKILL.md'));
-    summary.push(`  + Skill installed: ${skillDst}/SKILL.md`);
+    await fs.copyFile(SKILL_SRC, skillFile(root));
+    summary.push(`  + Skill installed: ${skillFile(root)}`);
     summary.push('  -> Open Claude Code in your NanoClaw directory and run /add-midbrain');
 
     return summary;
@@ -87,20 +87,28 @@ export class NanoClaw extends BaseClient {
   async installProject(_projectDir, _opts) { return []; }
   projectConfigFiles(_projectDir) { return []; }
 
-  /** NanoClaw skill freshness is based on file existence. */
+  /** NanoClaw skill freshness is based on packaged skill content. */
   async isFresh() {
     const root = resolveNanoClawRoot();
     if (!root) return true; // not installed = nothing to repair
-    return existsSync(path.join(root, '.claude', 'skills', SKILL_NAME, 'SKILL.md'));
+    const installed = skillFile(root);
+    if (!existsSync(installed)) return false;
+    try {
+      const [source, current] = await Promise.all([
+        fs.readFile(SKILL_SRC, 'utf8'),
+        fs.readFile(installed, 'utf8'),
+      ]);
+      return source === current;
+    } catch { return false; }
   }
 
   /** Repair = re-copy the skill file. */
   async repairSkill() {
     const root = resolveNanoClawRoot();
     if (!root) return [];
-    const skillDst = path.join(root, '.claude', 'skills', SKILL_NAME);
+    const skillDst = skillDir(root);
     await fs.mkdir(skillDst, { recursive: true });
-    await fs.copyFile(SKILL_SRC, path.join(skillDst, 'SKILL.md'));
+    await fs.copyFile(SKILL_SRC, skillFile(root));
     return ['  ~ NanoClaw skill repaired (SKILL.md re-copied)'];
   }
 }
