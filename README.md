@@ -275,7 +275,7 @@ to the Codex TOML env table.
 
 NanoClaw runs Claude Code inside Docker containers. MidBrain integrates via
 NanoClaw's skill system — the installer copies a `/add-midbrain` skill that
-handles all container-side setup.
+handles group-scoped setup.
 
 **Install the skill:**
 
@@ -293,11 +293,13 @@ claude
 
 The skill instructs Claude Code to:
 1. Prompt for your MidBrain API key
-2. Add `midbrain-memory-mcp` to the container Dockerfile (pinned version)
-3. Wire the installer into the container entrypoint (runs on every boot)
-4. Add `MIDBRAIN_API_KEY` to `.env`
-5. Wire the MCP server via `ncl groups config add-mcp-server`
-6. Rebuild the container image and restart the service
+2. Ask you to choose the target group when multiple agent groups exist
+3. Install `midbrain-memory-mcp@latest` in the selected group image
+4. Wire the MCP server for that group
+5. Directly merge Claude capture hooks into
+   `data/v2-sessions/<group-id>/.claude-shared/settings.json`
+6. Preserve existing settings and hooks, redact inline hook keys in output,
+   and restart only after approval
 
 After the skill completes, agents have full memory search and automatic
 episodic capture. Memory persists server-side across container restarts.
@@ -318,8 +320,8 @@ bash bin/ncl groups restart --id <agent-group-id> --message "Added midbrain memo
 ```
 
 Note: Manual `add-mcp-server` gives MCP tools only (search, browse). Episodic
-capture requires the entrypoint hook from the skill or a manual
-`npx midbrain-memory-mcp install` inside the container.
+capture requires the direct `.claude-shared/settings.json` settings merge
+performed by the skill.
 
 ---
 

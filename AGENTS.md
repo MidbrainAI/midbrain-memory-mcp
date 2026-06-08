@@ -69,11 +69,15 @@ layers and duplicate writes would occur.
 
 **NanoClaw** — runs Claude Code inside Docker containers. The installer copies
 a `/add-midbrain` skill to `.claude/skills/add-midbrain/SKILL.md` in the
-NanoClaw project. Running the skill wires the MCP server via
-`ncl groups config add-mcp-server`, installs the package in the container image,
-and adds an entrypoint hook that runs the installer (with `--non-interactive`)
-on every container boot to wire Claude Code capture hooks. Inside the container,
-capture uses the same Claude Code hooks as the bare Claude Code client.
+NanoClaw project. Running the skill wires one selected agent group: it asks for
+group choice when multiple agent groups exist, installs
+`midbrain-memory-mcp@latest` in the group image, wires the MCP server, and
+directly merges Claude capture hooks into the host-mounted settings file
+`data/v2-sessions/<group-id>/.claude-shared/settings.json`. This direct
+settings merge is the canonical NanoClaw v1 hook design. Inside the container,
+capture uses the same Claude Code hooks as the bare Claude Code client. Inline
+hook API keys are a NanoClaw-local exception and must be redacted from chat,
+docs, logs, and PR artifacts.
 
 All capture paths go through the same modules:
 `MidbrainApi.create(getClient(id), projectDir)` → `BaseClient.resolveKey()`.
