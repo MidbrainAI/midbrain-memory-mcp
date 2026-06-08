@@ -44,6 +44,7 @@ GIT_GREP_EXCLUDES=(
   ':!tests/**'
   ':!package.json'
   ':!package-lock.json'
+  ':!shared/clients/utils.mjs'
   ':!CHANGELOG.md'
   ':!BACKLOG.md'
   ':!team-rollout-*.md'
