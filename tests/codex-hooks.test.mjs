@@ -19,7 +19,10 @@ const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
 
 function makeDeps() {
-  const api = { storeEpisodic: vi.fn() };
+  const api = {
+    storeEpisodic: vi.fn(),
+    searchProcedural: vi.fn().mockResolvedValue([]),
+  };
   return {
     api,
     createApi: vi.fn(async () => api),
@@ -53,6 +56,7 @@ describe("Codex hook capture", () => {
   it("captureUser stores a non-empty prompt with Codex metadata", async () => {
     await captureUser({ prompt: "remember this", cwd: "/repo" }, deps);
 
+    expect(deps.createApi).toHaveBeenCalledOnce();
     expect(deps.createApi).toHaveBeenCalledWith("/repo");
     expect(firstStore(deps)).toEqual([
       "remember this",
@@ -60,6 +64,39 @@ describe("Codex hook capture", () => {
       deps.debugLog,
       { client: "codex" },
     ]);
+  });
+
+  it("captureUser resolves the API key exactly once per turn (no double key-resolution)", async () => {
+    deps.api.searchProcedural.mockResolvedValueOnce([
+      { id: 1, title: "Git", content: "squash before merge" },
+    ]);
+
+    await captureUser({ prompt: "git workflow", cwd: "/repo" }, deps);
+
+    // Both episodic store and PK search must share the single resolved api instance.
+    expect(deps.createApi).toHaveBeenCalledOnce();
+    expect(deps.api.storeEpisodic).toHaveBeenCalledOnce();
+    expect(deps.api.searchProcedural).toHaveBeenCalledOnce();
+  });
+
+  it("captureUser returns PK context payload when entries are found", async () => {
+    deps.api.searchProcedural.mockResolvedValueOnce([
+      { id: 2, title: "Python", content: "use ruff" },
+    ]);
+
+    const result = await captureUser({ prompt: "python linting", cwd: "/repo" }, deps);
+
+    expect(result).toBeDefined();
+    expect(result.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(result.hookSpecificOutput.additionalContext).toContain("<!-- mb:ctx-start -->");
+    expect(result.hookSpecificOutput.additionalContext).toContain("Python");
+    expect(result.hookSpecificOutput.additionalContext).toContain("<!-- mb:pk 2 -->");
+  });
+
+  it("captureUser returns undefined when no PK entries match", async () => {
+    // searchProcedural already returns [] by default from makeDeps
+    const result = await captureUser({ prompt: "unrelated query", cwd: "/repo" }, deps);
+    expect(result).toBeUndefined();
   });
 
   it("captureUser skips empty prompts", async () => {
@@ -271,7 +308,7 @@ describe("Codex hook capture", () => {
 
     await expect(captureUser({ prompt: "hi", cwd: "/repo" }, deps)).resolves.toBeUndefined();
 
-    expect(deps.debugLog).toHaveBeenCalledWith(expect.stringContaining("CODEX CAPTURE ERROR"));
+    expect(deps.debugLog).toHaveBeenCalledWith(expect.stringContaining("CODEX CAPTURE ERROR (user)"));
   });
 });
 

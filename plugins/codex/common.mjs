@@ -12,6 +12,7 @@ import { createHash, randomUUID } from "crypto";
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
 import { makeDebugLogger } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
+import { formatPkContext } from "../../shared/pk-inject.mjs";
 
 const DEBUG_LOG = path.join(os.homedir(), "midbrain-codex-debug.log");
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-assistant-turns");
@@ -34,10 +35,47 @@ export async function createApi(cwd) {
   return MidbrainApi.create(getClient("codex"), cwd);
 }
 
+/**
+ * Capture user prompt as episodic memory and search for relevant PK entries.
+ * Returns a stdout payload object if PK was found, otherwise returns undefined.
+ * Codex does not provide conversation history in the hook payload, so
+ * exclude_ids is always empty; min_score=0.5 limits repetition to relevant entries.
+ *
+ * API key is resolved once and reused for both episodic storage and PK search.
+ *
+ * @returns {Promise<object|undefined>} Stdout payload for Codex context injection, or undefined.
+ */
 export async function captureUser(input, deps = makeDefaultDeps()) {
   const prompt = typeof input?.prompt === "string" ? input.prompt.trim() : "";
   if (!prompt) return;
-  await postEpisodic(prompt, "user", input?.cwd, deps);
+
+  const projectDir = typeof input?.cwd === "string" && input.cwd.trim() ? input.cwd : undefined;
+  let api;
+  try {
+    api = await deps.createApi(projectDir);
+  } catch (err) {
+    safeLog(deps.debugLog, `CODEX CAPTURE ERROR (user): ${errorMessage(err)}`);
+    return undefined;
+  }
+
+  await postEpisodic(prompt, "user", input?.cwd, deps, api);
+
+  // PK injection — 2s timeout inside searchProcedural; returns [] on failure.
+  try {
+    const entries = await api.searchProcedural({ query: prompt, excludeIds: [] });
+    if (entries.length > 0) {
+      safeLog(deps.debugLog, `PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`);
+      return {
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: formatPkContext(entries),
+        },
+      };
+    }
+  } catch (err) {
+    safeLog(deps.debugLog, `PK INJECT ERROR: ${errorMessage(err)}`);
+  }
+  return undefined;
 }
 
 export async function captureAssistant(input, deps = makeDefaultDeps()) {
@@ -70,23 +108,38 @@ export async function captureToolUse(input, deps = makeDefaultDeps()) {
   }
 }
 
+/**
+ * Run a capture function as a hook. Reads stdin JSON, calls captureFn,
+ * writes any returned payload to stdout (for context injection), then exits.
+ *
+ * stdoutJson: if true, always emit at least "{}" on stdout (required by
+ * PostToolUse and Stop hooks). For UserPromptSubmit the return value from
+ * captureFn is written when present; "{}" otherwise.
+ */
 export function runJsonHook(captureFn, { stdoutJson = false } = {}) {
   let buf = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => { buf += chunk; });
   process.stdin.on("end", async () => {
+    let payload;
     try {
-      await captureFn(JSON.parse(buf || "{}"), makeDefaultDeps());
+      payload = await captureFn(JSON.parse(buf || "{}"), makeDefaultDeps());
     } catch { /* fail open */ }
-    if (stdoutJson) process.stdout.write("{}");
+    if (payload !== undefined && payload !== null) {
+      process.stdout.write(JSON.stringify(payload));
+    } else if (stdoutJson) {
+      process.stdout.write("{}");
+    }
     process.exit(0);
   });
 }
 
-async function postEpisodic(text, role, cwd, deps) {
+async function postEpisodic(text, role, cwd, deps, api) {
   try {
-    const projectDir = typeof cwd === "string" && cwd.trim() ? cwd : undefined;
-    const api = await deps.createApi(projectDir);
+    if (!api) {
+      const projectDir = typeof cwd === "string" && cwd.trim() ? cwd : undefined;
+      api = await deps.createApi(projectDir);
+    }
     const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.debugLog, CODEX_METADATA));
     return stored !== false;
   } catch (err) {

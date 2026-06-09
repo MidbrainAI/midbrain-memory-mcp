@@ -2,6 +2,9 @@
  * MidBrain Memory OpenCode Plugin
  *
  * Episodic auto-capture: every user + assistant message stored automatically.
+ * PK injection: on each user turn, relevant procedural knowledge entries are
+ * searched and prepended to the message as a context block before the LLM
+ * sees it. 2s hard timeout — on failure the message passes through unchanged.
  * memory_search lives in the MCP server (index.js), not here.
  *
  * Architecture:
@@ -13,11 +16,12 @@
  * - Exactly 1 API POST per message (no backlog dumps, no history scans)
  * - Directory-based instance filtering (only matching instance processes)
  * - Fire-and-forget: never blocks chat on API response
+ * - PK injection: silent fallthrough on any error or timeout
  */
 
 import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
-import { MidbrainApi, makeDebugLogger, getClient } from "./midbrain-shared.mjs";
+import { MidbrainApi, makeDebugLogger, getClient, extractInjectedPkIds, formatPkContext, stripInjectedContext } from "./midbrain-shared.mjs";
 
 // --- Plugin ---
 
@@ -40,7 +44,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
   return {
     // --- User messages: captured directly from hook (parts are inline) ---
-    "chat.message": async (_input, output) => {
+    "chat.message": async (input, output) => {
       const msg = output.message as Record<string, unknown>;
       const messageID = msg.id as string;
       const parts = output.parts as Array<{ type: string; text?: string }>;
@@ -56,6 +60,47 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
       debugLog(`USER: id=${messageID} len=${text.length}`);
       storedMessages.add(messageID);
       api.storeEpisodic(text, "user", debugLog, { client: "opencode" });
+
+      // PK injection: search for relevant procedural knowledge, prepend as context block.
+      // 2s timeout via AbortSignal.timeout inside searchProcedural — silent fallthrough.
+      try {
+        const sessionID = (input as Record<string, unknown>).sessionID as string | undefined;
+        let excludeIds: number[] = [];
+
+        if (sessionID) {
+          try {
+            const history = await client.session.messages({ path: { id: sessionID } });
+            const priorTexts = (history.data ?? []).flatMap(
+              (m: { parts: Array<{ type: string; text?: string }> }) =>
+                m.parts
+                  .filter((p: { type: string }) => p.type === "text")
+                  .map((p: { text?: string }) => p.text ?? "")
+            );
+            excludeIds = extractInjectedPkIds(priorTexts);
+          } catch {
+            // History fetch failed — proceed without dedup
+          }
+        }
+
+        const entries = await api.searchProcedural({ query: text, excludeIds });
+        if (entries.length > 0) {
+          const ctxBlock = formatPkContext(entries);
+          // Strip any stale block from the first text part, then prepend fresh block
+          const firstTextIdx = parts.findIndex(
+            (p: { type: string }) => p.type === "text"
+          );
+          if (firstTextIdx !== -1) {
+            const stripped = stripInjectedContext(parts[firstTextIdx].text ?? "");
+            parts[firstTextIdx] = { ...parts[firstTextIdx], text: ctxBlock + "\n\n" + stripped };
+          } else {
+            parts.unshift({ type: "text", text: ctxBlock });
+          }
+          debugLog(`PK: injected ${entries.length} entries ids=${entries.map((e: { id: number }) => e.id).join(",")}`);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        debugLog(`PK INJECT ERROR: ${msg}`);
+      }
     },
 
     // --- Assistant messages: captured when message.updated shows completion ---

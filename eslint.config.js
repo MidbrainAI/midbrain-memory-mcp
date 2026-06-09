@@ -15,6 +15,8 @@ export default [
         URL: "readonly",
         URLSearchParams: "readonly",
         AbortController: "readonly",
+        AbortSignal: "readonly",
+        DOMException: "readonly",
         setTimeout: "readonly",
         clearTimeout: "readonly",
         Buffer: "readonly",
