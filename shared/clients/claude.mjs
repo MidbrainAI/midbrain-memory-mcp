@@ -66,7 +66,7 @@ function buildHooks() {
   const userCmd = `${process.execPath} ${path.join(REPO_ROOT, 'plugins', 'claude-code', 'capture-user.mjs')}`;
   const assistCmd = `${process.execPath} ${path.join(REPO_ROOT, 'plugins', 'claude-code', 'capture-assistant.mjs')}`;
   return {
-    UserPromptSubmit: [{ hooks: [{ type: 'command', command: userCmd, timeout: 10, async: true }] }],
+    UserPromptSubmit: [{ hooks: [{ type: 'command', command: userCmd, timeout: 10 }] }],
     Stop: [{ hooks: [{ type: 'command', command: assistCmd, timeout: 10, async: true }] }],
   };
 }
