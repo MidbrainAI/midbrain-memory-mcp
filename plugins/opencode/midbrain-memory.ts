@@ -23,6 +23,53 @@ import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
 import { MidbrainApi, makeDebugLogger, getClient, extractInjectedPkIds, formatPkContext, stripInjectedContext } from "./midbrain-shared.mjs";
 
+export const OPENCODE_HISTORY_TIMEOUT_MS = 500;
+
+type OpenCodePart = { type: string; text?: string };
+type OpenCodeMessage = { parts?: OpenCodePart[] };
+
+export function normalizeHistoryMessages(history: unknown): OpenCodeMessage[] {
+  if (Array.isArray(history)) return history as OpenCodeMessage[];
+  const data = (history as { data?: unknown } | null)?.data;
+  return Array.isArray(data) ? data as OpenCodeMessage[] : [];
+}
+
+export function textPartsFromMessages(messages: OpenCodeMessage[]): string[] {
+  return messages.flatMap((m) =>
+    (m.parts ?? [])
+      .filter((p) => p.type === "text" && typeof p.text === "string")
+      .map((p) => p.text ?? "")
+  );
+}
+
+export async function fetchPriorMessageTexts(
+  client: { session: { messages: (args: { path: { id: string } }) => Promise<unknown> } },
+  sessionID: string,
+  timeoutMs = OPENCODE_HISTORY_TIMEOUT_MS,
+): Promise<string[]> {
+  try {
+    const history = await withTimeout(
+      client.session.messages({ path: { id: sessionID } }),
+      timeoutMs,
+    );
+    return textPartsFromMessages(normalizeHistoryMessages(history));
+  } catch {
+    return [];
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("OpenCode history fetch timed out")), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // --- Plugin ---
 
 export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
@@ -68,18 +115,8 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
         let excludeIds: number[] = [];
 
         if (sessionID) {
-          try {
-            const history = await client.session.messages({ path: { id: sessionID } });
-            const priorTexts = (history.data ?? []).flatMap(
-              (m: { parts: Array<{ type: string; text?: string }> }) =>
-                m.parts
-                  .filter((p: { type: string }) => p.type === "text")
-                  .map((p: { text?: string }) => p.text ?? "")
-            );
-            excludeIds = extractInjectedPkIds(priorTexts);
-          } catch {
-            // History fetch failed — proceed without dedup
-          }
+          const priorTexts = await fetchPriorMessageTexts(client, sessionID);
+          excludeIds = extractInjectedPkIds(priorTexts);
         }
 
         const entries = await api.searchProcedural({ query: text, excludeIds });
