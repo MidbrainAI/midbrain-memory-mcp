@@ -28,6 +28,7 @@ shared/
     opencode.mjs                 OpenCode adapter: JSONC config, plugin copy
     claude.mjs                   Claude Code adapter: hooks, .mcp.json, .claude.json
     codex.mjs                    Codex adapter: TOML config, hooks.json
+    nanoclaw.mjs                 NanoClaw adapter: skill copy to .claude/skills/
     generic.mjs                  Near-noop fallback: global key write, project key CRUD
     registry.mjs                 getClient(id), detectClients(), allClients()
 plugins/
@@ -66,6 +67,18 @@ one reasoning/commentary summary, and a separate tool summary. Project setup
 does not write project-local Codex hooks because Codex runs all matching hook
 layers and duplicate writes would occur.
 
+**NanoClaw** — runs Claude Code inside Docker containers. The installer copies
+a `/add-midbrain` skill to `.claude/skills/add-midbrain/SKILL.md` in the
+NanoClaw project. Running the skill wires one selected agent group: it asks for
+group choice when multiple agent groups exist, installs
+`midbrain-memory-mcp@latest` in the group image, wires the MCP server, and
+directly merges Claude capture hooks into the host-mounted settings file
+`data/v2-sessions/<group-id>/.claude-shared/settings.json`. This direct
+settings merge is the canonical NanoClaw v1 hook design. Inside the container,
+capture uses the same Claude Code hooks as the bare Claude Code client. Inline
+hook API keys are a NanoClaw-local exception and must be redacted from chat,
+docs, logs, and PR artifacts.
+
 All capture paths go through the same modules:
 `MidbrainApi.create(getClient(id), projectDir)` → `BaseClient.resolveKey()`.
 **Never re-implement key resolution or API calls in a plugin or hook.**
@@ -99,6 +112,7 @@ Per-client key file locations:
 - OpenCode: `~/.config/opencode/.midbrain-key`
 - Claude Code: `~/.config/claude/.midbrain-key`
 - Codex: `~/.config/codex/.midbrain-key`
+- NanoClaw: `~/.config/nanoclaw/.midbrain-key`
 - Global default: `~/.config/midbrain/.midbrain-key`
 - Project override (recommended): `<projectDir>/.midbrain/.midbrain-key`
 - Project override (flat): `<projectDir>/.midbrain-key`

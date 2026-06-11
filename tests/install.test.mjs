@@ -42,7 +42,8 @@ const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
-const { main, projectSetup, runInstallerCli, printHelp } = await import("../install.mjs");
+const { main, projectSetup, runInstallerCli, printHelp, checkForUpdate } = await import("../install.mjs");
+const { REPO_ROOT } = await import("../shared/clients/utils.mjs");
 
 const HOME = os.homedir();
 
@@ -51,10 +52,15 @@ const PATHS = {
   opencodeKey:      path.join(HOME, ".config", "opencode", ".midbrain-key"),
   claudeKey:        path.join(HOME, ".config", "claude", ".midbrain-key"),
   codexKey:         path.join(HOME, ".config", "codex", ".midbrain-key"),
+  nanoclawKey:      path.join(HOME, ".config", "nanoclaw", ".midbrain-key"),
   opencodeConfig:   path.join(HOME, ".config", "opencode", "opencode.json"),
   claudeJson:       path.join(HOME, ".claude.json"),
   codexConfig:      path.join(HOME, ".codex", "config.toml"),
+  nanoclawDocker:   path.join(HOME, "nanoclaw-v2", "container", "Dockerfile"),
+  nanoclawSkills:   path.join(HOME, "nanoclaw-v2", ".claude", "skills"),
+  nanoclawSkill:    path.join(HOME, "nanoclaw-v2", ".claude", "skills", "add-midbrain", "SKILL.md"),
 };
+const NANOCLAW_SKILL_SRC = path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md");
 
 const PROJECT_DIR = "/home/testuser/myproject";
 
@@ -150,6 +156,91 @@ describe("main — per-client key writing", () => {
 
     const configWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfig);
     expect(configWrite).toBeDefined();
+  });
+
+  it("--non-interactive fails cleanly when no detected client has a key", async () => {
+    existsFor(PATHS.opencodeConfig);
+
+    await expect(main({ nonInteractive: true })).rejects.toThrow(/No API key found/);
+
+    const writes = fs.writeFile.mock.calls.map(([, value]) => String(value));
+    expect(writes).not.toContain("undefined\n");
+    expect(writes).not.toContain("\n");
+  });
+
+  it("no-TTY mode behaves like explicit --non-interactive", async () => {
+    const originalIsTty = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+    existsFor(PATHS.opencodeConfig);
+
+    await expect(main()).rejects.toThrow(/No API key found/);
+
+    const writes = fs.writeFile.mock.calls.map(([, value]) => String(value));
+    expect(writes).not.toContain("undefined\n");
+    if (originalIsTty === undefined) delete process.stdin.isTTY;
+    else Object.defineProperty(process.stdin, "isTTY", { value: originalIsTty, configurable: true });
+  });
+
+  it("--non-interactive uses an existing client key without prompting", async () => {
+    existsFor(PATHS.opencodeConfig);
+    readFileReturns({ [PATHS.opencodeKey]: "existing-key\n" });
+
+    await main({ nonInteractive: true });
+
+    const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+    const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+    expect(globalWrite?.[1]).toBe("existing-key\n");
+    expect(clientWrite?.[1]).toBe("existing-key\n");
+  });
+
+  it("--non-interactive uses MIDBRAIN_API_KEY through shared key resolution", async () => {
+    process.env.MIDBRAIN_API_KEY = "env-fallback-key";
+    existsFor(PATHS.opencodeConfig);
+
+    await main({ nonInteractive: true });
+
+    const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+    const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+    expect(globalWrite?.[1]).toBe("env-fallback-key\n");
+    expect(clientWrite?.[1]).toBe("env-fallback-key\n");
+  });
+});
+
+// ===================================================================
+// checkForUpdate() — startup freshness repair
+// ===================================================================
+
+describe("checkForUpdate — NanoClaw startup repair", () => {
+  let logSpy;
+  let errSpy;
+  let fetchSpy;
+
+  beforeEach(() => {
+    resetMocks();
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: false });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    fetchSpy.mockRestore();
+  });
+
+  it("repairs stale NanoClaw skill during startup without stdout", async () => {
+    existsFor(PATHS.nanoclawDocker, PATHS.nanoclawSkills, PATHS.nanoclawSkill);
+    readFileReturns({
+      [NANOCLAW_SKILL_SRC]: "packaged skill\n",
+      [PATHS.nanoclawSkill]: "stale skill\n",
+    });
+
+    await checkForUpdate();
+
+    const copiedSkill = fs.copyFile.mock.calls.some(([, dst]) => dst === PATHS.nanoclawSkill);
+    expect(copiedSkill).toBe(true);
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("NanoClaw skill repaired");
   });
 });
 
