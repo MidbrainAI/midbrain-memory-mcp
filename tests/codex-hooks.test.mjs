@@ -325,6 +325,73 @@ describe("Codex hook capture", () => {
 });
 
 describe("Codex hook wrappers", () => {
+  function tempHomeWithKey() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-user-home-"));
+    const keyDir = path.join(home, ".config", "midbrain");
+    fs.mkdirSync(keyDir, { recursive: true });
+    fs.writeFileSync(path.join(keyDir, ".midbrain-key"), "test-key\n", { mode: 0o600 });
+    return home;
+  }
+
+  function preload(mode) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-user-preload-"));
+    const file = path.join(dir, "fetch-preload.mjs");
+    fs.writeFileSync(file, `
+      globalThis.fetch = async (url) => {
+        const text = String(url);
+        if (${JSON.stringify(mode)} === "throw") throw new Error("network down");
+        if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
+        if (text.includes("/memories/search/procedural")) {
+          const body = ${JSON.stringify(mode)} === "match"
+            ? [{ id: 55, title: "Codex Workflow", content: "Use spawned stdout" }]
+            : [];
+          return { ok: true, status: 200, json: async () => body };
+        }
+        return { ok: false, status: 404, text: async () => "not found" };
+      };
+    `);
+    return { dir, file };
+  }
+
+  function runUserHook(input, mode = "empty") {
+    const home = tempHomeWithKey();
+    const loaded = preload(mode);
+    const result = spawnSync(process.execPath, [
+      "--import", loaded.file,
+      path.join(REPO_ROOT, "plugins", "codex", "capture-user.mjs"),
+    ], {
+      input: JSON.stringify(input),
+      encoding: "utf8",
+      env: { ...process.env, HOME: home },
+    });
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(loaded.dir, { recursive: true, force: true });
+    return result;
+  }
+
+  it("UserPromptSubmit wrapper exits zero and writes context stdout on PK match", () => {
+    const result = runUserHook({ prompt: "codex workflow", cwd: "/repo" }, "match");
+
+    expect(result.status).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(payload.hookSpecificOutput.additionalContext).toContain("Codex Workflow");
+  });
+
+  it("UserPromptSubmit wrapper exits zero with empty stdout on no PK match", () => {
+    const result = runUserHook({ prompt: "unrelated", cwd: "/repo" }, "empty");
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
+  it("UserPromptSubmit wrapper exits zero with empty stdout on API failure", () => {
+    const result = runUserHook({ prompt: "codex workflow", cwd: "/repo" }, "throw");
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
   it("Stop wrapper exits zero and writes JSON stdout", () => {
     const result = spawnSync(process.execPath, [path.join(REPO_ROOT, "plugins", "codex", "capture-assistant.mjs")], {
       input: JSON.stringify({ last_assistant_message: "hi" }),
