@@ -188,10 +188,12 @@ Verify memory search from the agent:
 | `grep` | Exact pattern matching |
 | `get_episodic_memories_by_date` | Conversation history by date |
 | `check_session_status` | Detect recent activity from other sessions |
-| `procedural_knowledge` | Recall learned procedures and workflows |
 | `list_files` | Browse semantic memory documents |
 | `read_file` | Read a semantic memory document |
 | `memory_setup_project` | Configure per-project memory scoping |
+
+Procedural knowledge is injected automatically by MidBrain hooks when relevant.
+Do not call or expect a separate procedural-knowledge MCP tool.
 
 ## Troubleshooting
 

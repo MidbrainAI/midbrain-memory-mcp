@@ -2,7 +2,7 @@
  * mcp.mjs — MCP server declaration.
  *
  * Defines all MCP tools (memory_search, grep, get_episodic_memories_by_date,
- * list_files, read_file, memory_setup_project). Uses MidbrainApi for all
+ * list_files, read_file, check_session_status, memory_setup_project). Uses MidbrainApi for all
  * API communication.
  *
  * IMPORTANT: No console.log — corrupts stdio JSON-RPC pipe. Use console.error only.
