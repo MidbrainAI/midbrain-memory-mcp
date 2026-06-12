@@ -1656,9 +1656,12 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
     const entry = parsed.mcpServers?.["midbrain-memory"];
     expect(entry).toBeDefined();
     expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    expect(fs.existsSync(path.join(projectTmpdir, "AGENTS.md"))).toBe(false);
+    expect(fs.existsSync(path.join(projectTmpdir, "CLAUDE.md"))).toBe(false);
 
     // Tool response shape unchanged: text content with key + config lines
     expect(text).toMatch(/key|Key|midbrain/);
+    expect(text).not.toContain("Rules written");
   });
 });
 

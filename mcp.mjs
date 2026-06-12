@@ -374,7 +374,7 @@ full context if needed.`,
     },
     async ({ project_dir, api_key }) => {
       try {
-        const result = await setupProject(project_dir, { apiKey: api_key });
+        const result = await setupProject(project_dir, { apiKey: api_key, skipRules: true });
         const lines = [...result.lines];
         lines.push("");
         lines.push("IMPORTANT: You MUST tell the user to restart this application for the new project memory to take effect. The current session is still using the previous API key. Memory will not be stored to the new project agent until after restart.");
