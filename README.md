@@ -28,7 +28,9 @@ npx midbrain-memory-mcp install
 
 The installer detects OpenCode, Claude Code, Codex, and/or NanoClaw on your
 machine, prompts for your API key, writes per-client key files (chmod 600),
-patches MCP configs, and copies hook/plugin/skill files. One command, done.
+patches MCP configs, copies hook/plugin/skill files, and adds a bounded
+MidBrain rules block to project instruction files when project setup is used.
+One command, done.
 
 ### 3. Restart and verify
 
@@ -106,7 +108,7 @@ project has its own isolated memory space.
 ```sh
 # 1. Place your project API key
 mkdir -p .midbrain
-echo "sk-your-project-key" > .midbrain/.midbrain-key
+echo "your-project-api-key" > .midbrain/.midbrain-key
 chmod 600 .midbrain/.midbrain-key
 
 # 2. Run project setup
@@ -114,7 +116,23 @@ npx midbrain-memory-mcp install --project /absolute/path/to/project
 ```
 
 Non-interactive. Resolves the API key from existing files, creates per-client
-MCP configs, outputs JSON to stdout. All progress goes to stderr.
+MCP configs, writes the MidBrain rules block to `AGENTS.md` and `CLAUDE.md`,
+and outputs JSON to stdout. All progress goes to stderr.
+
+Project setup never clobbers existing instructions. It appends or replaces only
+the sentinel-bounded MidBrain block:
+
+```html
+<!-- midbrain-memory-rules:start -->
+...
+<!-- midbrain-memory-rules:end -->
+```
+
+To manage project instruction files yourself, opt out:
+
+```sh
+npx midbrain-memory-mcp install --project /absolute/path/to/project --no-rules
+```
 
 ### Option B: MCP Tool
 
@@ -134,6 +152,9 @@ Use the memory_setup_project tool to configure this project
 
 Restart after setup for the project memory to take effect.
 
+The MCP setup tool configures keys and MCP client files only. It does not write
+`AGENTS.md` or `CLAUDE.md`; rule injection through the MCP tool is deferred.
+
 ### Option C: Manual
 
 See [Configuration Reference](#configuration-reference) below for the
@@ -152,7 +173,7 @@ next restart picks it up automatically.
 | Spec form | Behavior |
 |---|---|
 | `midbrain-memory-mcp@latest` | Auto-updates on every cold start (recommended) |
-| `midbrain-memory-mcp@0.3.2` | Pinned — you are responsible for bumping |
+| `midbrain-memory-mcp@X.Y.Z` | Pinned — you are responsible for bumping |
 | `midbrain-memory-mcp` (bare) | Looks auto-updating but is sticky on first resolved version — avoid |
 
 ### Automatic Hook & Plugin Repair
@@ -171,8 +192,7 @@ something goes wrong, the server continues normally — repair failures are
 logged to stderr but never crash the process.
 
 Run `npx -y midbrain-memory-mcp@latest --version` to check your resolved
-version. The MCP server also logs its version to stderr on startup:
-`MCP server running (midbrain-memory-mcp v0.3.2)`.
+version. The MCP server logs the resolved package version to stderr on startup.
 
 ---
 
@@ -336,9 +356,13 @@ performed by the skill.
 
 ---
 
-## LLM Rules
+## Memory-First Agent Rules
 
-Add to your project's `AGENTS.md` or `CLAUDE.md`:
+Project CLI setup writes this block automatically to `AGENTS.md` and
+`CLAUDE.md`, unless `--no-rules` is used. Existing content is preserved and
+only the sentinel-bounded MidBrain block is updated on later runs.
+
+If you manage rules manually, use this distilled block:
 
 ```markdown
 ## MidBrain Memory Rules
@@ -374,7 +398,6 @@ Add to your project's `AGENTS.md` or `CLAUDE.md`:
 
 ```sh
 npx -y midbrain-memory-mcp@latest --version
-# Expected: 0.3.2
 ```
 
 If it shows an old version, your npx cache is stale:
