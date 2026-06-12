@@ -369,10 +369,13 @@ claude
 The skill instructs Claude Code to:
 1. Prompt for your MidBrain API key
 2. Ask you to choose the target group when multiple agent groups exist
-3. Install `midbrain-memory-mcp@latest` in the selected group image
-4. Wire the MCP server for that group
-5. Directly merge Claude capture hooks into
+3. Wire the MCP server for that group with `npx -y midbrain-memory-mcp@latest`
+4. Directly merge Claude capture hooks into
    `data/v2-sessions/<group-id>/.claude-shared/settings.json`
+5. Use `npx -y midbrain-memory-mcp@latest hook claude user` and
+   `npx -y midbrain-memory-mcp@latest hook claude assistant` for capture hooks,
+   so hooks re-resolve through the published package instead of a pinned
+   package-store path
 6. Preserve existing settings and hooks, redact inline hook keys in output,
    and restart only after approval
 
@@ -396,7 +399,8 @@ bash bin/ncl groups restart --id <agent-group-id> --message "Added midbrain memo
 
 Note: Manual `add-mcp-server` gives MCP tools only (search, browse). Episodic
 capture requires the direct `.claude-shared/settings.json` settings merge
-performed by the skill.
+performed by the skill. Those hooks should use the `npx @latest hook` commands
+above, not `/pnpm/.../midbrain-memory-mcp@<version>/...` paths.
 
 ---
 

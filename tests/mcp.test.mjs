@@ -1439,6 +1439,20 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
     expect(result.stdout).not.toContain("--project");
   });
 
+  it("NanoClaw hook dispatch: claude user exits 0 without starting MCP when stdin is empty", () => {
+    const result = spawnServer(["hook", "claude", "user"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).not.toMatch(/MCP server running/);
+  });
+
+  it("NanoClaw hook dispatch: unknown hook exits 2 with usage", () => {
+    const result = spawnServer(["hook", "claude", "bogus"]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Usage: midbrain-memory-mcp hook claude user|assistant");
+    expect(result.stderr).not.toMatch(/MCP server running/);
+  });
+
   it("G-6: unknown subcommand falls through to normal MCP start", () => {
     // Spawn, wait briefly for the 'MCP server running' line, then kill.
     const child = spawnSync(process.execPath, [SERVER_PATH, "foo"], {
@@ -1541,10 +1555,13 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     expect(matches.length).toBe(1);
   });
 
-  it("R-2: dispatch ordering: --version < install < createServer < checkForUpdate", () => {
+  it("R-2: dispatch ordering: --version < hook < install < createServer < checkForUpdate", () => {
     const lines = serverSrc.split("\n");
     const idxVersion = lines.findIndex((l) =>
       /process\.argv\.includes\(["']--version["']\)/.test(l)
+    );
+    const idxHook = lines.findIndex((l) =>
+      /process\.argv\[2\]\s*===\s*["']hook["']/.test(l)
     );
     const idxInstall = lines.findIndex((l) =>
       /process\.argv\[2\]\s*===\s*["']install["']/.test(l)
@@ -1553,7 +1570,8 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     const idxUpdate = lines.findIndex((l) => /checkForUpdate\(/.test(l) && !/function checkForUpdate/.test(l) && !/async function checkForUpdate/.test(l));
 
     expect(idxVersion).toBeGreaterThan(-1);
-    expect(idxInstall).toBeGreaterThan(idxVersion);
+    expect(idxHook).toBeGreaterThan(idxVersion);
+    expect(idxInstall).toBeGreaterThan(idxHook);
     // createServer call site must come AFTER install dispatch line
     // (the definition of createServer is earlier — we filtered it out)
     expect(idxCreate).toBeGreaterThan(idxInstall);

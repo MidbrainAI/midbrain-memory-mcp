@@ -14,6 +14,7 @@ Installs [`midbrain-memory-mcp@latest`](https://github.com/MidbrainAI/midbrain-m
 - When showing hook commands, always redact inline keys as `MIDBRAIN_API_KEY=<redacted>`.
 - Preserve existing MCP servers, settings, hooks, and environment values.
 - Use the direct `.claude-shared/settings.json` settings merge design. Do not add container boot scripts.
+- Durable NanoClaw config must use `midbrain-memory-mcp@latest`, not a pinned version or a package-store path.
 
 ## Prerequisites
 
@@ -52,13 +53,8 @@ MIDBRAIN_API_KEY="<operator-provided-key>"
 
 ## Phase 3: Install MCP For The Group
 
-Use NanoClaw self-mod tooling when available:
-
-```text
-install_packages({ npm: ["midbrain-memory-mcp@latest"], reason: "MidBrain persistent memory" })
-```
-
-Then add the MCP server for the selected group:
+Add the MCP server for the selected group with an auto-updating `npx @latest`
+command:
 
 ```text
 add_mcp_server({
@@ -74,25 +70,18 @@ add_mcp_server({
 
 If using the NanoClaw CLI instead of self-mod tooling, preserve existing group config and run the equivalent `bash bin/ncl groups config add-mcp-server` command for the selected `AGENT_GROUP_ID`.
 
-## Phase 4: Discover Hook Paths In The Container
-
-After the package install completes and the group image is available, find the running container and installed package root:
+## Phase 4: Prepare Auto-Updating Hook Commands
 
 ```bash
-CONTAINER=$(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1)
-PKG_NAME="midbrain-memory-mcp"
-PKG_ROOT=$(docker exec "$CONTAINER" sh -c "echo \"$(pnpm root -g)/${PKG_NAME}\"")
-
-if docker exec "$CONTAINER" test -d "$PKG_ROOT/plugins/claude-code"; then
-  HOOK_DIR="$PKG_ROOT/plugins/claude-code"
-else
-  HOOK_DIR="$PKG_ROOT/claude-code"
-fi
-
-NODE_BIN=$(docker exec "$CONTAINER" sh -c "command -v node")
-docker exec "$CONTAINER" test -f "$HOOK_DIR/capture-user.mjs"
-docker exec "$CONTAINER" test -f "$HOOK_DIR/capture-assistant.mjs"
+MIDBRAIN_NPX="npx -y midbrain-memory-mcp@latest"
+USER_HOOK_CMD="MIDBRAIN_API_KEY=${MIDBRAIN_API_KEY} ${MIDBRAIN_NPX} hook claude user"
+ASSISTANT_HOOK_CMD="MIDBRAIN_API_KEY=${MIDBRAIN_API_KEY} ${MIDBRAIN_NPX} hook claude assistant"
 ```
+
+Do not discover or write `/pnpm/.../midbrain-memory-mcp@<version>/...` hook
+paths. Versioned package-store paths pin hooks to an old release. The `npx
+@latest` hook command is intentionally durable so NanoClaw cold starts can
+resolve the current package.
 
 ## Phase 5: Direct Settings Merge
 
@@ -109,6 +98,8 @@ Rules for the merge:
 - Replace old MidBrain hook entries instead of duplicating them.
 - Add `UserPromptSubmit` and `Stop` command hooks.
 - Use inline `MIDBRAIN_API_KEY` only in the local mounted settings file.
+- Use `npx -y midbrain-memory-mcp@latest hook claude user` and
+  `npx -y midbrain-memory-mcp@latest hook claude assistant` for hook commands.
 - Redact inline keys in all summaries, diffs, and chat messages.
 
 The resulting settings must contain commands equivalent to this redacted shape:
@@ -122,7 +113,7 @@ The resulting settings must contain commands equivalent to this redacted shape:
         "hooks": [
           {
             "type": "command",
-            "command": "MIDBRAIN_API_KEY=<redacted> ${NODE_BIN} ${HOOK_DIR}/capture-user.mjs"
+            "command": "MIDBRAIN_API_KEY=<redacted> npx -y midbrain-memory-mcp@latest hook claude user"
           }
         ]
       }
@@ -133,7 +124,7 @@ The resulting settings must contain commands equivalent to this redacted shape:
         "hooks": [
           {
             "type": "command",
-            "command": "MIDBRAIN_API_KEY=<redacted> ${NODE_BIN} ${HOOK_DIR}/capture-assistant.mjs"
+            "command": "MIDBRAIN_API_KEY=<redacted> npx -y midbrain-memory-mcp@latest hook claude assistant"
           }
         ]
       }
@@ -142,7 +133,8 @@ The resulting settings must contain commands equivalent to this redacted shape:
 }
 ```
 
-When writing the real file, replace `<redacted>` with the local key value and expand `NODE_BIN` and `HOOK_DIR`. Do not show the real command afterward.
+When writing the real file, replace `<redacted>` with the local key value. Do
+not show the real command afterward.
 
 ## Phase 6: Environment File
 
@@ -171,7 +163,7 @@ bash bin/ncl groups config get --id "$AGENT_GROUP_ID" | grep midbrain-memory
 Verify hook registration without printing keys:
 
 ```bash
-grep -E 'capture-user\.mjs|capture-assistant\.mjs' "$SETTINGS_FILE"
+grep -E 'midbrain-memory-mcp@latest hook claude (user|assistant)' "$SETTINGS_FILE"
 ```
 
 Verify memory search from the agent:
@@ -210,19 +202,28 @@ bash bin/ncl groups config get --id "$AGENT_GROUP_ID" | grep midbrain-memory
 Check mounted settings and redact any inline key before sharing output:
 
 ```bash
-grep -E 'capture-user\.mjs|capture-assistant\.mjs' "$SETTINGS_FILE"
+grep -E 'midbrain-memory-mcp@latest hook claude (user|assistant)' "$SETTINGS_FILE"
 ```
 
-### Hook scripts not found
+### Hooks still show an old version
 
-Verify the package in the container:
+If `settings.json`, `container.json`, or `bash bin/ncl groups config get` shows
+`midbrain-memory-mcp@0.3.2` or any other pinned version, remove the old
+`midbrain-memory` MCP server, add it again with
+`midbrain-memory-mcp@latest`, replace the MidBrain hook entries with the
+`npx @latest hook` commands above, then restart the group.
 
 ```bash
-PKG_NAME="midbrain-memory-mcp"
-docker exec "$CONTAINER" pnpm ls -g "$PKG_NAME"
+bash bin/ncl groups config remove-mcp-server --id "$AGENT_GROUP_ID" --name midbrain-memory
+bash bin/ncl groups config add-mcp-server \
+  --id "$AGENT_GROUP_ID" \
+  --name midbrain-memory \
+  --command npx \
+  --args '["-y", "midbrain-memory-mcp@latest"]' \
+  --env '{"MIDBRAIN_CLIENT": "claude", "MIDBRAIN_API_KEY": "<redacted>"}'
 ```
 
-If missing, re-run the package installation step and wait for the image build to complete.
+Do not approve stale pending requests that mention a pinned MidBrain version.
 
 ## Removing MidBrain Memory
 

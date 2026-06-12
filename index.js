@@ -23,6 +23,16 @@ if (isMain) {
   if (process.argv.includes("--version") || process.argv.includes("-v")) {
     console.log(PKG_VERSION);
     process.exit(0);
+  } else if (process.argv[2] === "hook") {
+    const [, , , client, event] = process.argv;
+    if (client === "claude" && event === "user") {
+      await import("./plugins/claude-code/capture-user.mjs");
+    } else if (client === "claude" && event === "assistant") {
+      await import("./plugins/claude-code/capture-assistant.mjs");
+    } else {
+      console.error("Usage: midbrain-memory-mcp hook claude user|assistant");
+      process.exit(2);
+    }
   } else if (process.argv[2] === "install") {
     const { runInstallerCli } = await import("./install.mjs");
     await runInstallerCli(process.argv.slice(3));
