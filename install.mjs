@@ -24,6 +24,7 @@ import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
+import { writeProjectRules } from './shared/agent-rules.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -168,6 +169,21 @@ async function resolveKeys(clients, { nonInteractive = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Rules helpers
+// ---------------------------------------------------------------------------
+
+/** Convert writeProjectRules() results to human-readable status lines. */
+function formatRulesLines(results) {
+  return results.map(({ action, path: filePath, error }) => {
+    const name = path.basename(filePath);
+    if (action === 'created') return `Rules written: ${name}`;
+    if (action === 'updated') return `Rules updated: ${name}`;
+    if (action === 'skipped') return `Rules already current: ${name}`;
+    return `Rules error (${error?.code || error?.message || 'unknown'}): ${name}`;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Step 2: Print summary
 // ---------------------------------------------------------------------------
 function printSummary(keyLines, clientSummaries) {
@@ -190,10 +206,53 @@ function printSummary(keyLines, clientSummaries) {
 }
 
 // ---------------------------------------------------------------------------
+// Rules prompt helper for global main() flow
+// ---------------------------------------------------------------------------
+
+const PROJECT_MARKERS = ['.git', 'package.json', 'opencode.json', 'opencode.jsonc'];
+
+/**
+ * Write or prompt for MidBrain rules in the user's CWD.
+ * process.cwd() is the user's intended project root when running the global
+ * interactive installer — it is not derived from user-controlled input.
+ */
+async function writeRulesForMainMode(nonInteractive) {
+  // Justified use of process.cwd(): this is the global installer; the user
+  // runs it from their project root. CWD is the natural target.
+  const cwd = process.cwd();
+  const isProject = PROJECT_MARKERS.some((m) => existsSync(path.join(cwd, m)));
+
+  if (!isProject) {
+    console.log('Note: to add MidBrain memory rules to a project\'s instruction files, run:');
+    console.log('  npx midbrain-memory-mcp install --project <absolute-path>');
+    return;
+  }
+
+  const interactive = !nonInteractive && process.stdin.isTTY;
+  if (interactive) {
+    const answer = await prompt(
+      `MidBrain memory rules will be added to:\n  AGENTS.md\n  CLAUDE.md\nin ${cwd}. Proceed? [Y/n] `
+    );
+    if (answer.toLowerCase() === 'n') {
+      console.log('Skipped. Add rules manually — see README §LLM Rules.');
+      return;
+    }
+  }
+
+  const results = await writeProjectRules(cwd);
+  const lines = formatRulesLines(results);
+  if (interactive) {
+    lines.forEach((l) => console.log(l));
+  } else {
+    lines.forEach((l) => console.error(`[midbrain] ${l}`));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main (interactive mode)
 // ---------------------------------------------------------------------------
 async function main(opts = {}) {
-  const { isDev = false, nonInteractive = false } = opts;
+  const { isDev = false, nonInteractive = false, skipRules = false } = opts;
   const clients = detectClients();
 
   if (clients.length === 0) {
@@ -226,6 +285,10 @@ async function main(opts = {}) {
   }
 
   printSummary(keyLines, clientSummaries);
+
+  if (!skipRules) {
+    await writeRulesForMainMode(nonInteractive);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +306,7 @@ async function main(opts = {}) {
  * @returns {Promise<{lines: string[], keyCreated: boolean, configsWritten: string[], projectDir: string}>}
  */
 async function setupProject(rawPath, opts = {}) {
-  const { apiKey: apiKeyParam, isDev = false } = opts;
+  const { apiKey: apiKeyParam, isDev = false, skipRules = false } = opts;
   const lines = [];
   const configsWritten = [];
 
@@ -308,7 +371,16 @@ async function setupProject(rawPath, opts = {}) {
     lines.push("Warning: no supported AI clients detected. No configs written.");
   }
 
-  return { lines, keyCreated, configsWritten, projectDir };
+  let rulesWritten = [];
+  if (!skipRules) {
+    const rulesResults = await writeProjectRules(projectDir);
+    lines.push(...formatRulesLines(rulesResults));
+    rulesWritten = rulesResults
+      .filter((r) => r.action === 'created' || r.action === 'updated')
+      .map((r) => r.path);
+  }
+
+  return { lines, keyCreated, configsWritten, projectDir, rulesWritten };
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +396,7 @@ async function projectSetup(rawPath, opts = {}) {
       project_dir: result.projectDir,
       key_created: result.keyCreated,
       configs_written: result.configsWritten,
+      rules_written: result.rulesWritten,
       restart_required: true,
     }, null, 2));
   } catch (err) {
@@ -346,7 +419,7 @@ Usage:
   npx midbrain-memory-mcp install --help                     Show this help
 
 Development (clone-local):
-  node install.mjs [--help | --project <path> | --dev | --non-interactive]
+  node install.mjs [--help | --project <path> | --dev | --non-interactive | --no-rules]
 
 Flags:
   --project <path>    Absolute path to the project root directory.
@@ -356,6 +429,8 @@ Flags:
   --non-interactive   Skip all prompts. Uses existing key files or
                       MIDBRAIN_API_KEY env var. Useful for Docker entrypoints
                       and CI environments.
+  --no-rules          Skip writing MidBrain memory rules to AGENTS.md and
+                      CLAUDE.md. Use when managing instruction files manually.
   --help, -h          Show this help text.
 
 By default, the installer writes 'npx -y midbrain-memory-mcp@latest' as the
@@ -390,6 +465,7 @@ async function runInstallerCli(argv) {
   }
   const isDev = argv.includes('--dev');
   const nonInteractive = argv.includes('--non-interactive');
+  const skipRules = argv.includes('--no-rules');
   const projectFlagIdx = argv.indexOf('--project');
   if (projectFlagIdx !== -1) {
     const projectArg = argv[projectFlagIdx + 1];
@@ -403,14 +479,14 @@ async function runInstallerCli(argv) {
       process.exit(1);
     }
     try {
-      await projectSetup(projectArg, { isDev });
+      await projectSetup(projectArg, { isDev, skipRules });
     } catch (err) {
       console.error(`Fatal error: ${err.message}`);
       process.exit(1);
     }
   } else {
     try {
-      await main({ isDev, nonInteractive });
+      await main({ isDev, nonInteractive, skipRules });
     } catch (err) {
       console.error('Fatal error:', err.message);
       process.exit(1);
@@ -436,7 +512,7 @@ export {
 // ---------------------------------------------------------------------------
 // Dispatch: --project mode vs interactive (only when run directly)
 // ---------------------------------------------------------------------------
-import { realpathSync } from 'fs';
+import { realpathSync, existsSync } from 'fs';
 const isMain = process.argv[1] &&
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 

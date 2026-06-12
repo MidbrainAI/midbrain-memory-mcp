@@ -42,7 +42,8 @@ const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
-const { main, projectSetup, runInstallerCli, printHelp, checkForUpdate } = await import("../install.mjs");
+const { main, setupProject, projectSetup, runInstallerCli, printHelp, checkForUpdate } = await import("../install.mjs");
+const { buildRulesBlock } = await import("../shared/agent-rules.mjs");
 const { REPO_ROOT } = await import("../shared/clients/utils.mjs");
 
 const HOME = os.homedir();
@@ -493,5 +494,113 @@ describe("runInstallerCli", () => {
 
   it("runInstallerCli is an async function", () => {
     expect(runInstallerCli.constructor.name).toBe("AsyncFunction");
+  });
+});
+
+// ===================================================================
+// setupProject — rules integration (T-20 through T-24)
+// ===================================================================
+
+describe("setupProject — rules integration", () => {
+  const savedEnv = {};
+
+  function setupRulesMocks(opts = {}) {
+    const {
+      projectDir = PROJECT_DIR,
+      apiKey = "test-api-key-1234",
+      extraFiles = {},
+    } = opts;
+
+    fs.stat.mockImplementation(async (p) => {
+      if (p === projectDir) return { isDirectory: () => true };
+      throw enoent(p);
+    });
+    fs.realpath.mockImplementation(async (p) => p);
+    readFileReturns({ [PATHS.globalKey]: apiKey + "\n", ...extraFiles });
+    existsFor(PATHS.opencodeConfig);
+  }
+
+  beforeEach(() => {
+    resetMocks();
+    for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR", "MIDBRAIN_CONFIG_DIR"]) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("T-20: fresh dir — rulesWritten includes AGENTS.md and CLAUDE.md", async () => {
+    setupRulesMocks();
+    const result = await setupProject(PROJECT_DIR, { apiKey: "test-key" });
+    expect(result.rulesWritten).toContain(path.join(PROJECT_DIR, "AGENTS.md"));
+    expect(result.rulesWritten).toContain(path.join(PROJECT_DIR, "CLAUDE.md"));
+  });
+
+  it("T-20b: fresh dir — lines[] mentions AGENTS.md and CLAUDE.md written", async () => {
+    setupRulesMocks();
+    const result = await setupProject(PROJECT_DIR, { apiKey: "test-key" });
+    const joined = result.lines.join("\n");
+    expect(joined).toContain("AGENTS.md");
+    expect(joined).toContain("CLAUDE.md");
+  });
+
+  it("T-21: second call — rulesWritten is empty; files unchanged", async () => {
+    setupRulesMocks();
+    const r1 = await setupProject(PROJECT_DIR, { apiKey: "test-key" });
+    expect(r1.rulesWritten).toHaveLength(2);
+
+    // Second call: instruction files now contain the current block
+    const block = buildRulesBlock();
+    setupRulesMocks({
+      extraFiles: {
+        [path.join(PROJECT_DIR, "AGENTS.md")]: block,
+        [path.join(PROJECT_DIR, "CLAUDE.md")]: block,
+      },
+    });
+    const r2 = await setupProject(PROJECT_DIR, { apiKey: "test-key" });
+    expect(r2.rulesWritten).toHaveLength(0);
+  });
+
+  it("T-22: skipRules: true — no AGENTS.md or CLAUDE.md written; rulesWritten: []", async () => {
+    setupRulesMocks();
+    const result = await setupProject(PROJECT_DIR, { apiKey: "test-key", skipRules: true });
+    const writes = fs.writeFile.mock.calls.map(([p]) => p);
+    expect(writes).not.toContain(path.join(PROJECT_DIR, "AGENTS.md"));
+    expect(writes).not.toContain(path.join(PROJECT_DIR, "CLAUDE.md"));
+    expect(result.rulesWritten).toEqual([]);
+  });
+
+  it("T-23: --no-rules CLI — JSON rules_written is []", async () => {
+    setupRulesMocks();
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {});
+    await runInstallerCli(["--project", PROJECT_DIR, "--no-rules"]);
+    const stdout = console.log.mock.calls[0]?.[0];
+    const parsed = JSON.parse(stdout);
+    expect(parsed.rules_written).toEqual([]);
+    exitSpy.mockRestore();
+  });
+
+  it("T-24: existing custom AGENTS.md — custom content preserved after setupProject", async () => {
+    const custom = "# My Agents Rules\nDo something custom.\n";
+    setupRulesMocks({
+      extraFiles: { [path.join(PROJECT_DIR, "AGENTS.md")]: custom },
+    });
+    await setupProject(PROJECT_DIR, { apiKey: "test-key" });
+    const agentsWrite = fs.writeFile.mock.calls.find(
+      ([p]) => p === path.join(PROJECT_DIR, "AGENTS.md")
+    );
+    expect(agentsWrite).toBeDefined();
+    expect(agentsWrite[1]).toContain("# My Agents Rules");
+    expect(agentsWrite[1]).toContain("Do something custom.");
+    expect(agentsWrite[1]).toContain("<!-- midbrain-memory-rules:start -->");
   });
 });
