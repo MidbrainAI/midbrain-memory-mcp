@@ -6,7 +6,8 @@ scoping — with automatic capture of every conversation.
 
 Works with [OpenCode](https://opencode.ai),
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and
-[OpenAI Codex](https://developers.openai.com/codex).
+[OpenAI Codex](https://developers.openai.com/codex), plus
+[NanoClaw](https://nanoclaw.dev) via the bundled `/add-midbrain` skill.
 
 [![npm version](https://img.shields.io/npm/v/midbrain-memory-mcp.svg?style=flat-square)](https://www.npmjs.com/package/midbrain-memory-mcp)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-brightgreen?style=flat-square)](#prerequisites)
@@ -202,7 +203,7 @@ version. The MCP server logs the resolved package version to stderr on startup.
 
 | Variable | Purpose | Set by |
 |---|---|---|
-| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, or `codex`) | MCP config `environment`/`env` block |
+| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, `codex`, or `nanoclaw`) | MCP config `environment`/`env` block |
 | `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution | Project-level MCP config |
 | `MIDBRAIN_API_KEY` | API key for CI/debug environments | User environment |
 
@@ -385,7 +386,9 @@ If you manage rules manually, use this distilled block:
   `ctx-meta nonce` trust metadata plus an id signature, and are capped at
   160 title characters, 2,000 content characters per entry, and 6,000
   characters total.
-- The only memory tools available are search and setup. Use them proactively.
+- The memory tools are memory_search, grep, get_episodic_memories_by_date,
+  list_files, read_file, check_session_status, and memory_setup_project. Use
+  them proactively.
 - When the user asks to set up MidBrain memory for a project, ALWAYS use the
   memory_setup_project tool. NEVER manually create key files or configs.
 ```

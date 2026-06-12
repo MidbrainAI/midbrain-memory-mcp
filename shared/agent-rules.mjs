@@ -32,6 +32,18 @@ function buildRulesBlock() {
   return `${RULES_START}\n${RULES_BLOCK_BODY}\n${RULES_END}`;
 }
 
+function findCompleteRulesBlock(content) {
+  let endIdx = content.indexOf(RULES_END);
+  while (endIdx !== -1) {
+    const startIdx = content.lastIndexOf(RULES_START, endIdx);
+    if (startIdx !== -1) {
+      return { startIdx, endIdx: endIdx + RULES_END.length };
+    }
+    endIdx = content.indexOf(RULES_END, endIdx + RULES_END.length);
+  }
+  return null;
+}
+
 /** Read existing file content; ENOENT → ''; other errors → Error object. */
 async function readExisting(filePath) {
   try {
@@ -64,16 +76,13 @@ async function writeAgentRules(filePath) {
   }
 
   const existing  = readResult;
-  const hasStart  = existing.includes(RULES_START);
-  const hasEnd    = existing.includes(RULES_END);
   const block     = buildRulesBlock();
+  const range     = findCompleteRulesBlock(existing);
 
-  if (hasStart && hasEnd) {
-    const startIdx = existing.indexOf(RULES_START);
-    const endIdx   = existing.indexOf(RULES_END) + RULES_END.length;
-    const current  = existing.slice(startIdx, endIdx);
+  if (range) {
+    const current  = existing.slice(range.startIdx, range.endIdx);
     if (current === block) return { action: 'skipped', path: filePath };
-    const newContent = existing.slice(0, startIdx) + block + existing.slice(endIdx);
+    const newContent = existing.slice(0, range.startIdx) + block + existing.slice(range.endIdx);
     return writeContent(filePath, newContent, 'updated');
   }
 

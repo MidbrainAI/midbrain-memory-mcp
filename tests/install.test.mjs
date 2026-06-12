@@ -369,6 +369,20 @@ describe("projectSetup", () => {
     expect(keyWrites).toHaveLength(0);
   });
 
+  it("resolves an existing target project key without requiring a global key", async () => {
+    setupProjectMocks({ existingProjectKey: true });
+    const keyPath = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+    readFileReturns({ [keyPath]: "project-only-key\n" });
+
+    const result = await setupProject(PROJECT_DIR, { skipRules: true });
+
+    expect(result.keyCreated).toBe(false);
+    expect(result.lines.join("\n")).toContain(`Key resolved from: ${keyPath}`);
+    expect(result.lines.join("\n")).toContain("Existing project key preserved.");
+    const keyWrites = fs.writeFile.mock.calls.filter(([p]) => p === keyPath);
+    expect(keyWrites).toHaveLength(0);
+  });
+
   it("outputs valid JSON result to stdout", async () => {
     setupProjectMocks();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

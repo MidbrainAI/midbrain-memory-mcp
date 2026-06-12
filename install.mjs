@@ -335,7 +335,7 @@ async function setupProject(rawPath, opts = {}) {
     apiKey = apiKeyParam.trim();
   } else {
     const client = getClient(process.env.MIDBRAIN_CLIENT);
-    const result = await client.resolveKey();
+    const result = await client.resolveKey(projectDir);
     if (!result) {
       throw new Error("No API key found. Run the installer first (npx midbrain-memory-mcp install).");
     }

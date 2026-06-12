@@ -175,6 +175,21 @@ describe("writeAgentRules", () => {
     expect(written).toContain("<!-- midbrain-memory-rules:end -->");
   });
 
+  it("T-5b: orphaned start before complete block — updates only complete block", async () => {
+    const orphaned = "# Existing\n<!-- midbrain-memory-rules:start -->\nUser instructions\n\n";
+    const oldBlock = "<!-- midbrain-memory-rules:start -->\nold rule\n<!-- midbrain-memory-rules:end -->";
+    readFileReturns({ [TARGET]: orphaned + oldBlock });
+    const result = await writeAgentRules(TARGET);
+    expect(result.action).toBe("updated");
+    const written = mocks.writeFile.mock.calls[0]?.[1];
+    expect(written).toContain("User instructions");
+    expect(written).not.toContain("old rule");
+    expect(written.indexOf("User instructions")).toBeLessThan(
+      written.lastIndexOf("<!-- midbrain-memory-rules:start -->")
+    );
+    expect(written).toContain("memory_search");
+  });
+
   it("T-6: EACCES on read — returns action: error; does not throw; no write", async () => {
     const err = new Error("EACCES: permission denied");
     err.code = "EACCES";
