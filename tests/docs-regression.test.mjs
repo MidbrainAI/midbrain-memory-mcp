@@ -28,6 +28,15 @@ const SCRIPT_PATH = path.join(REPO_ROOT, "scripts", "check-pinned-spec.sh");
 const SIXTY_CHAR_FORM =
   /npx.*--package=midbrain-memory-mcp\S*\s+midbrain-memory-setup/;
 
+function toolNamesFromMcp(source) {
+  return [...source.matchAll(/server\.tool\(\s*["']([^"']+)["']/g)].map((match) => match[1]);
+}
+
+function toolNamesFromReadme(readme) {
+  const section = readme.split("### MCP Tools")[1].split("## Per-Project Memory")[0];
+  return [...section.matchAll(/\| `([^`]+)` \|/g)].map((match) => match[1]);
+}
+
 describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
   it("D-1: README.md contains no 60-char install form", async () => {
     const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
@@ -110,5 +119,31 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     } finally {
       fsSync.rmSync(cacheDir, { recursive: true, force: true });
     }
+  });
+
+  it("D-9: README MCP tool table matches the seven-tool server surface", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const mcp = await fs.readFile(path.join(REPO_ROOT, "mcp.mjs"), "utf8");
+    const readmeTools = toolNamesFromReadme(readme).sort();
+    const serverTools = toolNamesFromMcp(mcp).sort();
+
+    expect(serverTools).toHaveLength(7);
+    expect(readmeTools).toEqual(serverTools);
+    expect(readmeTools).not.toContain("procedural_knowledge");
+  });
+
+  it("D-10: memory rules do not instruct agents to call removed procedural_knowledge", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+
+    expect(readme).not.toContain("Use procedural_knowledge");
+    expect(agents).not.toContain("Use procedural_knowledge");
+  });
+
+  it("D-11: README documents the procedural search endpoint, not the removed list endpoint", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+
+    expect(readme).toContain("/api/v1/memories/search/procedural");
+    expect(readme).not.toContain("/api/v1/memories/procedural");
   });
 });
