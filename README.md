@@ -26,9 +26,9 @@ agent, and generate an API key.
 npx midbrain-memory-mcp install
 ```
 
-The installer detects OpenCode, Claude Code, and/or Codex on your machine,
-prompts for your API key, writes per-client key files (chmod 600), patches
-MCP configs, and copies hook/plugin files. One command, done.
+The installer detects OpenCode, Claude Code, Codex, and/or NanoClaw on your
+machine, prompts for your API key, writes per-client key files (chmod 600),
+patches MCP configs, and copies hook/plugin/skill files. One command, done.
 
 ### 3. Restart and verify
 
@@ -282,6 +282,58 @@ to the Codex TOML env table.
   `[mcp_servers.<id>]` TOML tables. Wrong key = silent failure.
 - MCP servers in `~/.claude/settings.json` are silently ignored — use `~/.claude.json`.
 
+### NanoClaw
+
+NanoClaw runs Claude Code inside Docker containers. MidBrain integrates via
+NanoClaw's skill system — the installer copies a `/add-midbrain` skill that
+handles group-scoped setup.
+
+**Install the skill:**
+
+```bash
+npx -y midbrain-memory-mcp@latest install
+# Detects NanoClaw and copies the skill to .claude/skills/add-midbrain/
+```
+
+**Run the skill (from the NanoClaw directory):**
+
+```bash
+claude
+# Then type: /add-midbrain
+```
+
+The skill instructs Claude Code to:
+1. Prompt for your MidBrain API key
+2. Ask you to choose the target group when multiple agent groups exist
+3. Install `midbrain-memory-mcp@latest` in the selected group image
+4. Wire the MCP server for that group
+5. Directly merge Claude capture hooks into
+   `data/v2-sessions/<group-id>/.claude-shared/settings.json`
+6. Preserve existing settings and hooks, redact inline hook keys in output,
+   and restart only after approval
+
+After the skill completes, agents have full memory search and automatic
+episodic capture. Memory persists server-side across container restarts.
+
+**Manual setup (alternative):**
+
+```bash
+# Wire MCP server (persistent, survives restarts)
+bash bin/ncl groups config add-mcp-server \
+  --id <agent-group-id> \
+  --name midbrain-memory \
+  --command npx \
+  --args '["-y", "midbrain-memory-mcp@latest"]' \
+  --env '{"MIDBRAIN_CLIENT": "claude", "MIDBRAIN_API_KEY": "your-key"}'
+
+# Restart to apply
+bash bin/ncl groups restart --id <agent-group-id> --message "Added midbrain memory"
+```
+
+Note: Manual `add-mcp-server` gives MCP tools only (search, browse). Episodic
+capture requires the direct `.claude-shared/settings.json` settings merge
+performed by the skill.
+
 ---
 
 ## LLM Rules
@@ -491,7 +543,7 @@ Not shipped to users.
 ## Prerequisites
 
 - Node >= 20
-- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and/or [OpenAI Codex](https://developers.openai.com/codex)
+- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), and/or [NanoClaw](https://nanoclaw.dev)
 - A MidBrain API key ([memory.midbrain.ai](https://memory.midbrain.ai))
 
 ## License

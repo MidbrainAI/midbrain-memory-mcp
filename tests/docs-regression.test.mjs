@@ -22,6 +22,7 @@ import path from "node:path";
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
 const SCRIPT_PATH = path.join(REPO_ROOT, "scripts", "check-pinned-spec.sh");
+const NANOCLAW_SKILL = path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md");
 
 // Match the grep regex inside scripts/check-pinned-spec.sh exactly.
 // Extended regex: npx.*--package=midbrain-memory-mcp[^space]*[space]+midbrain-memory-setup
@@ -113,6 +114,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       const names = files.map((file) => file.path);
       expect(names).toContain("plugins/codex/common.mjs");
       expect(names).toContain("plugins/codex/capture-user.mjs");
+      expect(names).toContain("skills/nanoclaw/SKILL.md");
       expect(names).not.toContain("tests/codex-hooks.test.mjs");
       expect(names.some((name) => name.startsWith("tasks/"))).toBe(false);
       expect(names.some((name) => name.includes(".midbrain-key"))).toBe(false);
@@ -159,4 +161,50 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       expect(doc).toContain("6,000");
     }
   });
+
+  it("D-13: NanoClaw skill is present in the repo", () => {
+    expect(fsSync.existsSync(NANOCLAW_SKILL)).toBe(true);
+  });
+
+  it("D-14: NanoClaw docs do not claim entrypoint bootstrapping as v1 design", async () => {
+    const docs = await readNanoClawDocs();
+    expect(docs).not.toMatch(/entrypoint/i);
+    expect(docs).not.toMatch(/every container boot/i);
+  });
+
+  it("D-15: NanoClaw docs agree on direct mounted settings merge", async () => {
+    const { readme, agents, skill } = await readNanoClawDocParts();
+    for (const text of [readme, agents, skill]) {
+      expect(text).toContain(".claude-shared/settings.json");
+      expect(text).toMatch(/direct/i);
+      expect(text).toMatch(/settings merge|merge.*settings/i);
+    }
+  });
+
+  it("D-16: NanoClaw skill requires group choice when multiple groups exist", async () => {
+    const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
+    expect(skill).toMatch(/multiple agent groups/i);
+    expect(skill).toMatch(/ask.*choose|choose.*group/i);
+    expect(skill).not.toMatch(/jq -r '\.\[0\]\.id'/);
+  });
+
+  it("D-17: NanoClaw skill tells agents to redact inline hook API keys", async () => {
+    const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
+    expect(skill).toMatch(/inline/i);
+    expect(skill).toMatch(/MIDBRAIN_API_KEY/);
+    expect(skill).toMatch(/redact/i);
+  });
 });
+
+async function readNanoClawDocParts() {
+  return {
+    readme: await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8"),
+    agents: await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8"),
+    skill: await fs.readFile(NANOCLAW_SKILL, "utf8"),
+  };
+}
+
+async function readNanoClawDocs() {
+  const { readme, agents, skill } = await readNanoClawDocParts();
+  return [readme, agents, skill].join("\n");
+}

@@ -43,6 +43,8 @@ const PATHS = {
   claudeJson:     path.join(HOME, ".claude.json"),
   codexConfig:    path.join(HOME, ".codex", "config.toml"),
   codexDir:       path.join(HOME, ".codex"),
+  nanoclawDocker: path.join(HOME, "nanoclaw-v2", "container", "Dockerfile"),
+  nanoclawSkills: path.join(HOME, "nanoclaw-v2", ".claude", "skills"),
 };
 
 describe("detectClients", () => {
@@ -56,11 +58,15 @@ describe("detectClients", () => {
   });
 
   it("registers Codex in allClients", () => {
-    expect(allClients().map((c) => c.id)).toEqual(["opencode", "claude", "codex"]);
+    expect(allClients().map((c) => c.id)).toEqual(["opencode", "claude", "codex", "nanoclaw"]);
   });
 
   it("returns Codex by id", () => {
     expect(getClient("codex").id).toBe("codex");
+  });
+
+  it("returns NanoClaw by id", () => {
+    expect(getClient("nanoclaw").id).toBe("nanoclaw");
   });
 
   it("detects only OpenCode when only OpenCode installed", () => {
@@ -89,6 +95,13 @@ describe("detectClients", () => {
     const clients = detectClients();
     expect(clients).toHaveLength(1);
     expect(clients[0].id).toBe("codex");
+  });
+
+  it("detects only NanoClaw when only NanoClaw markers exist", () => {
+    existsFor(PATHS.nanoclawDocker, PATHS.nanoclawSkills);
+    const clients = detectClients();
+    expect(clients).toHaveLength(1);
+    expect(clients[0].id).toBe("nanoclaw");
   });
 
   it("returns empty when nothing installed", () => {
