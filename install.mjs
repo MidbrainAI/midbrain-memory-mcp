@@ -234,7 +234,7 @@ async function writeRulesForMainMode(nonInteractive) {
       `MidBrain memory rules will be added to:\n  AGENTS.md\n  CLAUDE.md\nin ${cwd}. Proceed? [Y/n] `
     );
     if (answer.toLowerCase() === 'n') {
-      console.log('Skipped. Add rules manually — see README §LLM Rules.');
+      console.log('Skipped. Add rules manually — see README §Memory-First Agent Rules.');
       return;
     }
   }
