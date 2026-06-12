@@ -1,8 +1,8 @@
 # MidBrain Memory MCP
 
-Persistent AI memory for long running agents. An MCP server that gives LLMs
-long-term memory — semantic search, episodic recall, and per-project
-scoping — with automatic capture of every conversation.
+Persistent experience for long running agents. An MCP server that gives agents
+long-term memory through semantic search, episodic recall, and automatic capture
+that consolidates into procedural knowledge over time.
 
 Works with [OpenCode](https://opencode.ai),
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and
@@ -36,7 +36,7 @@ One command, done.
 ### 3. Restart and verify
 
 Restart OpenCode, Claude Code, or Codex. The `memory_search` tool should be
-available. Send a few messages, then search — your messages should appear.
+available. Send a few messages, then search; your messages should appear.
 
 ```sh
 # Quick version check (optional)
@@ -57,10 +57,10 @@ OpenCode / Claude Code / Codex session
                        (auto-capture)     /api/v1/memories/episodic
 ```
 
-**Search** — The LLM calls `memory_search` via MCP. The server queries the
+**Search**: The LLM calls `memory_search` via MCP. The server queries the
 API and returns scored results as formatted text.
 
-**Capture** — Companion hooks POST conversation events to the episodic
+**Capture**: Companion hooks POST conversation events to the episodic
 endpoint. Fire-and-forget, never blocks. OpenCode uses a Bun/TS plugin;
 Claude Code and Codex use standalone Node scripts wired to their hook
 systems. Codex captures prompts, assistant messages, plaintext reasoning
@@ -69,11 +69,15 @@ assistant capture stores the clean assistant answer separately from one
 bounded reasoning/commentary summary, so interim commentary does not create
 many standalone memories.
 
-**Procedural knowledge** — On user turns, hooks automatically search
+**Procedural knowledge**: On user turns, hooks automatically search
 `/api/v1/memories/search/procedural` for relevant learned procedures and
 prepend a bounded context block before the model runs. There is no manual
 MCP tool for procedural knowledge; agents should use the normal search tools
 and let hooks inject procedural context automatically.
+
+Over time, captured memory can consolidate into procedural knowledge: the
+experience layer that helps agents adapt how they work, not just recall what
+happened.
 
 Injected PK context is capped at 160 characters per title, 2,000 characters
 per entry body, and 6,000 characters total. Marker-like text in PK is escaped,
@@ -81,7 +85,7 @@ and trusted injected blocks include `ctx-meta nonce` metadata plus a signature
 over the PK ids so user-authored marker examples cannot spoof deduplication or
 strip prompt text.
 
-**Project Setup** — The LLM calls `memory_setup_project` via MCP to scope
+**Project Setup**: The LLM calls `memory_setup_project` via MCP to scope
 memory to a specific project, then tells the user to restart.
 
 ### MCP Tools
@@ -98,13 +102,52 @@ memory to a specific project, then tells the user to restart.
 
 ---
 
-## Per-Project Memory
+## Memory Setup
 
-By default, all memory goes to a single agent (your global key).
-Per-project setup scopes memory to a project-specific agent so each
-project has its own isolated memory space.
+MidBrain supports two useful memory scopes:
 
-### Option A: CLI (recommended)
+- **Global memory** is the default. It is good for your general working context:
+  preferences, common workflows, recurring collaborators, and things you want
+  available across clients and projects.
+- **Per-project memory** is an override for one repository or workspace. It is
+  good when a project needs its own isolated history, decisions, terminology,
+  or security boundary.
+
+Most people start with global setup. That gives OpenCode, Claude Code, Codex,
+and other configured clients one shared memory agent for day-to-day work.
+
+Use per-project setup when the project itself should have a separate memory
+agent. For example, you might use your global MidBrain key for general coding,
+but create a new MidBrain agent/key for a client repo. When that repo has
+`<project>/.midbrain/.midbrain-key`, MidBrain uses the project key there and
+falls back to your global key everywhere else.
+
+In practice:
+
+- Working in random scratch projects -> global memory is used.
+- Working inside `/work/acme-mobile` after project setup -> the Acme project
+  memory is used.
+- Leaving `/work/acme-mobile` -> your normal global memory is used again.
+
+This lets broad personal context and project-specific context coexist without
+mixing every project's conversation history into one memory space.
+
+### Global Memory
+
+Run the normal installer once to configure global memory:
+
+```sh
+npx midbrain-memory-mcp install
+```
+
+This is the right default for most users. It gives your configured clients one
+shared memory agent unless a project overrides it.
+
+### Per-Project Memory
+
+Use this when a repo needs its own isolated memory agent.
+
+#### Option A: CLI (recommended)
 
 ```sh
 # 1. Place your project API key
@@ -135,7 +178,7 @@ To manage project instruction files yourself, opt out:
 npx midbrain-memory-mcp install --project /absolute/path/to/project --no-rules
 ```
 
-### Option B: MCP Tool
+#### Option B: MCP Tool
 
 > **Warning:** Never paste your API key into a chat prompt. Place the key
 > in a file first (step 1 above), then ask the assistant to configure the
@@ -156,7 +199,7 @@ Restart after setup for the project memory to take effect.
 The MCP setup tool configures keys and MCP client files only. It does not write
 `AGENTS.md` or `CLAUDE.md`; rule injection through the MCP tool is deferred.
 
-### Option C: Manual
+#### Option C: Manual
 
 See [Configuration Reference](#configuration-reference) below for the
 full config format. Create the key file, add a project-level MCP config
@@ -168,28 +211,28 @@ with `MIDBRAIN_PROJECT_DIR`, and restart.
 
 The installer writes `npx -y midbrain-memory-mcp@latest` as the MCP
 command. This re-resolves the latest published version from the npm
-registry on every client cold start — when a new version ships, your
+registry on every client cold start. When a new version ships, your
 next restart picks it up automatically.
 
 | Spec form | Behavior |
 |---|---|
 | `midbrain-memory-mcp@latest` | Auto-updates on every cold start (recommended) |
-| `midbrain-memory-mcp@X.Y.Z` | Pinned — you are responsible for bumping |
-| `midbrain-memory-mcp` (bare) | Looks auto-updating but is sticky on first resolved version — avoid |
+| `midbrain-memory-mcp@X.Y.Z` | Pinned. You are responsible for bumping |
+| `midbrain-memory-mcp` (bare) | Looks auto-updating but is sticky on first resolved version. Avoid |
 
 ### Automatic Hook & Plugin Repair
 
 When the MCP server starts, it detects whether installed hooks and plugin
 files point to the current package location. If they are stale (e.g., the
 npm package resolved to a new cache directory), they are automatically
-repaired — no manual `install` needed. This covers:
+repaired. No manual `install` needed. This covers:
 
 - **Claude Code:** Rewrites hook paths in `~/.claude/settings.json`
 - **Codex:** Rewrites hook paths in `~/.codex/hooks.json`
 - **OpenCode:** Re-copies the plugin bundle to `~/.config/opencode/plugins/`
 
 Repair happens silently on startup (fire-and-forget, never blocks). If
-something goes wrong, the server continues normally — repair failures are
+something goes wrong, the server continues normally. Repair failures are
 logged to stderr but never crash the process.
 
 Run `npx -y midbrain-memory-mcp@latest --version` to check your resolved
@@ -211,8 +254,8 @@ version. The MCP server logs the resolved package version to stderr on startup.
 
 Keys are stored in files with `chmod 600`. The full resolution chain is
 owned by `BaseClient.resolveKey()` in `shared/clients/base.mjs`. All
-components — MCP server, OpenCode plugin, Claude Code hooks, and Codex hooks
-— obtain their key through `MidbrainApi.create(getClient(id), projectDir)`.
+components: MCP server, OpenCode plugin, Claude Code hooks, and Codex hooks
+obtain their key through `MidbrainApi.create(getClient(id), projectDir)`.
 Never read key files directly or implement resolution manually.
 
 Resolution order:
@@ -233,7 +276,7 @@ Resolution order:
 
 ### MCP Config Examples
 
-**OpenCode** — `~/.config/opencode/opencode.json` (global) or
+**OpenCode**: `~/.config/opencode/opencode.json` (global) or
 `<project>/opencode.json` (per-project):
 
 ```json
@@ -252,7 +295,7 @@ Resolution order:
 }
 ```
 
-**Claude Code** — `~/.claude.json` (global) or `<project>/.mcp.json`
+**Claude Code**: `~/.claude.json` (global) or `<project>/.mcp.json`
 (per-project):
 
 ```json
@@ -270,7 +313,7 @@ Resolution order:
 }
 ```
 
-**Codex** — `~/.codex/config.toml` (global) or
+**Codex**: `~/.codex/config.toml` (global) or
 `<project>/.codex/config.toml` (per-project):
 
 ```toml
@@ -301,12 +344,12 @@ to the Codex TOML env table.
 - All paths must be absolute. JSON does not expand `~`.
 - OpenCode uses `mcp`. Claude Code uses `mcpServers`. Codex uses
   `[mcp_servers.<id>]` TOML tables. Wrong key = silent failure.
-- MCP servers in `~/.claude/settings.json` are silently ignored — use `~/.claude.json`.
+- MCP servers in `~/.claude/settings.json` are silently ignored. Use `~/.claude.json`.
 
 ### NanoClaw
 
 NanoClaw runs Claude Code inside Docker containers. MidBrain integrates via
-NanoClaw's skill system — the installer copies a `/add-midbrain` skill that
+NanoClaw's skill system. The installer copies a `/add-midbrain` skill that
 handles group-scoped setup.
 
 **Install the skill:**
@@ -517,12 +560,12 @@ index.js                       MCP server (Node 20, plain JS, stdio)
 mcp.mjs                        MCP tool definitions (createServer factory)
 install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
-  midbrain-api.mjs             MidbrainApi class — ALL API calls go here
+  midbrain-api.mjs             MidbrainApi class: ALL API calls go here
   logger.mjs                   makeDebugLogger()
   plugin-entry.mjs             esbuild bundle entry point
   clients/
     utils.mjs                  Shared constants + utilities (deduplication)
-    base.mjs                   BaseClient — owns the full key resolution chain
+    base.mjs                   BaseClient: owns the full key resolution chain
     opencode.mjs               OpenCode adapter (JSONC config, plugin copy)
     claude.mjs                 Claude Code adapter (hooks, .mcp.json)
     codex.mjs                  Codex adapter (TOML config, hooks.json)
@@ -541,8 +584,8 @@ tests/                         vitest (unit, integration, installer, doc-regress
 ```
 
 **The shared client layer is the single source of truth** for key
-resolution and API access. Every component — MCP server tools, the
-OpenCode plugin, Claude Code hooks, and Codex hooks — must call
+resolution and API access. Every component, including MCP server tools, the
+OpenCode plugin, Claude Code hooks, and Codex hooks, must call
 `MidbrainApi.create(getClient(id), projectDir)`. Direct `fs.readFile`
 calls for key files or manual env var checks are forbidden.
 
