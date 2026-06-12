@@ -66,6 +66,18 @@ assistant capture stores the clean assistant answer separately from one
 bounded reasoning/commentary summary, so interim commentary does not create
 many standalone memories.
 
+**Procedural knowledge** — On user turns, hooks automatically search
+`/api/v1/memories/search/procedural` for relevant learned procedures and
+prepend a bounded context block before the model runs. There is no manual
+MCP tool for procedural knowledge; agents should use the normal search tools
+and let hooks inject procedural context automatically.
+
+Injected PK context is capped at 160 characters per title, 2,000 characters
+per entry body, and 6,000 characters total. Marker-like text in PK is escaped,
+and trusted injected blocks include `ctx-meta nonce` metadata plus a signature
+over the PK ids so user-authored marker examples cannot spoof deduplication or
+strip prompt text.
+
 **Project Setup** — The LLM calls `memory_setup_project` via MCP to scope
 memory to a specific project, then tells the user to restart.
 
@@ -79,7 +91,6 @@ memory to a specific project, then tells the user to restart.
 | `list_files` | Browse semantic memory documents |
 | `read_file` | Read a semantic memory document by line range |
 | `check_session_status` | Check for recent activity from other clients/sessions |
-| `procedural_knowledge` | List learned procedures and workflows |
 | `memory_setup_project` | Configure per-project memory scoping |
 
 ---
@@ -338,7 +349,6 @@ Add to your project's `AGENTS.md` or `CLAUDE.md`:
 - Use grep for exact pattern matches (names, IDs, code, URLs)
 - Use list_files and read_file to browse semantic memory documents
 - Use get_episodic_memories_by_date for conversation history by date
-- Use procedural_knowledge to recall learned procedures and workflows
 - When the user asks to "continue", "pick up where we left off", or similar,
   use get_episodic_memories_by_date with today's date to retrieve recent context.
 - If a tool response includes a recency hint about newer episodic memories on
@@ -346,6 +356,11 @@ Add to your project's `AGENTS.md` or `CLAUDE.md`:
   relevant to the user's current intent.
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
+- Procedural knowledge is injected automatically by hooks; do not call or
+  expect a manual procedural knowledge MCP tool. Injected PK blocks include
+  `ctx-meta nonce` trust metadata plus an id signature, and are capped at
+  160 title characters, 2,000 content characters per entry, and 6,000
+  characters total.
 - The only memory tools available are search and setup. Use them proactively.
 - When the user asks to set up MidBrain memory for a project, ALWAYS use the
   memory_setup_project tool. NEVER manually create key files or configs.
@@ -421,7 +436,7 @@ Auth: `Authorization: Bearer <key>` (except `/health`)
 | GET | `/api/v1/memories/episodic` | `?page=1&limit=100&start_date=...&end_date=...` | `{items, total, page, limit}` |
 | GET | `/api/v1/memories/semantic/files` | -- | `[{source, chunk_count}]` |
 | GET | `/api/v1/memories/semantic/files/{path}` | `?start_line=1&num_lines=200` | `{path, start_line, content}` |
-| GET | `/api/v1/memories/procedural` | -- | `[{id, title, content, source_ids, updated_at}]` |
+| GET | `/api/v1/memories/search/procedural` | `?query=...&limit=5&min_score=0.5&exclude_ids=...` | `[{id, title, content, source_ids, score}]` |
 | POST | `/api/v1/memories/episodic` | `{"text": "...", "role": "user\|assistant", "memory_metadata": {"client": "opencode"}}` | Created memory |
 | GET | `/health` | -- | `{"status": "ok"}` |
 

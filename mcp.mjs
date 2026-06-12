@@ -363,42 +363,6 @@ full context if needed.`,
     }
   );
 
-  // --- procedural_knowledge ---
-
-  server.tool(
-    "procedural_knowledge",
-    `List all procedural knowledge entries.
-
-Returns learned procedures, workflows, and how-to knowledge that has been
-consolidated from past interactions. Use this to recall established
-processes and techniques.`,
-    {},
-    async () => {
-      try {
-        const a = await createApi();
-        const results = await a.fetch(MidbrainApi.PROCEDURAL);
-
-        if (!Array.isArray(results) || results.length === 0) {
-          const hint = await peekRecency();
-          return { content: [{ type: "text", text: "No procedural knowledge entries found." + (hint || "") }] };
-        }
-
-        const lines = results.map((entry) => {
-          const sources = entry.source_ids?.length
-            ? ` (${entry.source_ids.length} sources)`
-            : "";
-          return `[${entry.id}] ${entry.title}${sources}\n  ${entry.content}`;
-        });
-
-        const hint = await peekRecency();
-        return { content: [{ type: "text", text: `Procedural knowledge (${results.length}):\n\n${lines.join("\n\n")}` + (hint || "") }] };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Failed to retrieve procedural knowledge: ${msg}` }] };
-      }
-    }
-  );
-
   // --- memory_setup_project ---
 
   server.tool(

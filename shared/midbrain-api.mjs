@@ -18,12 +18,17 @@ const API_V1 = `${API_BASE}/api/v1`;
 
 // Endpoint paths — internal, consumed via instance methods and static constants.
 const ENDPOINTS = {
-  SEARCH_SEMANTIC: `${API_V1}/memories/search/semantic`,
-  SEARCH_LEXICAL:  `${API_V1}/memories/search/lexical`,
-  EPISODIC:        `${API_V1}/memories/episodic`,
-  SEMANTIC_FILES:  `${API_V1}/memories/semantic/files`,
-  PROCEDURAL:      `${API_V1}/memories/procedural`,
+  SEARCH_SEMANTIC:   `${API_V1}/memories/search/semantic`,
+  SEARCH_LEXICAL:    `${API_V1}/memories/search/lexical`,
+  SEARCH_PROCEDURAL: `${API_V1}/memories/search/procedural`,
+  EPISODIC:          `${API_V1}/memories/episodic`,
+  SEMANTIC_FILES:    `${API_V1}/memories/semantic/files`,
+  PROCEDURAL:        `${API_V1}/memories/procedural`,
 };
+
+const PK_DEFAULT_LIMIT    = 5;
+const PK_DEFAULT_MIN_SCORE = 0.5;
+const PK_DEFAULT_TIMEOUT_MS = 2000;
 
 const DEFAULT_SEARCH_LIMIT = 10;
 
@@ -129,13 +134,50 @@ export class MidbrainApi {
     }
   }
 
+  /**
+   * Search procedural knowledge entries by semantic similarity.
+   * Hard timeout via AbortSignal.timeout — never throws, returns [] on any failure.
+   *
+   * @param {object} opts
+   * @param {string}   opts.query       - Natural language search query.
+   * @param {number}   [opts.limit]     - Max results (default 5).
+   * @param {number}   [opts.minScore]  - Minimum similarity threshold (default 0.5).
+   * @param {number[]} [opts.excludeIds] - Entry ids to skip (session dedup).
+   * @param {number}   [opts.timeoutMs] - Abort timeout in ms (default 2000).
+   * @returns {Promise<Array<{id:number,title:string,content:string,source_ids:number[],score:number}>>}
+   */
+  async searchProcedural({ query, limit, minScore, excludeIds, timeoutMs } = {}) {
+    try {
+      const url = new URL(ENDPOINTS.SEARCH_PROCEDURAL);
+      url.searchParams.set("query", query);
+      url.searchParams.set("limit",     String(limit     ?? PK_DEFAULT_LIMIT));
+      url.searchParams.set("min_score", String(minScore  ?? PK_DEFAULT_MIN_SCORE));
+      for (const id of (excludeIds ?? [])) {
+        url.searchParams.append("exclude_ids", String(id));
+      }
+
+      const response = await fetch(url.toString(), {
+        method:  "GET",
+        headers: { Authorization: `Bearer ${this.#key}` },
+        signal:  AbortSignal.timeout(timeoutMs ?? PK_DEFAULT_TIMEOUT_MS),
+      });
+
+      if (!response.ok) return [];
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
+  }
+
   // --- Static endpoint constants (for callers that build URLs directly) ---
 
-  static get SEARCH_SEMANTIC()  { return ENDPOINTS.SEARCH_SEMANTIC; }
-  static get SEARCH_LEXICAL()   { return ENDPOINTS.SEARCH_LEXICAL; }
-  static get EPISODIC()         { return ENDPOINTS.EPISODIC; }
-  static get SEMANTIC_FILES()   { return ENDPOINTS.SEMANTIC_FILES; }
-  static get PROCEDURAL()       { return ENDPOINTS.PROCEDURAL; }
+  static get SEARCH_SEMANTIC()    { return ENDPOINTS.SEARCH_SEMANTIC; }
+  static get SEARCH_LEXICAL()     { return ENDPOINTS.SEARCH_LEXICAL; }
+  static get SEARCH_PROCEDURAL()  { return ENDPOINTS.SEARCH_PROCEDURAL; }
+  static get EPISODIC()           { return ENDPOINTS.EPISODIC; }
+  static get SEMANTIC_FILES()     { return ENDPOINTS.SEMANTIC_FILES; }
+  static get PROCEDURAL()         { return ENDPOINTS.PROCEDURAL; }
   static get DEFAULT_SEARCH_LIMIT() { return DEFAULT_SEARCH_LIMIT; }
-  static get API_BASE_URL()     { return API_BASE; }
+  static get API_BASE_URL()       { return API_BASE; }
 }

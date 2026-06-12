@@ -5,10 +5,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { spawnSync } from "node:child_process";
+import fsSync from "node:fs";
 import path from "path";
 import os from "os";
+import { fileURLToPath } from "node:url";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { formatPkContext } from "../shared/pk-inject.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -41,6 +45,8 @@ const { Claude } = await import("../shared/clients/claude.mjs");
 
 const HOME = os.homedir();
 const MCP_KEY = "midbrain-memory";
+const __filename = fileURLToPath(import.meta.url);
+const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
 
 const PATHS = {
   claudeKey:      path.join(HOME, ".config", "claude", ".midbrain-key"),
@@ -279,7 +285,142 @@ describe("Claude.installGlobal", () => {
     expect(stopHook.command).toContain("capture-assistant.mjs");
     expect(userHook.type).toBe("command");
     expect(userHook.timeout).toBe(10);
-    expect(userHook.async).toBe(true);
+    expect(userHook.async).not.toBe(true);
+    expect(stopHook.async).toBe(true);
+  });
+});
+
+// ===================================================================
+// capture-user hook stdout contract
+// ===================================================================
+
+describe("Claude capture-user hook wrapper", () => {
+  function tempHomeWithKey() {
+    const home = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-hook-home-"));
+    const keyDir = path.join(home, ".config", "midbrain");
+    fsSync.mkdirSync(keyDir, { recursive: true });
+    fsSync.writeFileSync(path.join(keyDir, ".midbrain-key"), "test-key\n", { mode: 0o600 });
+    return home;
+  }
+
+  function preload(mode) {
+    const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-hook-preload-"));
+    const file = path.join(dir, "fetch-preload.mjs");
+    fsSync.writeFileSync(file, `
+      globalThis.fetch = async (url) => {
+        const text = String(url);
+        if (${JSON.stringify(mode)} === "throw") throw new Error("network down");
+        if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
+        if (text.includes("/memories/search/procedural")) {
+          const body = ${JSON.stringify(mode)} === "match"
+            ? [{ id: 42, title: "Workflow", content: "Use the checklist" }]
+            : [];
+          return { ok: true, status: 200, json: async () => body };
+        }
+        return { ok: false, status: 404, text: async () => "not found" };
+      };
+    `);
+    return { dir, file };
+  }
+
+  function runHook(input, { mode = "empty", home = tempHomeWithKey() } = {}) {
+    const loaded = preload(mode);
+    const result = spawnSync(process.execPath, [
+      "--import", loaded.file,
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-user.mjs"),
+    ], {
+      input: JSON.stringify(input),
+      encoding: "utf8",
+      env: { ...process.env, HOME: home },
+    });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+    return result;
+  }
+
+  it("emits hookSpecificOutput.additionalContext when PK matches", () => {
+    const result = runHook({ prompt: "workflow please", cwd: "/repo" }, { mode: "match" });
+
+    expect(result.status).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(payload.hookSpecificOutput.additionalContext).toContain("<!-- mb:ctx-start -->");
+    expect(payload.hookSpecificOutput.additionalContext).toContain("Workflow");
+  });
+
+  it("emits no stdout when no PK matches", () => {
+    const result = runHook({ prompt: "unrelated", cwd: "/repo" }, { mode: "empty" });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
+  it("fails open with no stdout when the API fails", () => {
+    const result = runHook({ prompt: "workflow please", cwd: "/repo" }, { mode: "throw" });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
+  it("fails open with no stdout when no key is configured", () => {
+    const home = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-hook-no-key-"));
+    const result = runHook({ prompt: "workflow please", cwd: "/repo" }, { mode: "match", home });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    fsSync.rmSync(home, { recursive: true, force: true });
+  });
+});
+
+// ===================================================================
+// capture-assistant hook storage contract
+// ===================================================================
+
+describe("Claude capture-assistant hook wrapper", () => {
+  function tempHomeWithKey() {
+    const home = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-home-"));
+    const keyDir = path.join(home, ".config", "midbrain");
+    fsSync.mkdirSync(keyDir, { recursive: true });
+    fsSync.writeFileSync(path.join(keyDir, ".midbrain-key"), "test-key\n", { mode: 0o600 });
+    return home;
+  }
+
+  function preload(logPath) {
+    const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-preload-"));
+    const file = path.join(dir, "fetch-preload.mjs");
+    fsSync.writeFileSync(file, `
+      import fs from "node:fs";
+      globalThis.fetch = async (_url, opts = {}) => {
+        if (opts.body) fs.appendFileSync(${JSON.stringify(logPath)}, opts.body + "\\n");
+        return { ok: true, status: 201 };
+      };
+    `);
+    return { dir, file };
+  }
+
+  it("scrubs echoed injected PK blocks before storing assistant memory", () => {
+    const home = tempHomeWithKey();
+    const logPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-")), "fetch.jsonl");
+    const loaded = preload(logPath);
+    const block = formatPkContext([{ id: 33, title: "Claude Echo", content: "do not store" }]);
+
+    const result = spawnSync(process.execPath, [
+      "--import", loaded.file,
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
+    ], {
+      input: JSON.stringify({ last_assistant_message: `${block}\n\nVisible response`, cwd: "/repo" }),
+      encoding: "utf8",
+      env: { ...process.env, HOME: home },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    const [body] = fsSync.readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(body.text).toBe("Visible response");
+    expect(body.text).not.toContain("Claude Echo");
+    expect(body.text).not.toContain("<!-- mb:pk 33 -->");
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
   });
 });
 

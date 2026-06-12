@@ -29,6 +29,15 @@ const NANOCLAW_SKILL = path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md");
 const SIXTY_CHAR_FORM =
   /npx.*--package=midbrain-memory-mcp\S*\s+midbrain-memory-setup/;
 
+function toolNamesFromMcp(source) {
+  return [...source.matchAll(/server\.tool\(\s*["']([^"']+)["']/g)].map((match) => match[1]);
+}
+
+function toolNamesFromReadme(readme) {
+  const section = readme.split("### MCP Tools")[1].split("## Per-Project Memory")[0];
+  return [...section.matchAll(/\| `([^`]+)` \|/g)].map((match) => match[1]);
+}
+
 describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
   it("D-1: README.md contains no 60-char install form", async () => {
     const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
@@ -114,17 +123,56 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     }
   });
 
-  it("D-9: NanoClaw skill is present in the repo", () => {
+  it("D-9: README MCP tool table matches the seven-tool server surface", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const mcp = await fs.readFile(path.join(REPO_ROOT, "mcp.mjs"), "utf8");
+    const readmeTools = toolNamesFromReadme(readme).sort();
+    const serverTools = toolNamesFromMcp(mcp).sort();
+
+    expect(serverTools).toHaveLength(7);
+    expect(readmeTools).toEqual(serverTools);
+    expect(readmeTools).not.toContain("procedural_knowledge");
+  });
+
+  it("D-10: memory rules do not instruct agents to call removed procedural_knowledge", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+
+    expect(readme).not.toContain("Use procedural_knowledge");
+    expect(agents).not.toContain("Use procedural_knowledge");
+  });
+
+  it("D-11: README documents the procedural search endpoint, not the removed list endpoint", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+
+    expect(readme).toContain("/api/v1/memories/search/procedural");
+    expect(readme).not.toContain("/api/v1/memories/procedural");
+  });
+
+  it("D-12: docs describe PK trust metadata and payload limits", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+
+    for (const doc of [readme, agents]) {
+      expect(doc).toContain("ctx-meta nonce");
+      expect(doc).toContain("signature");
+      expect(doc).toContain("160");
+      expect(doc).toContain("2,000");
+      expect(doc).toContain("6,000");
+    }
+  });
+
+  it("D-13: NanoClaw skill is present in the repo", () => {
     expect(fsSync.existsSync(NANOCLAW_SKILL)).toBe(true);
   });
 
-  it("D-10: NanoClaw docs do not claim entrypoint bootstrapping as v1 design", async () => {
+  it("D-14: NanoClaw docs do not claim entrypoint bootstrapping as v1 design", async () => {
     const docs = await readNanoClawDocs();
     expect(docs).not.toMatch(/entrypoint/i);
     expect(docs).not.toMatch(/every container boot/i);
   });
 
-  it("D-11: NanoClaw docs agree on direct mounted settings merge", async () => {
+  it("D-15: NanoClaw docs agree on direct mounted settings merge", async () => {
     const { readme, agents, skill } = await readNanoClawDocParts();
     for (const text of [readme, agents, skill]) {
       expect(text).toContain(".claude-shared/settings.json");
@@ -133,14 +181,14 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     }
   });
 
-  it("D-12: NanoClaw skill requires group choice when multiple groups exist", async () => {
+  it("D-16: NanoClaw skill requires group choice when multiple groups exist", async () => {
     const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
     expect(skill).toMatch(/multiple agent groups/i);
     expect(skill).toMatch(/ask.*choose|choose.*group/i);
     expect(skill).not.toMatch(/jq -r '\.\[0\]\.id'/);
   });
 
-  it("D-13: NanoClaw skill tells agents to redact inline hook API keys", async () => {
+  it("D-17: NanoClaw skill tells agents to redact inline hook API keys", async () => {
     const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
     expect(skill).toMatch(/inline/i);
     expect(skill).toMatch(/MIDBRAIN_API_KEY/);

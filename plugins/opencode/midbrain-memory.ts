@@ -2,6 +2,9 @@
  * MidBrain Memory OpenCode Plugin
  *
  * Episodic auto-capture: every user + assistant message stored automatically.
+ * PK injection: on each user turn, relevant procedural knowledge entries are
+ * searched and prepended to the message as a context block before the LLM
+ * sees it. 2s hard timeout — on failure the message passes through unchanged.
  * memory_search lives in the MCP server (index.js), not here.
  *
  * Architecture:
@@ -13,11 +16,59 @@
  * - Exactly 1 API POST per message (no backlog dumps, no history scans)
  * - Directory-based instance filtering (only matching instance processes)
  * - Fire-and-forget: never blocks chat on API response
+ * - PK injection: silent fallthrough on any error or timeout
  */
 
 import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
-import { MidbrainApi, makeDebugLogger, getClient } from "./midbrain-shared.mjs";
+import { MidbrainApi, makeDebugLogger, getClient, extractInjectedPkIds, formatPkContext, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
+
+export const OPENCODE_HISTORY_TIMEOUT_MS = 500;
+
+type OpenCodePart = { type: string; text?: string };
+type OpenCodeMessage = { parts?: OpenCodePart[] };
+
+export function normalizeHistoryMessages(history: unknown): OpenCodeMessage[] {
+  if (Array.isArray(history)) return history as OpenCodeMessage[];
+  const data = (history as { data?: unknown } | null)?.data;
+  return Array.isArray(data) ? data as OpenCodeMessage[] : [];
+}
+
+export function textPartsFromMessages(messages: OpenCodeMessage[]): string[] {
+  return messages.flatMap((m) =>
+    (m.parts ?? [])
+      .filter((p) => p.type === "text" && typeof p.text === "string")
+      .map((p) => p.text ?? "")
+  );
+}
+
+export async function fetchPriorMessageTexts(
+  client: { session: { messages: (args: { path: { id: string } }) => Promise<unknown> } },
+  sessionID: string,
+  timeoutMs = OPENCODE_HISTORY_TIMEOUT_MS,
+): Promise<string[]> {
+  try {
+    const history = await withTimeout(
+      client.session.messages({ path: { id: sessionID } }),
+      timeoutMs,
+    );
+    return textPartsFromMessages(normalizeHistoryMessages(history));
+  } catch {
+    return [];
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("OpenCode history fetch timed out")), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 // --- Plugin ---
 
@@ -40,7 +91,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
   return {
     // --- User messages: captured directly from hook (parts are inline) ---
-    "chat.message": async (_input, output) => {
+    "chat.message": async (input, output) => {
       const msg = output.message as Record<string, unknown>;
       const messageID = msg.id as string;
       const parts = output.parts as Array<{ type: string; text?: string }>;
@@ -56,6 +107,37 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
       debugLog(`USER: id=${messageID} len=${text.length}`);
       storedMessages.add(messageID);
       api.storeEpisodic(text, "user", debugLog, { client: "opencode" });
+
+      // PK injection: search for relevant procedural knowledge, prepend as context block.
+      // 2s timeout via AbortSignal.timeout inside searchProcedural — silent fallthrough.
+      try {
+        const sessionID = (input as Record<string, unknown>).sessionID as string | undefined;
+        let excludeIds: number[] = [];
+
+        if (sessionID) {
+          const priorTexts = await fetchPriorMessageTexts(client, sessionID);
+          excludeIds = extractInjectedPkIds(priorTexts);
+        }
+
+        const entries = await api.searchProcedural({ query: text, excludeIds });
+        if (entries.length > 0) {
+          const ctxBlock = formatPkContext(entries);
+          // Strip any stale block from the first text part, then prepend fresh block
+          const firstTextIdx = parts.findIndex(
+            (p: { type: string }) => p.type === "text"
+          );
+          if (firstTextIdx !== -1) {
+            const stripped = stripInjectedContext(parts[firstTextIdx].text ?? "");
+            parts[firstTextIdx] = { ...parts[firstTextIdx], text: ctxBlock + "\n\n" + stripped };
+          } else {
+            parts.unshift({ type: "text", text: ctxBlock });
+          }
+          debugLog(`PK: injected ${entries.length} entries ids=${entries.map((e: { id: number }) => e.id).join(",")}`);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        debugLog(`PK INJECT ERROR: ${msg}`);
+      }
     },
 
     // --- Assistant messages: captured when message.updated shows completion ---
@@ -107,8 +189,11 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
           return;
         }
 
-        debugLog(`ASSISTANT: storing id=${msgID} len=${text.length}`);
-        api.storeEpisodic(text, "assistant", debugLog, { client: "opencode" });
+        const safeText = scrubInjectedPkContext(text);
+        if (!safeText) return;
+
+        debugLog(`ASSISTANT: storing id=${msgID} len=${safeText.length}`);
+        api.storeEpisodic(safeText, "assistant", debugLog, { client: "opencode" });
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         debugLog(`ASSISTANT ERROR: ${errMsg}`);

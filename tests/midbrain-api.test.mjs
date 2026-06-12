@@ -16,7 +16,7 @@ describe("MidbrainApi constants", () => {
 
   it("all endpoints start with API_BASE_URL", () => {
     const base = MidbrainApi.API_BASE_URL.replace(/[/.]/g, "\\$&");
-    for (const ep of [MidbrainApi.SEARCH_SEMANTIC, MidbrainApi.SEARCH_LEXICAL, MidbrainApi.EPISODIC, MidbrainApi.SEMANTIC_FILES]) {
+    for (const ep of [MidbrainApi.SEARCH_SEMANTIC, MidbrainApi.SEARCH_LEXICAL, MidbrainApi.EPISODIC, MidbrainApi.SEMANTIC_FILES, MidbrainApi.SEARCH_PROCEDURAL]) {
       expect(ep).toMatch(new RegExp(`^${base}`));
     }
   });
@@ -129,6 +129,124 @@ describe("MidbrainApi.storeEpisodic", () => {
 
     await expect(api.storeEpisodic("msg", "user", log)).resolves.toBe(false);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR: status=503"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// searchProcedural
+// ---------------------------------------------------------------------------
+
+describe("MidbrainApi.searchProcedural", () => {
+  let fetchSpy;
+  let api;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    api = new MidbrainApi("test-key", "test-source");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  const MOCK_RESULTS = [
+    { id: 1, title: "Python", content: "use ruff", source_ids: [], score: 0.9 },
+    { id: 3, title: "DevOps", content: "pin images", source_ids: [5], score: 0.7 },
+  ];
+
+  function okJson(body) {
+    return Promise.resolve({ ok: true, status: 200, json: async () => body });
+  }
+
+  it("GETs the search/procedural endpoint with query, limit, min_score", async () => {
+    fetchSpy.mockReturnValueOnce(okJson(MOCK_RESULTS));
+    await api.searchProcedural({ query: "python linting", limit: 3, minScore: 0.6 });
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const [url] = fetchSpy.mock.calls[0];
+    const parsed = new URL(url);
+    expect(parsed.pathname).toBe("/api/v1/memories/search/procedural");
+    expect(parsed.searchParams.get("query")).toBe("python linting");
+    expect(parsed.searchParams.get("limit")).toBe("3");
+    expect(parsed.searchParams.get("min_score")).toBe("0.6");
+  });
+
+  it("sends Authorization header with Bearer token", async () => {
+    fetchSpy.mockReturnValueOnce(okJson(MOCK_RESULTS));
+    await api.searchProcedural({ query: "test" });
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers.Authorization).toBe("Bearer test-key");
+  });
+
+  it("appends exclude_ids as repeated query params", async () => {
+    fetchSpy.mockReturnValueOnce(okJson([]));
+    await api.searchProcedural({ query: "test", excludeIds: [1, 3, 7] });
+
+    const [url] = fetchSpy.mock.calls[0];
+    const parsed = new URL(url);
+    expect(parsed.searchParams.getAll("exclude_ids")).toEqual(["1", "3", "7"]);
+  });
+
+  it("omits exclude_ids param when array is empty", async () => {
+    fetchSpy.mockReturnValueOnce(okJson([]));
+    await api.searchProcedural({ query: "test", excludeIds: [] });
+
+    const [url] = fetchSpy.mock.calls[0];
+    const parsed = new URL(url);
+    expect(parsed.searchParams.getAll("exclude_ids")).toEqual([]);
+  });
+
+  it("uses default limit=5 and min_score=0.5 when not specified", async () => {
+    fetchSpy.mockReturnValueOnce(okJson([]));
+    await api.searchProcedural({ query: "anything" });
+
+    const [url] = fetchSpy.mock.calls[0];
+    const parsed = new URL(url);
+    expect(parsed.searchParams.get("limit")).toBe("5");
+    expect(parsed.searchParams.get("min_score")).toBe("0.5");
+  });
+
+  it("returns parsed results on success", async () => {
+    fetchSpy.mockReturnValueOnce(okJson(MOCK_RESULTS));
+    const results = await api.searchProcedural({ query: "python" });
+    expect(results).toEqual(MOCK_RESULTS);
+  });
+
+  it("returns empty array on non-OK response (never throws)", async () => {
+    fetchSpy.mockReturnValueOnce(
+      Promise.resolve({ ok: false, status: 503, text: async () => "error" })
+    );
+    const results = await api.searchProcedural({ query: "test" });
+    expect(results).toEqual([]);
+  });
+
+  it("returns empty array when fetch throws a network error (never throws)", async () => {
+    fetchSpy.mockRejectedValueOnce(new Error("network down"));
+    const results = await api.searchProcedural({ query: "test" });
+    expect(results).toEqual([]);
+  });
+
+  it("returns empty array when fetch is aborted (timeout) (never throws)", async () => {
+    const err = new DOMException("signal timed out", "TimeoutError");
+    fetchSpy.mockRejectedValueOnce(err);
+    const results = await api.searchProcedural({ query: "test" });
+    expect(results).toEqual([]);
+  });
+
+  it("passes AbortSignal.timeout to fetch", async () => {
+    fetchSpy.mockReturnValueOnce(okJson([]));
+    await api.searchProcedural({ query: "test", timeoutMs: 2000 });
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.signal).toBeDefined();
+    // AbortSignal.timeout returns an AbortSignal instance
+    expect(typeof opts.signal.aborted).toBe("boolean");
+  });
+
+  it("SEARCH_PROCEDURAL static getter returns the correct URL", () => {
+    expect(MidbrainApi.SEARCH_PROCEDURAL).toContain("/memories/search/procedural");
+    expect(MidbrainApi.SEARCH_PROCEDURAL).toMatch(/^https:\/\//);
   });
 });
 
