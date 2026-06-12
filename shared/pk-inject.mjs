@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 /**
  * shared/pk-inject.mjs
  *
@@ -24,6 +26,8 @@ const CTX_BLOCK_RE  = new RegExp(
   "g"
 );
 const PK_HEADER = "## Procedural knowledge:";
+const PK_CONTEXT_NONCE = randomUUID();
+const PK_META_PREFIX = "<!-- mb:ctx-meta nonce=";
 const HTML_COMMENT_START_RE = /<!--/g;
 const HTML_COMMENT_END_RE = /-->/g;
 
@@ -55,6 +59,15 @@ function isTrustedBlock(block) {
   return block.startsWith(CONTEXT_MARKER_START) &&
     block.endsWith(CONTEXT_MARKER_END) &&
     block.includes(PK_HEADER) &&
+    block.includes(`${PK_META_PREFIX}${PK_CONTEXT_NONCE} -->`) &&
+    PK_MARKER_RE.test(block);
+}
+
+function isPkLikeBlock(block) {
+  PK_MARKER_RE.lastIndex = 0;
+  return block.startsWith(CONTEXT_MARKER_START) &&
+    block.endsWith(CONTEXT_MARKER_END) &&
+    block.includes(PK_HEADER) &&
     PK_MARKER_RE.test(block);
 }
 
@@ -72,7 +85,7 @@ function extractIdsFromTrustedBlock(block, ids) {
 function buildBlock(entries) {
   const ids = entries.map((e) => e.id).join(",");
   const sections = entries.map((e) => `### ${e.title}\n${e.content}`).join("\n\n");
-  const inner = `${PK_HEADER}\n<!-- mb:pk ${ids} -->\n${sections}`;
+  const inner = `${PK_HEADER}\n${PK_META_PREFIX}${PK_CONTEXT_NONCE} -->\n<!-- mb:pk ${ids} -->\n${sections}`;
   return `${CONTEXT_MARKER_START}\n${inner}\n${CONTEXT_MARKER_END}`;
 }
 
@@ -80,7 +93,7 @@ function capContext(entries) {
   let block = buildBlock(entries);
   if (block.length <= PK_CONTEXT_MAX_CHARS) return block;
   const ids = entries.map((e) => e.id).join(",");
-  const prefix = `${CONTEXT_MARKER_START}\n${PK_HEADER}\n<!-- mb:pk ${ids} -->\n`;
+  const prefix = `${CONTEXT_MARKER_START}\n${PK_HEADER}\n${PK_META_PREFIX}${PK_CONTEXT_NONCE} -->\n<!-- mb:pk ${ids} -->\n`;
   const suffix = `${PK_TRUNCATION_MARKER}\n${CONTEXT_MARKER_END}`;
   const maxBody = Math.max(0, PK_CONTEXT_MAX_CHARS - prefix.length - suffix.length);
   const body = entries.map((e) => `### ${e.title}\n${e.content}`).join("\n\n");
@@ -143,5 +156,8 @@ export function stripInjectedContext(text) {
  */
 export function scrubInjectedPkContext(text) {
   PK_MARKER_RE.lastIndex = 0;
-  return stripInjectedContext(text).replace(PK_MARKER_RE, "").trim();
+  const stripped = String(text ?? "").replace(CTX_BLOCK_RE, (block) =>
+    isPkLikeBlock(block) ? "" : block
+  );
+  return stripped.replace(PK_MARKER_RE, "").trim();
 }
