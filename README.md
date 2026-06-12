@@ -204,7 +204,7 @@ version. The MCP server logs the resolved package version to stderr on startup.
 |---|---|---|
 | `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, or `codex`) | MCP config `environment`/`env` block |
 | `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution | Project-level MCP config |
-| `MIDBRAIN_API_KEY` | API key (CI/debug fallback only) | User environment |
+| `MIDBRAIN_API_KEY` | API key for CI/debug environments | User environment |
 
 ### API Key Resolution
 
@@ -548,6 +548,42 @@ In development, this resolves to a 5-line re-export shim. At install time,
 the esbuild bundle (`dist/midbrain-shared.mjs`) is copied in its place.
 Only 2 files are ever copied to `~/.config/opencode/plugins/` regardless of
 how many modules exist in `shared/`.
+
+### Adding a Client
+
+New client support should be added through the shared adapter layer, not by
+branching inside MCP tools or hook scripts.
+
+1. **Create an adapter.** Add `shared/clients/<client>.mjs` extending
+   `BaseClient`. Implement `id`, `displayName`, `isInstalled()`,
+   `resolveClientKey()`, `writeKey()`, `installGlobal()`, `installProject()`,
+   and `projectConfigFiles()`.
+2. **Register it.** Import and instantiate the adapter in
+   `shared/clients/registry.mjs`. The installer and MCP server should continue
+   to call `getClient(id)`, `detectClients()`, and `allClients()` rather than
+   introducing ad hoc client branches.
+3. **Use shared key resolution.** Do not read `.midbrain-key` files directly and
+   do not manually fall back through environment variables. Key resolution
+   belongs in `BaseClient.resolveKey()`. Runtime code should call
+   `MidbrainApi.create(getClient('<client>'), projectDir)`.
+4. **Write configs idempotently.** Global install should wire the client MCP
+   server and capture hooks/plugins. Project install should write only the
+   project-scoped config files needed for `MIDBRAIN_PROJECT_DIR`, preserving
+   comments and existing settings when that client's format supports it.
+5. **Choose a capture surface.** Use a plugin when the client exposes a runtime
+   message hook (OpenCode). Use hook scripts when the client exposes lifecycle
+   hooks (Claude Code, Codex). Capture must be fire-and-forget and must not
+   block the chat on API responses.
+6. **Package runtime files.** Add any new plugin, hook, or skill directory to
+   `package.json#files` if it is not already covered. Verify with
+   `npm pack --dry-run`.
+7. **Test it.** Add `tests/client-<client>.test.mjs`, installer tests for
+   global/project config writes, MCP coexistence tests when setup behavior is
+   touched, and hook/plugin runtime tests for stdout safety, key resolution,
+   capture, and procedural-knowledge injection.
+8. **Document it.** Update the client matrix, setup notes, troubleshooting, and
+   this architecture section. Do not document support until installer wiring,
+   runtime capture, tests, and package contents are all present.
 
 ### Dependencies
 
