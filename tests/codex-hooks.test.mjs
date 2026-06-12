@@ -14,6 +14,7 @@ import {
   captureToolUse,
   captureUser,
 } from "../plugins/codex/common.mjs";
+import { formatPkContext } from "../shared/pk-inject.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -115,6 +116,17 @@ describe("Codex hook capture", () => {
       deps.debugLog,
       { client: "codex" },
     ]);
+  });
+
+  it("captureAssistant scrubs echoed injected PK blocks before storage", async () => {
+    const block = formatPkContext([{ id: 8, title: "Secret Workflow", content: "Do the hidden step" }]);
+
+    await captureAssistant({ last_assistant_message: `${block}\n\nFinal answer`, cwd: "/repo" }, deps);
+
+    const [stored] = firstStore(deps);
+    expect(stored).toBe("Final answer");
+    expect(stored).not.toContain("Secret Workflow");
+    expect(stored).not.toContain("<!-- mb:pk 8 -->");
   });
 
   it("captureAssistant skips recursive Stop hook turns", async () => {

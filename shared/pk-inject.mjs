@@ -133,3 +133,15 @@ export function stripInjectedContext(text) {
     isTrustedBlock(block) ? "" : block
   ).trim();
 }
+
+/**
+ * Remove trusted injected PK blocks and standalone PK id markers before
+ * storing assistant-authored text back into episodic memory.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function scrubInjectedPkContext(text) {
+  PK_MARKER_RE.lastIndex = 0;
+  return stripInjectedContext(text).replace(PK_MARKER_RE, "").trim();
+}

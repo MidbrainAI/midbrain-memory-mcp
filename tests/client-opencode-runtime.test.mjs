@@ -16,6 +16,7 @@ import { existsSync } from "fs";
 import os from "os";
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
+import { formatPkContext } from "../shared/pk-inject.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -166,5 +167,45 @@ describe("OpenCode plugin PK delivery helpers", () => {
     expect(output.parts[0].text).toContain("How does OpenCode deliver context?");
     const [searchUrl] = fetchSpy.mock.calls.find(([url]) => String(url).includes("/search/procedural"));
     expect(new URL(searchUrl).searchParams.getAll("exclude_ids")).toEqual([]);
+  });
+
+  it("scrubs injected PK echoes before storing assistant messages", async () => {
+    const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const block = formatPkContext([{ id: 13, title: "Echo Risk", content: "do not store me" }]);
+    const client = {
+      session: {
+        messages: vi.fn().mockResolvedValue([]),
+        message: vi.fn().mockResolvedValue({
+          data: {
+            parts: [{ type: "text", text: `${block}\n\nVisible answer` }],
+          },
+        }),
+      },
+    };
+    const hooks = await MidBrainMemoryPlugin({ client, directory: "/repo" });
+
+    await hooks.event({
+      event: {
+        type: "message.updated",
+        properties: {
+          info: {
+            id: "assistant-1",
+            role: "assistant",
+            sessionID: "session-1",
+            time: { completed: Date.now() },
+            path: { cwd: "/repo" },
+          },
+        },
+      },
+    });
+
+    await vi.waitFor(() => {
+      const episodicCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/memories/episodic"));
+      expect(episodicCall).toBeDefined();
+      const body = JSON.parse(episodicCall[1].body);
+      expect(body.text).toBe("Visible answer");
+      expect(body.text).not.toContain("Echo Risk");
+      expect(body.text).not.toContain("<!-- mb:pk 13 -->");
+    });
   });
 });

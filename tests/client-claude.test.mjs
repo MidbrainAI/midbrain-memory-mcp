@@ -12,6 +12,7 @@ import os from "os";
 import { fileURLToPath } from "node:url";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { formatPkContext } from "../shared/pk-inject.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -367,6 +368,59 @@ describe("Claude capture-user hook wrapper", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
     fsSync.rmSync(home, { recursive: true, force: true });
+  });
+});
+
+// ===================================================================
+// capture-assistant hook storage contract
+// ===================================================================
+
+describe("Claude capture-assistant hook wrapper", () => {
+  function tempHomeWithKey() {
+    const home = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-home-"));
+    const keyDir = path.join(home, ".config", "midbrain");
+    fsSync.mkdirSync(keyDir, { recursive: true });
+    fsSync.writeFileSync(path.join(keyDir, ".midbrain-key"), "test-key\n", { mode: 0o600 });
+    return home;
+  }
+
+  function preload(logPath) {
+    const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-preload-"));
+    const file = path.join(dir, "fetch-preload.mjs");
+    fsSync.writeFileSync(file, `
+      import fs from "node:fs";
+      globalThis.fetch = async (_url, opts = {}) => {
+        if (opts.body) fs.appendFileSync(${JSON.stringify(logPath)}, opts.body + "\\n");
+        return { ok: true, status: 201 };
+      };
+    `);
+    return { dir, file };
+  }
+
+  it("scrubs echoed injected PK blocks before storing assistant memory", () => {
+    const home = tempHomeWithKey();
+    const logPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-")), "fetch.jsonl");
+    const loaded = preload(logPath);
+    const block = formatPkContext([{ id: 33, title: "Claude Echo", content: "do not store" }]);
+
+    const result = spawnSync(process.execPath, [
+      "--import", loaded.file,
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
+    ], {
+      input: JSON.stringify({ last_assistant_message: `${block}\n\nVisible response`, cwd: "/repo" }),
+      encoding: "utf8",
+      env: { ...process.env, HOME: home },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    const [body] = fsSync.readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(body.text).toBe("Visible response");
+    expect(body.text).not.toContain("Claude Echo");
+    expect(body.text).not.toContain("<!-- mb:pk 33 -->");
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
   });
 });
 

@@ -9,6 +9,7 @@
  */
 
 import { readStdinJSON, createApi, debugLog } from "./common.mjs";
+import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 try {
   const input = await readStdinJSON();
@@ -25,5 +26,6 @@ try {
     process.exit(0);
   }
 
-  api.storeEpisodic(input.last_assistant_message, "assistant", debugLog, { client: "claude" });
+  const text = scrubInjectedPkContext(input.last_assistant_message);
+  if (text) api.storeEpisodic(text, "assistant", debugLog, { client: "claude" });
 } catch { /* fail silently */ }

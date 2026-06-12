@@ -11,4 +11,4 @@
 export { MidbrainApi } from './midbrain-api.mjs';
 export { makeDebugLogger } from './logger.mjs';
 export { getClient } from './clients/registry.mjs';
-export { extractInjectedPkIds, formatPkContext, stripInjectedContext } from './pk-inject.mjs';
+export { extractInjectedPkIds, formatPkContext, stripInjectedContext, scrubInjectedPkContext } from './pk-inject.mjs';

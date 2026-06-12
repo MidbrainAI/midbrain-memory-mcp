@@ -21,7 +21,7 @@
 
 import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
-import { MidbrainApi, makeDebugLogger, getClient, extractInjectedPkIds, formatPkContext, stripInjectedContext } from "./midbrain-shared.mjs";
+import { MidbrainApi, makeDebugLogger, getClient, extractInjectedPkIds, formatPkContext, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
 
 export const OPENCODE_HISTORY_TIMEOUT_MS = 500;
 
@@ -189,8 +189,11 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
           return;
         }
 
-        debugLog(`ASSISTANT: storing id=${msgID} len=${text.length}`);
-        api.storeEpisodic(text, "assistant", debugLog, { client: "opencode" });
+        const safeText = scrubInjectedPkContext(text);
+        if (!safeText) return;
+
+        debugLog(`ASSISTANT: storing id=${msgID} len=${safeText.length}`);
+        api.storeEpisodic(safeText, "assistant", debugLog, { client: "opencode" });
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         debugLog(`ASSISTANT ERROR: ${errMsg}`);

@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "crypto";
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
 import { makeDebugLogger } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
-import { formatPkContext } from "../../shared/pk-inject.mjs";
+import { formatPkContext, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 const DEBUG_LOG = path.join(os.homedir(), "midbrain-codex-debug.log");
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-assistant-turns");
@@ -136,6 +136,8 @@ export function runJsonHook(captureFn, { stdoutJson = false } = {}) {
 
 async function postEpisodic(text, role, cwd, deps, api) {
   try {
+    if (role === "assistant") text = scrubInjectedPkContext(text);
+    if (!text) return true;
     if (!api) {
       const projectDir = typeof cwd === "string" && cwd.trim() ? cwd : undefined;
       api = await deps.createApi(projectDir);
