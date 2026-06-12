@@ -146,4 +146,17 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(readme).toContain("/api/v1/memories/search/procedural");
     expect(readme).not.toContain("/api/v1/memories/procedural");
   });
+
+  it("D-12: docs describe PK trust metadata and payload limits", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+
+    for (const doc of [readme, agents]) {
+      expect(doc).toContain("ctx-meta nonce");
+      expect(doc).toContain("signature");
+      expect(doc).toContain("160");
+      expect(doc).toContain("2,000");
+      expect(doc).toContain("6,000");
+    }
+  });
 });

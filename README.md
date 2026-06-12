@@ -72,6 +72,12 @@ prepend a bounded context block before the model runs. There is no manual
 MCP tool for procedural knowledge; agents should use the normal search tools
 and let hooks inject procedural context automatically.
 
+Injected PK context is capped at 160 characters per title, 2,000 characters
+per entry body, and 6,000 characters total. Marker-like text in PK is escaped,
+and trusted injected blocks include `ctx-meta nonce` metadata plus a signature
+over the PK ids so user-authored marker examples cannot spoof deduplication or
+strip prompt text.
+
 **Project Setup** — The LLM calls `memory_setup_project` via MCP to scope
 memory to a specific project, then tells the user to restart.
 
@@ -299,7 +305,10 @@ Add to your project's `AGENTS.md` or `CLAUDE.md`:
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
 - Procedural knowledge is injected automatically by hooks; do not call or
-  expect a manual procedural knowledge MCP tool.
+  expect a manual procedural knowledge MCP tool. Injected PK blocks include
+  `ctx-meta nonce` trust metadata plus an id signature, and are capped at
+  160 title characters, 2,000 content characters per entry, and 6,000
+  characters total.
 - The only memory tools available are search and setup. Use them proactively.
 - When the user asks to set up MidBrain memory for a project, ALWAYS use the
   memory_setup_project tool. NEVER manually create key files or configs.

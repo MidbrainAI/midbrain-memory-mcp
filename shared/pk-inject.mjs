@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 
 /**
  * shared/pk-inject.mjs
@@ -27,7 +27,9 @@ const CTX_BLOCK_RE  = new RegExp(
 );
 const PK_HEADER = "## Procedural knowledge:";
 const PK_CONTEXT_NONCE = randomUUID();
+const PK_CONTEXT_SECRET = randomBytes(32).toString("hex");
 const PK_META_PREFIX = "<!-- mb:ctx-meta nonce=";
+const PK_META_RE = /<!-- mb:ctx-meta nonce=([^ ]+) sig=([a-f0-9]+) -->/;
 const HTML_COMMENT_START_RE = /<!--/g;
 const HTML_COMMENT_END_RE = /-->/g;
 
@@ -56,18 +58,22 @@ function trustedBlocks(text) {
 
 function isTrustedBlock(block) {
   PK_MARKER_RE.lastIndex = 0;
+  const ids = normalizedIdsText(block);
+  const meta = PK_META_RE.exec(block);
   return block.startsWith(CONTEXT_MARKER_START) &&
     block.endsWith(CONTEXT_MARKER_END) &&
     block.includes(PK_HEADER) &&
-    block.includes(`${PK_META_PREFIX}${PK_CONTEXT_NONCE} -->`) &&
-    PK_MARKER_RE.test(block);
+    meta?.[1] === PK_CONTEXT_NONCE &&
+    Boolean(ids) &&
+    meta?.[2] === signIds(ids);
 }
 
-function isPkLikeBlock(block) {
+function isSignedPkBlock(block) {
   PK_MARKER_RE.lastIndex = 0;
   return block.startsWith(CONTEXT_MARKER_START) &&
     block.endsWith(CONTEXT_MARKER_END) &&
     block.includes(PK_HEADER) &&
+    PK_META_RE.test(block) &&
     PK_MARKER_RE.test(block);
 }
 
@@ -82,10 +88,28 @@ function extractIdsFromTrustedBlock(block, ids) {
   }
 }
 
+function normalizedIdsText(block) {
+  PK_MARKER_RE.lastIndex = 0;
+  const ids = [];
+  let match;
+  while ((match = PK_MARKER_RE.exec(block)) !== null) {
+    for (const part of match[1].split(",")) {
+      const n = parseInt(part.trim(), 10);
+      if (!isNaN(n)) ids.push(n);
+    }
+  }
+  return ids.join(",");
+}
+
+function signIds(ids) {
+  return createHmac("sha256", PK_CONTEXT_SECRET).update(ids).digest("hex");
+}
+
 function buildBlock(entries) {
   const ids = entries.map((e) => e.id).join(",");
+  const signature = signIds(ids);
   const sections = entries.map((e) => `### ${e.title}\n${e.content}`).join("\n\n");
-  const inner = `${PK_HEADER}\n${PK_META_PREFIX}${PK_CONTEXT_NONCE} -->\n<!-- mb:pk ${ids} -->\n${sections}`;
+  const inner = `${PK_HEADER}\n${PK_META_PREFIX}${PK_CONTEXT_NONCE} sig=${signature} -->\n<!-- mb:pk ${ids} -->\n${sections}`;
   return `${CONTEXT_MARKER_START}\n${inner}\n${CONTEXT_MARKER_END}`;
 }
 
@@ -93,7 +117,8 @@ function capContext(entries) {
   let block = buildBlock(entries);
   if (block.length <= PK_CONTEXT_MAX_CHARS) return block;
   const ids = entries.map((e) => e.id).join(",");
-  const prefix = `${CONTEXT_MARKER_START}\n${PK_HEADER}\n${PK_META_PREFIX}${PK_CONTEXT_NONCE} -->\n<!-- mb:pk ${ids} -->\n`;
+  const signature = signIds(ids);
+  const prefix = `${CONTEXT_MARKER_START}\n${PK_HEADER}\n${PK_META_PREFIX}${PK_CONTEXT_NONCE} sig=${signature} -->\n<!-- mb:pk ${ids} -->\n`;
   const suffix = `${PK_TRUNCATION_MARKER}\n${CONTEXT_MARKER_END}`;
   const maxBody = Math.max(0, PK_CONTEXT_MAX_CHARS - prefix.length - suffix.length);
   const body = entries.map((e) => `### ${e.title}\n${e.content}`).join("\n\n");
@@ -155,9 +180,7 @@ export function stripInjectedContext(text) {
  * @returns {string}
  */
 export function scrubInjectedPkContext(text) {
-  PK_MARKER_RE.lastIndex = 0;
-  const stripped = String(text ?? "").replace(CTX_BLOCK_RE, (block) =>
-    isPkLikeBlock(block) ? "" : block
-  );
-  return stripped.replace(PK_MARKER_RE, "").trim();
+  return String(text ?? "").replace(CTX_BLOCK_RE, (block) =>
+    isSignedPkBlock(block) ? "" : block
+  ).trim();
 }
