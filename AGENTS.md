@@ -158,7 +158,7 @@ for rule injection unless a future PR explicitly changes that contract.
 - `setupProject()` writes project key/config files and returns structured
   summary lines.
 - Project setup must preserve existing config files and merge idempotently.
-- Project setup must guard existing key files and never overwrite secrets.
+- Project setup must guard existing key files and never overwrite credentials.
 - `--no-rules` skips instruction-file rule writes.
 - Use `process.execPath` when writing direct Node commands into configs.
 - JSONC config writes must preserve comments where supported.
