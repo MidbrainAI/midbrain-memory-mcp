@@ -253,13 +253,22 @@ export class OpenCode extends BaseClient {
 
   /**
    * Check if plugin files are fresh by comparing a version marker.
-   * Returns true if fresh (marker matches REPO_ROOT), false if stale.
+   * Returns true only when marker and copied file contents match. The marker
+   * alone can lie if a previous repair was interrupted or manually reverted.
    */
   async isFresh() {
     try {
       const markerPath = path.join(pluginsDir(), MARKER_FILE);
       const raw = await fs.readFile(markerPath, 'utf8');
-      return raw.trim() === MARKER_VALUE;
+      if (raw.trim() !== MARKER_VALUE) return false;
+
+      const sourcePlugin = await fs.readFile(path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE), 'utf8');
+      const installedPlugin = await fs.readFile(path.join(pluginsDir(), PLUGIN_FILE), 'utf8');
+      if (sourcePlugin !== installedPlugin) return false;
+
+      const sourceBundle = await fs.readFile(path.join(REPO_ROOT, 'dist', BUNDLE_FILE), 'utf8');
+      const installedBundle = await fs.readFile(path.join(pluginsDir(), BUNDLE_FILE), 'utf8');
+      return sourceBundle === installedBundle;
     } catch { return false; }
   }
 

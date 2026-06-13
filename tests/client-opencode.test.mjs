@@ -38,15 +38,20 @@ const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
 const { OpenCode, resolveOpencodeConfig } = await import("../shared/clients/opencode.mjs");
+const { PKG_NAME, PKG_VERSION, REPO_ROOT } = await import("../shared/clients/utils.mjs");
 
 const HOME = os.homedir();
 const MCP_KEY = "midbrain-memory";
+const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}:${REPO_ROOT}\n`;
 
 const PATHS = {
   opencodeDir:     path.join(HOME, ".config", "opencode"),
   opencodeConfig:  path.join(HOME, ".config", "opencode", "opencode.json"),
   opencodeKey:     path.join(HOME, ".config", "opencode", ".midbrain-key"),
   opencodePlugins: path.join(HOME, ".config", "opencode", "plugins"),
+  opencodePlugin:  path.join(HOME, ".config", "opencode", "plugins", "midbrain-memory.ts"),
+  opencodeBundle:  path.join(HOME, ".config", "opencode", "plugins", "midbrain-shared.mjs"),
+  opencodeMarker:  path.join(HOME, ".config", "opencode", "plugins", ".midbrain-repo-root"),
 };
 
 function fileError(code, filePath) {
@@ -286,6 +291,90 @@ describe("OpenCode.installGlobal", () => {
     expect(writeCall[1]).toContain("// My provider config");
     expect(writeCall[1]).toContain("midbrain-memory");
     expect(lines.some((s) => s.includes("opencode.jsonc"))).toBe(true);
+  });
+});
+
+// ===================================================================
+// freshness repair
+// ===================================================================
+
+describe("OpenCode plugin freshness", () => {
+  const oc = new OpenCode();
+  beforeEach(resetMocks);
+
+  it("treats matching marker but stale installed plugin content as not fresh", async () => {
+    const repoPlugin = "/repo/plugin";
+    const repoBundle = "/repo/bundle";
+    mocks.readFile.mockImplementation(async (filePath) => {
+      if (filePath === PATHS.opencodeMarker) {
+        return MARKER_VALUE;
+      }
+      if (String(filePath).endsWith(path.join("plugins", "opencode", "midbrain-memory.ts"))) {
+        return repoPlugin;
+      }
+      if (String(filePath).endsWith(path.join("dist", "midbrain-shared.mjs"))) {
+        return repoBundle;
+      }
+      if (filePath === PATHS.opencodePlugin) {
+        return "export function normalizeHistoryMessages() {}";
+      }
+      if (filePath === PATHS.opencodeBundle) {
+        return repoBundle;
+      }
+      throw fileError("ENOENT", filePath);
+    });
+
+    await expect(oc.isFresh()).resolves.toBe(false);
+  });
+
+  it("treats matching marker but stale installed bundle content as not fresh", async () => {
+    const repoPlugin = "export default MidBrainMemoryPlugin;";
+    const repoBundle = "bundle";
+    mocks.readFile.mockImplementation(async (filePath) => {
+      if (filePath === PATHS.opencodeMarker) {
+        return MARKER_VALUE;
+      }
+      if (String(filePath).endsWith(path.join("plugins", "opencode", "midbrain-memory.ts"))) {
+        return repoPlugin;
+      }
+      if (String(filePath).endsWith(path.join("dist", "midbrain-shared.mjs"))) {
+        return repoBundle;
+      }
+      if (filePath === PATHS.opencodePlugin) {
+        return repoPlugin;
+      }
+      if (filePath === PATHS.opencodeBundle) {
+        return "stale bundle";
+      }
+      throw fileError("ENOENT", filePath);
+    });
+
+    await expect(oc.isFresh()).resolves.toBe(false);
+  });
+
+  it("treats matching marker and matching plugin files as fresh", async () => {
+    const repoPlugin = "export default MidBrainMemoryPlugin;";
+    const repoBundle = "bundle";
+    mocks.readFile.mockImplementation(async (filePath) => {
+      if (filePath === PATHS.opencodeMarker) {
+        return MARKER_VALUE;
+      }
+      if (String(filePath).endsWith(path.join("plugins", "opencode", "midbrain-memory.ts"))) {
+        return repoPlugin;
+      }
+      if (String(filePath).endsWith(path.join("dist", "midbrain-shared.mjs"))) {
+        return repoBundle;
+      }
+      if (filePath === PATHS.opencodePlugin) {
+        return repoPlugin;
+      }
+      if (filePath === PATHS.opencodeBundle) {
+        return repoBundle;
+      }
+      throw fileError("ENOENT", filePath);
+    });
+
+    await expect(oc.isFresh()).resolves.toBe(true);
   });
 });
 
