@@ -2,7 +2,8 @@
 /**
  * MidBrain Memory MCP Server — entry point.
  *
- * Dispatches to mcp.mjs (MCP tools) or install.mjs (install subcommand).
+ * Dispatches to mcp.mjs (MCP tools), install.mjs (install subcommand),
+ * or published hook entry points.
  * All logic lives in those modules.
  *
  * IMPORTANT: No console.log — corrupts stdio JSON-RPC pipe. Use console.error only.
@@ -23,6 +24,16 @@ if (isMain) {
   if (process.argv.includes("--version") || process.argv.includes("-v")) {
     console.log(PKG_VERSION);
     process.exit(0);
+  } else if (process.argv[2] === "hook") {
+    const [, , , client, event] = process.argv;
+    if (client === "claude" && event === "user") {
+      await import("./plugins/claude-code/capture-user.mjs");
+    } else if (client === "claude" && event === "assistant") {
+      await import("./plugins/claude-code/capture-assistant.mjs");
+    } else {
+      console.error("Usage: midbrain-memory-mcp hook claude user|assistant");
+      process.exit(2);
+    }
   } else if (process.argv[2] === "install") {
     const { runInstallerCli } = await import("./install.mjs");
     await runInstallerCli(process.argv.slice(3));

@@ -194,6 +194,23 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(skill).toMatch(/MIDBRAIN_API_KEY/);
     expect(skill).toMatch(/redact/i);
   });
+
+  it("D-18: NanoClaw hooks use npx @latest rather than versioned package paths", async () => {
+    const { readme, skill } = await readNanoClawDocParts();
+    for (const text of [readme, skill]) {
+      expect(text).toContain("midbrain-memory-mcp@latest hook claude user");
+      expect(text).toContain("midbrain-memory-mcp@latest hook claude assistant");
+      expect(text).not.toMatch(/MIDBRAIN_API_KEY=<redacted>.*capture-user\.mjs/);
+      expect(text).not.toMatch(/MIDBRAIN_API_KEY=<redacted>.*capture-assistant\.mjs/);
+    }
+    expect(readme).not.toContain('"MIDBRAIN_API_KEY": "your-key"');
+  });
+
+  it("D-19: NanoClaw setup does not install MidBrain as a pinned image package", async () => {
+    const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
+    expect(skill).not.toContain("install_packages({ npm: [\"midbrain-memory-mcp@latest\"]");
+    expect(skill).not.toMatch(/packages installed/i);
+  });
 });
 
 async function readNanoClawDocParts() {
