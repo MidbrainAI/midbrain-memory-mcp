@@ -391,7 +391,7 @@ bash bin/ncl groups config add-mcp-server \
   --name midbrain-memory \
   --command npx \
   --args '["-y", "midbrain-memory-mcp@latest"]' \
-  --env '{"MIDBRAIN_CLIENT": "claude", "MIDBRAIN_API_KEY": "<redacted>"}'
+  --env '{"MIDBRAIN_CLIENT":"claude","MIDBRAIN_API_KEY":""}'
 
 # Restart to apply
 bash bin/ncl groups restart --id <agent-group-id> --message "Added midbrain memory"
@@ -500,7 +500,8 @@ chmod 600 /path/to/.midbrain-key   # Fix permissions
 ## API Reference
 
 Base URL: `https://memory.midbrain.ai`
-Auth: `Authorization: Bearer <key>` (except `/health`)
+Auth: send an `Authorization` header with your local API key, except for
+`/health`.
 
 | Method | Endpoint | Params / Body | Returns |
 |---|---|---|---|
