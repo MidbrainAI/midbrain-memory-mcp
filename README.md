@@ -391,7 +391,7 @@ bash bin/ncl groups config add-mcp-server \
   --name midbrain-memory \
   --command npx \
   --args '["-y", "midbrain-memory-mcp@latest"]' \
-  --env '{"MIDBRAIN_CLIENT": "claude", "MIDBRAIN_API_KEY": "your-key"}'
+  --env '{"MIDBRAIN_CLIENT": "claude", "MIDBRAIN_API_KEY": "<redacted>"}'
 
 # Restart to apply
 bash bin/ncl groups restart --id <agent-group-id> --message "Added midbrain memory"

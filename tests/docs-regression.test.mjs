@@ -203,6 +203,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       expect(text).not.toMatch(/MIDBRAIN_API_KEY=<redacted>.*capture-user\.mjs/);
       expect(text).not.toMatch(/MIDBRAIN_API_KEY=<redacted>.*capture-assistant\.mjs/);
     }
+    expect(readme).not.toContain('"MIDBRAIN_API_KEY": "your-key"');
   });
 
   it("D-19: NanoClaw setup does not install MidBrain as a pinned image package", async () => {

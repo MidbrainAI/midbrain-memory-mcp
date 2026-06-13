@@ -2,7 +2,8 @@
 /**
  * MidBrain Memory MCP Server — entry point.
  *
- * Dispatches to mcp.mjs (MCP tools) or install.mjs (install subcommand).
+ * Dispatches to mcp.mjs (MCP tools), install.mjs (install subcommand),
+ * or published hook entry points.
  * All logic lives in those modules.
  *
  * IMPORTANT: No console.log — corrupts stdio JSON-RPC pipe. Use console.error only.
