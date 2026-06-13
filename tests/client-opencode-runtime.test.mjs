@@ -94,6 +94,21 @@ describe("OpenCode plugin bundle", () => {
     // Should import from the unified shared module
     expect(pluginSrc).toContain('from "./midbrain-shared.mjs"');
   });
+
+  it("exports only callable plugin functions for OpenCode's loader", async () => {
+    const plugin = await import(pathToFileURL(PLUGIN_PATH).href);
+    const exportedValues = Object.values(plugin);
+
+    expect(exportedValues.length).toBeGreaterThan(0);
+    expect(exportedValues.every((value) => typeof value === "function")).toBe(true);
+    expect(typeof plugin.MidBrainMemoryPlugin).toBe("function");
+    expect(typeof plugin.default).toBe("function");
+    expect(plugin.default).toBe(plugin.MidBrainMemoryPlugin);
+    expect(plugin.OPENCODE_HISTORY_TIMEOUT_MS).toBeUndefined();
+    expect(plugin.normalizeHistoryMessages).toBeUndefined();
+    expect(plugin.textPartsFromMessages).toBeUndefined();
+    expect(plugin.fetchPriorMessageTexts).toBeUndefined();
+  });
 });
 
 describe("OpenCode plugin PK delivery helpers", () => {
@@ -128,25 +143,6 @@ describe("OpenCode plugin PK delivery helpers", () => {
     fsSync.rmSync(tempHome, { recursive: true, force: true });
   });
 
-  it("normalizes session history arrays and wrapped { data } responses", async () => {
-    const plugin = await import(pathToFileURL(PLUGIN_PATH).href);
-    const messages = [{ parts: [{ type: "text", text: "prior" }] }];
-
-    expect(plugin.normalizeHistoryMessages(messages)).toEqual(messages);
-    expect(plugin.normalizeHistoryMessages({ data: messages })).toEqual(messages);
-    expect(plugin.normalizeHistoryMessages({ data: null })).toEqual([]);
-  });
-
-  it("times out session history fetch and returns empty prior texts", async () => {
-    const plugin = await import(pathToFileURL(PLUGIN_PATH).href);
-    const client = { session: { messages: vi.fn(() => new Promise(() => {})) } };
-
-    const texts = await plugin.fetchPriorMessageTexts(client, "session-1", 1);
-
-    expect(texts).toEqual([]);
-    expect(client.session.messages).toHaveBeenCalledWith({ path: { id: "session-1" } });
-  });
-
   it("mutates the current chat.message text part when PK matches", async () => {
     const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
     const client = {
@@ -167,6 +163,28 @@ describe("OpenCode plugin PK delivery helpers", () => {
     expect(output.parts[0].text).toContain("How does OpenCode deliver context?");
     const [searchUrl] = fetchSpy.mock.calls.find(([url]) => String(url).includes("/search/procedural"));
     expect(new URL(searchUrl).searchParams.getAll("exclude_ids")).toEqual([]);
+  });
+
+  it("extracts prior PK ids from wrapped OpenCode history responses", async () => {
+    const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const priorBlock = formatPkContext([{ id: 42, title: "Prior", content: "exclude me" }]);
+    const client = {
+      session: {
+        messages: vi.fn().mockResolvedValue({
+          data: [{ parts: [{ type: "text", text: priorBlock }] }],
+        }),
+      },
+    };
+    const hooks = await MidBrainMemoryPlugin({ client, directory: "/repo" });
+    const output = {
+      message: { id: "m1" },
+      parts: [{ type: "text", text: "How does OpenCode deliver context?" }],
+    };
+
+    await hooks["chat.message"]({ sessionID: "session-1" }, output);
+
+    const [searchUrl] = fetchSpy.mock.calls.find(([url]) => String(url).includes("/search/procedural"));
+    expect(new URL(searchUrl).searchParams.getAll("exclude_ids")).toEqual(["42"]);
   });
 
   it("scrubs injected PK echoes before storing assistant messages", async () => {

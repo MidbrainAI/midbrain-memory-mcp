@@ -23,18 +23,18 @@ import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
 import { MidbrainApi, makeDebugLogger, getClient, extractInjectedPkIds, formatPkContext, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
 
-export const OPENCODE_HISTORY_TIMEOUT_MS = 500;
+const OPENCODE_HISTORY_TIMEOUT_MS = 500;
 
 type OpenCodePart = { type: string; text?: string };
 type OpenCodeMessage = { parts?: OpenCodePart[] };
 
-export function normalizeHistoryMessages(history: unknown): OpenCodeMessage[] {
+function normalizeHistoryMessages(history: unknown): OpenCodeMessage[] {
   if (Array.isArray(history)) return history as OpenCodeMessage[];
   const data = (history as { data?: unknown } | null)?.data;
   return Array.isArray(data) ? data as OpenCodeMessage[] : [];
 }
 
-export function textPartsFromMessages(messages: OpenCodeMessage[]): string[] {
+function textPartsFromMessages(messages: OpenCodeMessage[]): string[] {
   return messages.flatMap((m) =>
     (m.parts ?? [])
       .filter((p) => p.type === "text" && typeof p.text === "string")
@@ -42,7 +42,7 @@ export function textPartsFromMessages(messages: OpenCodeMessage[]): string[] {
   );
 }
 
-export async function fetchPriorMessageTexts(
+async function fetchPriorMessageTexts(
   client: { session: { messages: (args: { path: { id: string } }) => Promise<unknown> } },
   sessionID: string,
   timeoutMs = OPENCODE_HISTORY_TIMEOUT_MS,
@@ -201,3 +201,5 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
     },
   };
 };
+
+export default MidBrainMemoryPlugin;
