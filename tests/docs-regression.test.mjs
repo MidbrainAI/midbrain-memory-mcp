@@ -211,6 +211,17 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(skill).not.toContain("install_packages({ npm: [\"midbrain-memory-mcp@latest\"]");
     expect(skill).not.toMatch(/packages installed/i);
   });
+
+  it("D-20: Codex docs describe the stable hook shim and trust caveat", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+    for (const text of [readme, agents]) {
+      expect(text).toContain("~/.midbrain/bin/codex-hook");
+      expect(text).toMatch(/\/hooks/);
+    }
+    expect(readme).toMatch(/trust.*shim|shim.*trust/i);
+    expect(readme).not.toMatch(/hooks\.json[\s\S]{0,300}plugins\/codex\/capture-user\.mjs/);
+  });
 });
 
 async function readNanoClawDocParts() {

@@ -1453,10 +1453,31 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
     expect(result.stderr).not.toMatch(/MCP server running/);
   });
 
+  it("Codex hook dispatch: user exits 0 without starting MCP when stdin is empty", () => {
+    const result = spawnServer(["hook", "codex", "user"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).not.toMatch(/MCP server running/);
+  });
+
+  it("Codex hook dispatch: assistant exits 0 with JSON stdout when stdin is empty", () => {
+    const result = spawnServer(["hook", "codex", "assistant"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("{}");
+    expect(result.stderr).not.toMatch(/MCP server running/);
+  });
+
+  it("Codex hook dispatch: tool exits 0 with JSON stdout when stdin is empty", () => {
+    const result = spawnServer(["hook", "codex", "tool"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("{}");
+    expect(result.stderr).not.toMatch(/MCP server running/);
+  });
+
   it("NanoClaw hook dispatch: unknown hook exits 2 with usage", () => {
     const result = spawnServer(["hook", "claude", "bogus"]);
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Usage: midbrain-memory-mcp hook claude user|assistant");
+    expect(result.stderr).toContain("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool");
     expect(result.stderr).not.toMatch(/MCP server running/);
   });
 

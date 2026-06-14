@@ -30,8 +30,14 @@ if (isMain) {
       await import("./plugins/claude-code/capture-user.mjs");
     } else if (client === "claude" && event === "assistant") {
       await import("./plugins/claude-code/capture-assistant.mjs");
+    } else if (client === "codex" && event === "user") {
+      await import("./plugins/codex/capture-user.mjs");
+    } else if (client === "codex" && event === "assistant") {
+      await import("./plugins/codex/capture-assistant.mjs");
+    } else if (client === "codex" && event === "tool") {
+      await import("./plugins/codex/capture-tool.mjs");
     } else {
-      console.error("Usage: midbrain-memory-mcp hook claude user|assistant");
+      console.error("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool");
       process.exit(2);
     }
   } else if (process.argv[2] === "install") {

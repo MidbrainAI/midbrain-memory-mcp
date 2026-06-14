@@ -228,12 +228,19 @@ npm package resolved to a new cache directory), they are automatically
 repaired. No manual `install` needed. This covers:
 
 - **Claude Code:** Rewrites hook paths in `~/.claude/settings.json`
-- **Codex:** Rewrites hook paths in `~/.codex/hooks.json`
+- **Codex:** Installs a stable `~/.midbrain/bin/codex-hook` shim and
+  rewrites MidBrain hook entries in `~/.codex/hooks.json` to call that shim
 - **OpenCode:** Re-copies the plugin bundle to `~/.config/opencode/plugins/`
 
 Repair happens silently on startup (fire-and-forget, never blocks). If
 something goes wrong, the server continues normally. Repair failures are
 logged to stderr but never crash the process.
+
+Codex has an extra trust step: it trusts command hooks by their command
+definition. v0.4.2 migrates MidBrain's Codex hooks to the stable shim above, so
+you may need to approve MidBrain once in Codex with `/hooks`. After that,
+normal MidBrain package updates, npm cache changes, and Homebrew Node updates
+should not change the trusted hook command.
 
 Run `npx -y midbrain-memory-mcp@latest --version` to check your resolved
 version. The MCP server logs the resolved package version to stderr on startup.
@@ -330,6 +337,20 @@ Codex global install also writes `~/.codex/hooks.json` with
 writes only `.codex/config.toml`; it does not write project-local hooks to
 avoid duplicate captures from multiple matching hook layers. Use `/hooks` in
 Codex to review and trust hook changes if prompted.
+
+Codex hooks call a stable local shim:
+
+```text
+~/.midbrain/bin/codex-hook user
+~/.midbrain/bin/codex-hook tool
+~/.midbrain/bin/codex-hook assistant
+```
+
+The shim resolves `midbrain-memory-mcp@latest` internally. This keeps
+`~/.codex/hooks.json` stable across package and Node updates, avoiding repeated
+Codex hook re-approval for normal updates. The tradeoff is explicit: approving
+the shim means you trust MidBrain's auto-updating package command, not one
+specific npm cache file.
 
 Codex may invoke `Stop` more than once during a turn. MidBrain buffers
 commentary/reasoning-only stops and stores them only when the final assistant

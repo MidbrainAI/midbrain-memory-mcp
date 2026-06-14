@@ -57,6 +57,8 @@ const PATHS = {
   opencodeConfig:   path.join(HOME, ".config", "opencode", "opencode.json"),
   claudeJson:       path.join(HOME, ".claude.json"),
   codexConfig:      path.join(HOME, ".codex", "config.toml"),
+  codexHooks:       path.join(HOME, ".codex", "hooks.json"),
+  codexShim:        path.join(HOME, ".midbrain", "bin", "codex-hook"),
   nanoclawDocker:   path.join(HOME, "nanoclaw-v2", "container", "Dockerfile"),
   nanoclawSkills:   path.join(HOME, "nanoclaw-v2", ".claude", "skills"),
   nanoclawSkill:    path.join(HOME, "nanoclaw-v2", ".claude", "skills", "add-midbrain", "SKILL.md"),
@@ -242,6 +244,50 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
     expect(copiedSkill).toBe(true);
     expect(logSpy).not.toHaveBeenCalled();
     expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("NanoClaw skill repaired");
+  });
+
+  it("repairs stale Codex direct hook commands during startup without stdout", async () => {
+    existsFor(PATHS.codexConfig, PATHS.codexHooks);
+    readFileReturns({
+      [PATHS.codexHooks]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ command: "old capture-user.mjs" }] }],
+          PostToolUse: [{ hooks: [{ command: "old capture-tool.mjs" }] }],
+          Stop: [{ hooks: [{ command: "old capture-assistant.mjs" }] }],
+        },
+      }),
+    });
+
+    await checkForUpdate();
+
+    const hooksWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexHooks);
+    const shimWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexShim);
+    expect(hooksWrite).toBeDefined();
+    expect(hooksWrite[1]).toContain(PATHS.codexShim);
+    expect(shimWrite).toBeDefined();
+    expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("Codex hooks repaired");
+  });
+
+  it("does not rewrite already-stable Codex hooks during startup", async () => {
+    existsFor(PATHS.codexConfig, PATHS.codexHooks, PATHS.codexShim);
+    readFileReturns({
+      [PATHS.codexHooks]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
+          PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
+          Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
+        },
+      }),
+    });
+
+    await checkForUpdate();
+
+    const hooksWrites = fs.writeFile.mock.calls.filter(([p]) => p === PATHS.codexHooks);
+    expect(hooksWrites).toHaveLength(0);
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).not.toContain("Codex hooks repaired");
   });
 });
 
