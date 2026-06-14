@@ -103,6 +103,10 @@ Codex:
 
 - `plugins/codex/*.mjs` run in Node 20.
 - Hooks capture `UserPromptSubmit`, `PostToolUse`, and `Stop`.
+- Installer-written Codex hooks call the stable
+  `~/.midbrain/bin/codex-hook` shim, not package-cache capture script paths.
+  Codex may require one `/hooks` approval after shim migration; normal package
+  and Node updates should not change the hook command after that.
 - `Stop` and `PostToolUse` wrappers must write `{}` to stdout on success.
 - Assistant capture stores a clean answer separately from bounded reasoning and
   tool summaries.

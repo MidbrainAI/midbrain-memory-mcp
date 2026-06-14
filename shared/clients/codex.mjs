@@ -10,7 +10,7 @@
 
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
-  KEY_FILENAME, MCP_KEY, REPO_ROOT,
+  KEY_FILENAME, MCP_KEY, PKG_NAME, REPO_ROOT,
   home, readJson, writeJson, backup, writeSecure,
   classifyEntry, formatMigrationLine,
 } from './utils.mjs';
@@ -21,15 +21,21 @@ import path from 'path';
 
 const HOOK_TIMEOUT_SEC = 10;
 const HOOK_EVENTS = {
-  UserPromptSubmit: 'capture-user.mjs',
-  PostToolUse: 'capture-tool.mjs',
-  Stop: 'capture-assistant.mjs',
+  UserPromptSubmit: 'user',
+  PostToolUse: 'tool',
+  Stop: 'assistant',
 };
+const LEGACY_HOOK_SCRIPTS = [
+  'capture-user.mjs',
+  'capture-tool.mjs',
+  'capture-assistant.mjs',
+];
 let tomlModule;
 
 function codexDir() { return path.join(home(), '.codex'); }
 function configPath() { return path.join(codexDir(), 'config.toml'); }
 function hooksPath() { return path.join(codexDir(), 'hooks.json'); }
+function stableHookPath() { return path.join(home(), '.midbrain', 'bin', 'codex-hook'); }
 function cfgDir() { return path.join(home(), '.config', 'codex'); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
 
@@ -85,8 +91,33 @@ function shellQuote(value) {
 }
 
 function buildHookCommand(scriptName) {
-  const scriptPath = path.join(REPO_ROOT, 'plugins', 'codex', scriptName);
-  return `${shellQuote(process.execPath)} ${shellQuote(scriptPath)}`;
+  return `${shellQuote(stableHookPath())} ${scriptName}`;
+}
+
+function shimBody() {
+  return `#!/bin/sh
+set +e
+npx -y midbrain-memory-mcp@latest hook codex "$@"
+status=$?
+case "$1" in
+  assistant|tool)
+    if [ "$status" -ne 0 ]; then
+      printf '{}'
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`;
+}
+
+async function installStableHookShim() {
+  const shim = stableHookPath();
+  await fs.mkdir(path.dirname(shim), { recursive: true });
+  await fs.writeFile(shim, shimBody(), 'utf8');
+  await fs.chmod(shim, 0o755);
 }
 
 function midbrainHook(scriptName) {
@@ -99,9 +130,9 @@ function midbrainHook(scriptName) {
 
 function isMidbrainHook(hook) {
   const command = typeof hook?.command === 'string' ? hook.command : '';
-  return command.includes('capture-user.mjs') ||
-    command.includes('capture-tool.mjs') ||
-    command.includes('capture-assistant.mjs');
+  return command.includes(stableHookPath()) ||
+    LEGACY_HOOK_SCRIPTS.some((script) => command.includes(script)) ||
+    (command.includes(PKG_NAME) && command.includes('hook codex'));
 }
 
 function withoutMidbrainGroups(groups) {
@@ -153,10 +184,12 @@ export class Codex extends BaseClient {
     summary.push(formatMigrationLine('~/.codex/config.toml', exists, pinned));
 
     const hooks = patchHooks((await readJson(hp)) || {});
+    await installStableHookShim();
     await backup(hp);
     await writeJson(hp, hooks);
     summary.push('~/.codex/hooks.json: MidBrain hooks written');
-    summary.push('Restart Codex and review/trust hooks with /hooks if prompted.');
+    summary.push('~/.midbrain/bin/codex-hook: stable Codex hook shim written');
+    summary.push('Restart Codex and review/trust MidBrain hooks with /hooks once if prompted.');
     return summary;
   }
 
@@ -186,12 +219,19 @@ export class Codex extends BaseClient {
   async isFresh() {
     try {
       const data = (await readJson(hooksPath())) || {};
-      const hooks = data.hooks?.UserPromptSubmit;
-      if (!Array.isArray(hooks) || hooks.length === 0) return true;
-      const hook = hooks[0]?.hooks?.[0];
-      if (!hook?.command) return true;
-      const expectedPath = path.join(REPO_ROOT, 'plugins', 'codex', 'capture-user.mjs');
-      return hook.command.includes(expectedPath);
+      let hasMidbrainHook = false;
+      for (const [event, hookName] of Object.entries(HOOK_EVENTS)) {
+        const groups = data.hooks?.[event];
+        if (!Array.isArray(groups) || groups.length === 0) continue;
+        const commands = groups.flatMap((group) => group.hooks || [])
+          .map((hook) => typeof hook?.command === 'string' ? hook.command : '');
+        if (!commands.some((command) => isMidbrainHook({ command }))) continue;
+        hasMidbrainHook = true;
+        if (commands.some((command) => LEGACY_HOOK_SCRIPTS.some((script) => command.includes(script)))) return false;
+        if (!commands.some((command) => command === buildHookCommand(hookName))) return false;
+      }
+      if (!hasMidbrainHook) return true;
+      return existsSync(stableHookPath());
     } catch { return true; }
   }
 
@@ -202,7 +242,8 @@ export class Codex extends BaseClient {
     const hp = hooksPath();
     const data = (await readJson(hp)) || {};
     patchHooks(data);
+    await installStableHookShim();
     await writeJson(hp, data);
-    return ['  ~ Codex hooks repaired (paths updated)'];
+    return ['  ~ Codex hooks repaired (stable Codex hook shim installed)'];
   }
 }

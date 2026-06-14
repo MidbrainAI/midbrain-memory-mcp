@@ -46,6 +46,8 @@ const HOME = os.homedir();
 const PATHS = {
   codexDir:    path.join(HOME, ".codex"),
   codexConfig: path.join(HOME, ".codex", "config.toml"),
+  codexHooks:  path.join(HOME, ".codex", "hooks.json"),
+  codexShim:   path.join(HOME, ".midbrain", "bin", "codex-hook"),
   codexKey:    path.join(HOME, ".config", "codex", ".midbrain-key"),
 };
 
@@ -159,10 +161,18 @@ describe("Codex.installGlobal", () => {
   }
 
   function writtenHooks() {
-    const hooksPath = path.join(PATHS.codexDir, "hooks.json");
-    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === hooksPath);
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexHooks);
     expect(writeCall).toBeDefined();
     return JSON.parse(writeCall[1]);
+  }
+
+  function hookCommands() {
+    const hooks = writtenHooks().hooks;
+    return {
+      user: hooks.UserPromptSubmit[0].hooks[0].command,
+      tool: hooks.PostToolUse[0].hooks[0].command,
+      assistant: hooks.Stop[0].hooks[0].command,
+    };
   }
 
   it("writes global config.toml with the default npx @latest MCP entry", async () => {
@@ -183,7 +193,7 @@ describe("Codex.installGlobal", () => {
     expect(entry.args[0]).toContain("index.js");
   });
 
-  it("writes hooks.json for UserPromptSubmit, PostToolUse, and Stop", async () => {
+  it("writes stable shim hooks.json for UserPromptSubmit, PostToolUse, and Stop", async () => {
     await codex.installGlobal();
 
     const hooks = writtenHooks().hooks;
@@ -191,12 +201,41 @@ describe("Codex.installGlobal", () => {
       expect(hooks[event]).toHaveLength(1);
       const hook = hooks[event][0].hooks[0];
       expect(hook.type).toBe("command");
-      expect(hook.command).toContain(process.execPath);
+      expect(hook.command).toContain(PATHS.codexShim);
+      expect(hook.command).not.toContain(process.execPath);
+      expect(hook.command).not.toContain("node_modules");
+      expect(hook.command).not.toContain("_npx");
+      expect(hook.command).not.toContain("Cellar/node");
+      expect(hook.command).not.toContain("plugins/codex/capture-");
       expect(hook).not.toHaveProperty("async");
     }
-    expect(hooks.UserPromptSubmit[0].hooks[0].command).toContain("capture-user.mjs");
-    expect(hooks.PostToolUse[0].hooks[0].command).toContain("capture-tool.mjs");
-    expect(hooks.Stop[0].hooks[0].command).toContain("capture-assistant.mjs");
+    expect(hookCommands()).toEqual({
+      user: `'${PATHS.codexShim}' user`,
+      tool: `'${PATHS.codexShim}' tool`,
+      assistant: `'${PATHS.codexShim}' assistant`,
+    });
+  });
+
+  it("writes the stable Codex hook shim with executable permissions", async () => {
+    await codex.installGlobal();
+
+    const shimWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexShim);
+    expect(fs.mkdir).toHaveBeenCalledWith(path.dirname(PATHS.codexShim), { recursive: true });
+    expect(shimWrite).toBeDefined();
+    expect(shimWrite[1]).toContain("npx -y midbrain-memory-mcp@latest hook codex");
+    expect(shimWrite[1]).toContain('"$@"');
+    expect(shimWrite[1]).not.toContain("MIDBRAIN_API_KEY");
+    expect(shimWrite[1]).not.toContain(".midbrain-key");
+    expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
+  });
+
+  it("keeps hook command stable across Node path changes", async () => {
+    await codex.installGlobal();
+
+    for (const command of Object.values(hookCommands())) {
+      expect(command).not.toContain(process.execPath);
+      expect(command).toContain(PATHS.codexShim);
+    }
   });
 
   it("does not write deprecated codex_hooks for new config", async () => {
@@ -287,14 +326,14 @@ describe("Codex.installGlobal", () => {
   });
 
   it("preserves foreign hooks and replaces duplicate MidBrain hooks", async () => {
-    const hooksPath = path.join(PATHS.codexDir, "hooks.json");
-    existsFor(hooksPath);
+    existsFor(PATHS.codexHooks);
     readFileReturns({
-      [hooksPath]: JSON.stringify({
+      [PATHS.codexHooks]: JSON.stringify({
         hooks: {
           UserPromptSubmit: [
             { hooks: [{ type: "command", command: "/bin/echo foreign" }] },
             { hooks: [{ type: "command", command: "old capture-user.mjs" }] },
+            { hooks: [{ type: "command", command: `'${PATHS.codexShim}' user` }] },
           ],
         },
       }),
@@ -305,18 +344,39 @@ describe("Codex.installGlobal", () => {
     const groups = writtenHooks().hooks.UserPromptSubmit;
     const commands = groups.flatMap((g) => g.hooks.map((h) => h.command));
     expect(commands).toContain("/bin/echo foreign");
-    expect(commands.filter((cmd) => cmd.includes("capture-user.mjs"))).toHaveLength(1);
+    expect(commands.filter((cmd) => cmd.includes("capture-user.mjs"))).toHaveLength(0);
+    expect(commands.filter((cmd) => cmd.includes(PATHS.codexShim))).toHaveLength(1);
+  });
+
+  it("migrates old direct Codex hook commands to the stable shim", async () => {
+    existsFor(PATHS.codexHooks);
+    readFileReturns({
+      [PATHS.codexHooks]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ type: "command", command: "'/opt/homebrew/Cellar/node/26.3.0/bin/node' '/old/plugins/codex/capture-user.mjs'" }] }],
+          PostToolUse: [{ hooks: [{ type: "command", command: "'/private/tmp/_npx/abc/node_modules/midbrain-memory-mcp/plugins/codex/capture-tool.mjs'" }] }],
+          Stop: [{ hooks: [{ type: "command", command: "'/old/node' '/old/plugins/codex/capture-assistant.mjs'" }] }],
+        },
+      }),
+    });
+
+    await codex.installGlobal();
+
+    expect(hookCommands()).toEqual({
+      user: `'${PATHS.codexShim}' user`,
+      tool: `'${PATHS.codexShim}' tool`,
+      assistant: `'${PATHS.codexShim}' assistant`,
+    });
   });
 
   it("backs up existing TOML and hooks files before writing", async () => {
-    const hooksPath = path.join(PATHS.codexDir, "hooks.json");
-    existsFor(PATHS.codexConfig, hooksPath);
-    readFileReturns({ [PATHS.codexConfig]: "", [hooksPath]: '{"hooks":{}}' });
+    existsFor(PATHS.codexConfig, PATHS.codexHooks);
+    readFileReturns({ [PATHS.codexConfig]: "", [PATHS.codexHooks]: '{"hooks":{}}' });
 
     await codex.installGlobal();
 
     expect(fs.copyFile).toHaveBeenCalledWith(PATHS.codexConfig, PATHS.codexConfig + ".bak");
-    expect(fs.copyFile).toHaveBeenCalledWith(hooksPath, hooksPath + ".bak");
+    expect(fs.copyFile).toHaveBeenCalledWith(PATHS.codexHooks, PATHS.codexHooks + ".bak");
   });
 
   it("fails closed on corrupt TOML without overwriting config.toml", async () => {
@@ -327,6 +387,82 @@ describe("Codex.installGlobal", () => {
 
     const configWrites = fs.writeFile.mock.calls.filter(([p]) => p === PATHS.codexConfig);
     expect(configWrites).toHaveLength(0);
+  });
+});
+
+describe("Codex hook freshness and repair", () => {
+  const codex = new Codex();
+  beforeEach(resetMocks);
+
+  function readHooksAsWritten() {
+    const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexHooks);
+    expect(writeCall).toBeDefined();
+    return JSON.parse(writeCall[1]);
+  }
+
+  it("isFresh returns false for legacy direct capture script commands", async () => {
+    existsFor(PATHS.codexHooks);
+    readFileReturns({
+      [PATHS.codexHooks]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ command: `${process.execPath} /tmp/midbrain/plugins/codex/capture-user.mjs` }] }],
+          PostToolUse: [{ hooks: [{ command: `${process.execPath} /tmp/midbrain/plugins/codex/capture-tool.mjs` }] }],
+          Stop: [{ hooks: [{ command: `${process.execPath} /tmp/midbrain/plugins/codex/capture-assistant.mjs` }] }],
+        },
+      }),
+    });
+
+    await expect(codex.isFresh()).resolves.toBe(false);
+  });
+
+  it("isFresh returns true when no MidBrain hooks are installed", async () => {
+    existsFor(PATHS.codexHooks);
+    readFileReturns({
+      [PATHS.codexHooks]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ command: "/bin/echo foreign" }] }],
+        },
+      }),
+    });
+
+    await expect(codex.isFresh()).resolves.toBe(true);
+  });
+
+  it("isFresh returns true for stable shim hooks", async () => {
+    existsFor(PATHS.codexHooks, PATHS.codexShim);
+    readFileReturns({
+      [PATHS.codexHooks]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
+          PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
+          Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
+        },
+      }),
+    });
+
+    await expect(codex.isFresh()).resolves.toBe(true);
+  });
+
+  it("repairHooks rewrites legacy commands to the stable shim and installs the shim", async () => {
+    existsFor(PATHS.codexHooks);
+    readFileReturns({
+      [PATHS.codexHooks]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ command: "old capture-user.mjs" }] }],
+          PostToolUse: [{ hooks: [{ command: "old capture-tool.mjs" }] }],
+          Stop: [{ hooks: [{ command: "old capture-assistant.mjs" }] }],
+        },
+      }),
+    });
+
+    const lines = await codex.repairHooks();
+
+    const hooks = readHooksAsWritten().hooks;
+    expect(hooks.UserPromptSubmit[0].hooks[0].command).toBe(`'${PATHS.codexShim}' user`);
+    expect(hooks.PostToolUse[0].hooks[0].command).toBe(`'${PATHS.codexShim}' tool`);
+    expect(hooks.Stop[0].hooks[0].command).toBe(`'${PATHS.codexShim}' assistant`);
+    expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
+    expect(lines.join("\n")).toContain("stable Codex hook shim");
   });
 });
 
