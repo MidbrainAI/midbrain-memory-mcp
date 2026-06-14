@@ -3,6 +3,33 @@
 All notable public release changes for `midbrain-memory-mcp` are tracked here.
 Full release-note bodies live in `docs/releases/`.
 
+## 0.4.2
+
+Full notes: [docs/releases/v0.4.2.md](docs/releases/v0.4.2.md)
+
+### Fixed
+
+- Stabilized Codex hook trust by routing MidBrain Codex capture through the
+  local `~/.midbrain/bin/codex-hook` shim.
+- Added Codex hook CLI dispatch for `hook codex user`, `hook codex tool`, and
+  `hook codex assistant`.
+- Migrated stale legacy/direct MidBrain Codex hook commands to stable shim
+  commands.
+- Preserved foreign hooks in `~/.codex/hooks.json` during MidBrain hook
+  migration.
+- Hardened startup repair so stale MidBrain Codex hooks are repaired without
+  auto-installing capture hooks where none existed.
+
+### Notes
+
+- Codex users may need one `/hooks` approval after upgrading because the trusted
+  command changes to `~/.midbrain/bin/codex-hook`.
+- Normal MidBrain package updates, npm cache changes, and Node path changes
+  should stop forcing repeated Codex hook re-approval after that migration.
+- Approving the shim means trusting MidBrain's auto-updating package command
+  through `midbrain-memory-mcp@latest`, not one specific npm cache file.
+- Breaking changes: None.
+
 ## 0.4.1
 
 Full notes: [docs/releases/v0.4.1.md](docs/releases/v0.4.1.md)
