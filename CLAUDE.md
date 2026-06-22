@@ -17,8 +17,10 @@
 - NEVER create semantic memories. Semantic memories are managed by dream
   consolidation.
 - NEVER create episodic memories. Episodic capture is automatic via hooks.
-- Procedural knowledge (PK) is injected automatically before each user turn.
-  Do not call or expect a PK MCP tool.
+- Procedural knowledge is not injected automatically. Use explicit memory tools
+  for recall; do not call or expect a PK MCP tool.
+- Legacy PK injection only runs when `MIDBRAIN_ENABLE_PK_INJECTION=1` is set
+  explicitly in the hook environment.
 - When asked to set up MidBrain memory for a project, ALWAYS use the
   `memory_setup_project` tool. Never manually create key files or configs.
 <!-- midbrain-memory-rules:end -->

@@ -162,17 +162,48 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     }
   });
 
-  it("D-13: NanoClaw skill is present in the repo", () => {
+  it("D-13: installer/client config writers do not set the PK opt-in flag", async () => {
+    const configSources = [
+      "install.mjs",
+      "shared/clients/claude.mjs",
+      "shared/clients/codex.mjs",
+      "shared/clients/opencode.mjs",
+      "shared/clients/nanoclaw.mjs",
+    ];
+
+    for (const sourcePath of configSources) {
+      const source = await fs.readFile(path.join(REPO_ROOT, sourcePath), "utf8");
+      expect(source).not.toContain("MIDBRAIN_ENABLE_PK_INJECTION");
+    }
+  });
+
+  it("D-14: current docs describe automatic PK injection as disabled by default", async () => {
+    const docs = [
+      await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8"),
+      await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8"),
+      await fs.readFile(path.join(REPO_ROOT, "CLAUDE.md"), "utf8"),
+      await fs.readFile(NANOCLAW_SKILL, "utf8"),
+    ];
+
+    for (const doc of docs) {
+      expect(doc).toMatch(/Procedural knowledge is not injected automatically|Automatic procedural-knowledge injection is disabled by default/i);
+      expect(doc).toContain("MIDBRAIN_ENABLE_PK_INJECTION=1");
+      expect(doc).not.toMatch(/procedural knowledge \(PK\) is injected automatically/i);
+      expect(doc).not.toMatch(/Procedural knowledge is injected automatically by MidBrain hooks/i);
+    }
+  });
+
+  it("D-15: NanoClaw skill is present in the repo", () => {
     expect(fsSync.existsSync(NANOCLAW_SKILL)).toBe(true);
   });
 
-  it("D-14: NanoClaw docs do not claim entrypoint bootstrapping as v1 design", async () => {
+  it("D-16: NanoClaw docs do not claim entrypoint bootstrapping as v1 design", async () => {
     const docs = await readNanoClawDocs();
     expect(docs).not.toMatch(/entrypoint/i);
     expect(docs).not.toMatch(/every container boot/i);
   });
 
-  it("D-15: NanoClaw docs agree on direct mounted settings merge", async () => {
+  it("D-17: NanoClaw docs agree on direct mounted settings merge", async () => {
     const { readme, agents, skill } = await readNanoClawDocParts();
     for (const text of [readme, agents, skill]) {
       expect(text).toContain(".claude-shared/settings.json");
@@ -181,7 +212,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     }
   });
 
-  it("D-16: NanoClaw skill requires group choice when multiple groups exist", async () => {
+  it("D-18: NanoClaw skill requires group choice when multiple groups exist", async () => {
     const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
     expect(skill).toMatch(/multiple agent groups/i);
     expect(skill).toMatch(/ask.*choose|choose.*group/i);

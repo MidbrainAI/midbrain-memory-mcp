@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
  * Claude Code hook: UserPromptSubmit
- * Captures user prompts as episodic memory and injects relevant procedural
- * knowledge as additionalContext before the LLM processes the message.
+ * Captures user prompts as episodic memory. Automatic procedural-knowledge
+ * injection is disabled by default and only runs when explicitly opted in.
  *
  * Stdin JSON: { prompt: "...", session_id, cwd, ... }
- * Stdout JSON (on PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
- * Fails silently on any error — capture and injection never block the turn.
+ * Stdout JSON (on opted-in PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
+ * Fails silently on any error — capture never blocks the turn.
  *
  * Note: Claude Code does not provide conversation history in the hook payload,
  * so exclude_ids is always empty. The same PK entry may appear on subsequent
@@ -14,7 +14,7 @@
  */
 
 import { readStdinJSON, createApi, debugLog } from "./common.mjs";
-import { formatPkContext } from "../../shared/pk-inject.mjs";
+import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
 try {
   const input = await readStdinJSON();
@@ -28,10 +28,12 @@ try {
     process.exit(0);
   }
 
-  // Episodic capture — fire-and-forget.
-  api.storeEpisodic(input.prompt, "user", debugLog, { client: "claude" });
+  // Episodic capture must complete before default-off exits.
+  await api.storeEpisodic(input.prompt, "user", debugLog, { client: "claude" });
 
-  // PK injection — 2s timeout inside searchProcedural; returns [] on failure.
+  if (!isPkInjectionEnabled()) process.exit(0);
+
+  // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
   const entries = await api.searchProcedural({ query: input.prompt, excludeIds: [] });
   if (entries.length > 0) {
     const ctx = formatPkContext(entries);

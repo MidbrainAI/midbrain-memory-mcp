@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "crypto";
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
 import { makeDebugLogger } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
-import { formatPkContext, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
+import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 const DEBUG_LOG = path.join(os.homedir(), "midbrain-codex-debug.log");
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-assistant-turns");
@@ -36,8 +36,8 @@ export async function createApi(cwd) {
 }
 
 /**
- * Capture user prompt as episodic memory and search for relevant PK entries.
- * Returns a stdout payload object if PK was found, otherwise returns undefined.
+ * Capture user prompt as episodic memory. When PK injection is explicitly
+ * enabled, search for relevant PK entries and return a stdout payload object.
  * Codex does not provide conversation history in the hook payload, so
  * exclude_ids is always empty; min_score=0.5 limits repetition to relevant entries.
  *
@@ -60,7 +60,9 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
 
   await postEpisodic(prompt, "user", input?.cwd, deps, api);
 
-  // PK injection — 2s timeout inside searchProcedural; returns [] on failure.
+  if (!isPkInjectionEnabled()) return undefined;
+
+  // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
   try {
     const entries = await api.searchProcedural({ query: prompt, excludeIds: [] });
     if (entries.length > 0) {

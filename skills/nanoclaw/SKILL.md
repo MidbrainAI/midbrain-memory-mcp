@@ -184,8 +184,10 @@ Verify memory search from the agent:
 | `read_file` | Read a semantic memory document |
 | `memory_setup_project` | Configure per-project memory scoping |
 
-Procedural knowledge is injected automatically by MidBrain hooks when relevant.
-Do not call or expect a separate procedural-knowledge MCP tool.
+Procedural knowledge is not injected automatically by MidBrain hooks. Use the
+explicit memory tools for recall; do not call or expect a separate
+procedural-knowledge MCP tool. Legacy PK injection only runs when
+`MIDBRAIN_ENABLE_PK_INJECTION=1` is set explicitly in the hook environment.
 
 ## Troubleshooting
 

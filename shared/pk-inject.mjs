@@ -17,6 +17,7 @@ export const PK_ENTRY_TITLE_MAX_CHARS = 160;
 export const PK_ENTRY_CONTENT_MAX_CHARS = 2_000;
 export const PK_CONTEXT_MAX_CHARS = 6_000;
 export const PK_TRUNCATION_MARKER = "\n[truncated]";
+export const PK_INJECTION_ENV = "MIDBRAIN_ENABLE_PK_INJECTION";
 
 const PK_MARKER_RE  = /<!-- mb:pk ([^-]+) -->/g;
 const CTX_BLOCK_RE  = new RegExp(
@@ -32,6 +33,17 @@ const PK_META_PREFIX = "<!-- mb:ctx-meta nonce=";
 const PK_META_RE = /<!-- mb:ctx-meta nonce=([^ ]+) sig=([a-f0-9]+) -->/;
 const HTML_COMMENT_START_RE = /<!--/g;
 const HTML_COMMENT_END_RE = /-->/g;
+
+/**
+ * Automatic PK injection is disabled by default in v0.4.3. Set
+ * MIDBRAIN_ENABLE_PK_INJECTION=1 to opt in to the legacy injection path.
+ *
+ * @param {NodeJS.ProcessEnv|Record<string, string|undefined>} env
+ * @returns {boolean}
+ */
+export function isPkInjectionEnabled(env = process.env) {
+  return env?.[PK_INJECTION_ENV] === "1";
+}
 
 function escapeContextText(value) {
   return String(value ?? "")
