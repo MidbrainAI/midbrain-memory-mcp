@@ -67,7 +67,8 @@ describe("buildRulesBlock", () => {
     expect(block).toContain("get_episodic_memories_by_date");
     expect(block).toContain("NEVER create semantic memories");
     expect(block).toContain("NEVER create episodic memories");
-    expect(block).toContain("Procedural knowledge (PK) is injected automatically");
+    expect(block).toContain("Procedural knowledge is not injected automatically");
+    expect(block).toContain("MIDBRAIN_ENABLE_PK_INJECTION=1");
     expect(block).toContain("memory_setup_project");
   });
 });

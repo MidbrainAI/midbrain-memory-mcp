@@ -18,6 +18,7 @@ import { formatPkContext } from "../shared/pk-inject.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
+const PK_ENV = "MIDBRAIN_ENABLE_PK_INJECTION";
 
 function makeDeps() {
   const api = {
@@ -45,13 +46,18 @@ function firstStore(deps) {
 
 describe("Codex hook capture", () => {
   let deps;
+  let originalPkEnv;
 
   beforeEach(() => {
+    originalPkEnv = process.env[PK_ENV];
+    delete process.env[PK_ENV];
     deps = makeDeps();
   });
 
   afterEach(() => {
     cleanupDeps(deps);
+    if (originalPkEnv === undefined) delete process.env[PK_ENV];
+    else process.env[PK_ENV] = originalPkEnv;
   });
 
   it("captureUser stores a non-empty prompt with Codex metadata", async () => {
@@ -67,20 +73,20 @@ describe("Codex hook capture", () => {
     ]);
   });
 
-  it("captureUser resolves the API key exactly once per turn (no double key-resolution)", async () => {
+  it("captureUser resolves the API key once and skips PK search by default", async () => {
     deps.api.searchProcedural.mockResolvedValueOnce([
       { id: 1, title: "Git", content: "squash before merge" },
     ]);
 
     await captureUser({ prompt: "git workflow", cwd: "/repo" }, deps);
 
-    // Both episodic store and PK search must share the single resolved api instance.
     expect(deps.createApi).toHaveBeenCalledOnce();
     expect(deps.api.storeEpisodic).toHaveBeenCalledOnce();
-    expect(deps.api.searchProcedural).toHaveBeenCalledOnce();
+    expect(deps.api.searchProcedural).not.toHaveBeenCalled();
   });
 
-  it("captureUser returns PK context payload when entries are found", async () => {
+  it("captureUser returns PK context payload when entries are found and PK injection is opted in", async () => {
+    process.env[PK_ENV] = "1";
     deps.api.searchProcedural.mockResolvedValueOnce([
       { id: 2, title: "Python", content: "use ruff" },
     ]);
@@ -95,6 +101,7 @@ describe("Codex hook capture", () => {
   });
 
   it("captureUser returns undefined when no PK entries match", async () => {
+    process.env[PK_ENV] = "1";
     // searchProcedural already returns [] by default from makeDeps
     const result = await captureUser({ prompt: "unrelated query", cwd: "/repo" }, deps);
     expect(result).toBeUndefined();
@@ -353,7 +360,7 @@ describe("Codex hook wrappers", () => {
     return { dir, file };
   }
 
-  function runUserHook(input, mode = "empty") {
+  function runUserHook(input, mode = "empty", extraEnv = {}) {
     const home = tempHomeWithKey();
     const loaded = preload(mode);
     const result = spawnSync(process.execPath, [
@@ -362,15 +369,26 @@ describe("Codex hook wrappers", () => {
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, HOME: home, [PK_ENV]: undefined, ...extraEnv },
     });
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(loaded.dir, { recursive: true, force: true });
     return result;
   }
 
-  it("UserPromptSubmit wrapper exits zero and writes context stdout on PK match", () => {
+  it("UserPromptSubmit wrapper exits zero with empty stdout on procedural match by default", () => {
     const result = runUserHook({ prompt: "codex workflow", cwd: "/repo" }, "match");
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
+  it("UserPromptSubmit wrapper exits zero and writes context stdout on PK match when opted in", () => {
+    const result = runUserHook(
+      { prompt: "codex workflow", cwd: "/repo" },
+      "match",
+      { [PK_ENV]: "1" },
+    );
 
     expect(result.status).toBe(0);
     const payload = JSON.parse(result.stdout);

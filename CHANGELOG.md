@@ -3,6 +3,25 @@
 All notable public release changes for `midbrain-memory-mcp` are tracked here.
 Full release-note bodies live in `docs/releases/`.
 
+## 0.4.3
+
+Full notes: [docs/releases/v0.4.3.md](docs/releases/v0.4.3.md)
+
+### Changed
+
+- Disabled automatic procedural-knowledge injection by default for Codex,
+  Claude Code, and OpenCode hooks.
+- Kept legacy PK injection helpers and runtime behavior available only behind
+  explicit opt-in with `MIDBRAIN_ENABLE_PK_INJECTION=1`.
+- Preserved assistant-side scrubbing for old injected PK blocks.
+
+### Notes
+
+- Installer-generated configs and hooks do not set the opt-in flag, so users
+  get the disabled behavior automatically when upgrading.
+- Explicit memory tools and episodic capture are unchanged.
+- Breaking changes: None.
+
 ## 0.4.2
 
 Full notes: [docs/releases/v0.4.2.md](docs/releases/v0.4.2.md)

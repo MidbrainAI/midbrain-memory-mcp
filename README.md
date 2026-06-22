@@ -69,21 +69,22 @@ assistant capture stores the clean assistant answer separately from one
 bounded reasoning/commentary summary, so interim commentary does not create
 many standalone memories.
 
-**Procedural knowledge**: On user turns, hooks automatically search
-`/api/v1/memories/search/procedural` for relevant learned procedures and
-prepend a bounded context block before the model runs. There is no manual
-MCP tool for procedural knowledge; agents should use the normal search tools
-and let hooks inject procedural context automatically.
+**Procedural knowledge**: Automatic procedural-knowledge injection is disabled
+by default in v0.4.3 while the experience layer is redesigned. Hooks do not
+call `/api/v1/memories/search/procedural` or prepend procedural context unless
+`MIDBRAIN_ENABLE_PK_INJECTION=1` is explicitly set in the hook environment.
+There is no manual MCP tool for procedural knowledge; agents should use the
+normal memory tools for explicit recall.
 
 Over time, captured memory can consolidate into procedural knowledge: the
 experience layer that helps agents adapt how they work, not just recall what
 happened.
 
-Injected PK context is capped at 160 characters per title, 2,000 characters
-per entry body, and 6,000 characters total. Marker-like text in PK is escaped,
-and trusted injected blocks include `ctx-meta nonce` metadata plus a signature
-over the PK ids so user-authored marker examples cannot spoof deduplication or
-strip prompt text.
+When the legacy opt-in path is enabled, injected PK context is capped at
+160 characters per title, 2,000 characters per entry body, and 6,000 characters
+total. Marker-like text in PK is escaped, and trusted injected blocks include
+`ctx-meta nonce` metadata plus a signature over the PK ids so user-authored
+marker examples cannot spoof deduplication or strip prompt text.
 
 **Project Setup**: The LLM calls `memory_setup_project` via MCP to scope
 memory to a specific project, then tells the user to restart.
@@ -449,11 +450,12 @@ If you manage rules manually, use this distilled block:
   relevant to the user's current intent.
 - NEVER create semantic memories. Semantic is managed by dream consolidation.
 - NEVER create episodic memories. Episodic capture is automatic.
-- Procedural knowledge is injected automatically by hooks; do not call or
-  expect a manual procedural knowledge MCP tool. Injected PK blocks include
-  `ctx-meta nonce` trust metadata plus an id signature, and are capped at
-  160 title characters, 2,000 content characters per entry, and 6,000
-  characters total.
+- Procedural knowledge is not injected automatically. Use explicit memory tools
+  for recall; do not call or expect a manual procedural knowledge MCP tool.
+  Legacy PK injection only runs when `MIDBRAIN_ENABLE_PK_INJECTION=1` is set.
+  Injected PK blocks include `ctx-meta nonce` trust metadata plus an id
+  signature, and are capped at 160 title characters, 2,000 content characters
+  per entry, and 6,000 characters total.
 - The memory tools are memory_search, grep, get_episodic_memories_by_date,
   list_files, read_file, check_session_status, and memory_setup_project. Use
   them proactively.

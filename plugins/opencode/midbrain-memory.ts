@@ -2,9 +2,10 @@
  * MidBrain Memory OpenCode Plugin
  *
  * Episodic auto-capture: every user + assistant message stored automatically.
- * PK injection: on each user turn, relevant procedural knowledge entries are
- * searched and prepended to the message as a context block before the LLM
- * sees it. 2s hard timeout — on failure the message passes through unchanged.
+ * PK injection: disabled by default in v0.4.3. When explicitly opted in,
+ * relevant procedural knowledge entries are searched and prepended to the
+ * message as a context block before the LLM sees it. 2s hard timeout — on
+ * failure the message passes through unchanged.
  * memory_search lives in the MCP server (index.js), not here.
  *
  * Architecture:
@@ -16,12 +17,12 @@
  * - Exactly 1 API POST per message (no backlog dumps, no history scans)
  * - Directory-based instance filtering (only matching instance processes)
  * - Fire-and-forget: never blocks chat on API response
- * - PK injection: silent fallthrough on any error or timeout
+ * - Opt-in PK injection: silent fallthrough on any error or timeout
  */
 
 import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
-import { MidbrainApi, makeDebugLogger, getClient, extractInjectedPkIds, formatPkContext, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
+import { MidbrainApi, makeDebugLogger, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
 
 const OPENCODE_HISTORY_TIMEOUT_MS = 500;
 
@@ -108,8 +109,9 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
       storedMessages.add(messageID);
       api.storeEpisodic(text, "user", debugLog, { client: "opencode" });
 
-      // PK injection: search for relevant procedural knowledge, prepend as context block.
-      // 2s timeout via AbortSignal.timeout inside searchProcedural — silent fallthrough.
+      if (!isPkInjectionEnabled()) return;
+
+      // Opt-in legacy PK injection: search and prepend relevant procedural context.
       try {
         const sessionID = (input as Record<string, unknown>).sessionID as string | undefined;
         let excludeIds: number[] = [];

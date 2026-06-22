@@ -23,6 +23,7 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
 const BUNDLE_PATH = path.join(REPO_ROOT, "dist", "midbrain-shared.mjs");
 const SHIM_PATH = path.join(REPO_ROOT, "plugins", "opencode", "midbrain-shared.mjs");
 const PLUGIN_PATH = path.join(REPO_ROOT, "plugins", "opencode", "midbrain-memory.ts");
+const PK_ENV = "MIDBRAIN_ENABLE_PK_INJECTION";
 
 async function pluginImportedSymbols() {
   const source = await fs.readFile(PLUGIN_PATH, "utf8");
@@ -113,16 +114,19 @@ describe("OpenCode plugin bundle", () => {
 
 describe("OpenCode plugin PK delivery helpers", () => {
   let originalHome;
+  let originalPkEnv;
   let tempHome;
   let fetchSpy;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalPkEnv = process.env[PK_ENV];
     tempHome = fsSync.mkdtempSync(path.join(os.tmpdir(), "opencode-plugin-home-"));
     const keyDir = path.join(tempHome, ".config", "midbrain");
     fsSync.mkdirSync(keyDir, { recursive: true });
     fsSync.writeFileSync(path.join(keyDir, ".midbrain-key"), "test-key\n", { mode: 0o600 });
     process.env.HOME = tempHome;
+    delete process.env[PK_ENV];
     fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const text = String(url);
       if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
@@ -140,10 +144,32 @@ describe("OpenCode plugin PK delivery helpers", () => {
   afterEach(() => {
     fetchSpy.mockRestore();
     process.env.HOME = originalHome;
+    if (originalPkEnv === undefined) delete process.env[PK_ENV];
+    else process.env[PK_ENV] = originalPkEnv;
     fsSync.rmSync(tempHome, { recursive: true, force: true });
   });
 
-  it("mutates the current chat.message text part when PK matches", async () => {
+  it("stores user text without procedural search or message mutation by default", async () => {
+    const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const client = {
+      session: {
+        messages: vi.fn().mockResolvedValue([]),
+      },
+    };
+    const hooks = await MidBrainMemoryPlugin({ client, directory: "/repo" });
+    const output = {
+      message: { id: "m1" },
+      parts: [{ type: "text", text: "How does OpenCode deliver context?" }],
+    };
+
+    await hooks["chat.message"]({ sessionID: "session-1" }, output);
+
+    expect(output.parts[0].text).toBe("How does OpenCode deliver context?");
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("/search/procedural"))).toBe(false);
+  });
+
+  it("mutates the current chat.message text part when PK matches and injection is opted in", async () => {
+    process.env[PK_ENV] = "1";
     const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
     const client = {
       session: {
@@ -166,6 +192,7 @@ describe("OpenCode plugin PK delivery helpers", () => {
   });
 
   it("extracts prior PK ids from wrapped OpenCode history responses", async () => {
+    process.env[PK_ENV] = "1";
     const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
     const priorBlock = formatPkContext([{ id: 42, title: "Prior", content: "exclude me" }]);
     const client = {

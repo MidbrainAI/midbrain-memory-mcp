@@ -47,6 +47,7 @@ const HOME = os.homedir();
 const MCP_KEY = "midbrain-memory";
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
+const PK_ENV = "MIDBRAIN_ENABLE_PK_INJECTION";
 
 const PATHS = {
   claudeKey:      path.join(HOME, ".config", "claude", ".midbrain-key"),
@@ -307,9 +308,19 @@ describe("Claude capture-user hook wrapper", () => {
     const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-hook-preload-"));
     const file = path.join(dir, "fetch-preload.mjs");
     fsSync.writeFileSync(file, `
+      import fs from "node:fs";
+
       globalThis.fetch = async (url) => {
         const text = String(url);
         if (${JSON.stringify(mode)} === "throw") throw new Error("network down");
+        if (${JSON.stringify(mode)} === "delayed-store" && text.includes("/memories/episodic")) {
+          return new Promise((resolve) => {
+            setTimeout(() => {
+              fs.writeFileSync(process.env.MB_TEST_STORE_MARKER, "stored");
+              resolve({ ok: true, status: 201 });
+            }, 50);
+          });
+        }
         if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
         if (text.includes("/memories/search/procedural")) {
           const body = ${JSON.stringify(mode)} === "match"
@@ -323,7 +334,7 @@ describe("Claude capture-user hook wrapper", () => {
     return { dir, file };
   }
 
-  function runHook(input, { mode = "empty", home = tempHomeWithKey() } = {}) {
+  function runHook(input, { mode = "empty", home = tempHomeWithKey(), extraEnv = {} } = {}) {
     const loaded = preload(mode);
     const result = spawnSync(process.execPath, [
       "--import", loaded.file,
@@ -331,14 +342,37 @@ describe("Claude capture-user hook wrapper", () => {
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, HOME: home, [PK_ENV]: undefined, ...extraEnv },
     });
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });
     return result;
   }
 
-  it("emits hookSpecificOutput.additionalContext when PK matches", () => {
+  it("emits no stdout and skips procedural injection by default", () => {
     const result = runHook({ prompt: "workflow please", cwd: "/repo" }, { mode: "match" });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
+  it("waits for default-off episodic capture before exiting", () => {
+    const marker = path.join(os.tmpdir(), `claude-store-${Date.now()}-${Math.random()}`);
+    const result = runHook(
+      { prompt: "capture me before exit", cwd: "/repo" },
+      { mode: "delayed-store", extraEnv: { MB_TEST_STORE_MARKER: marker } },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(fsSync.readFileSync(marker, "utf8")).toBe("stored");
+    fsSync.rmSync(marker, { force: true });
+  });
+
+  it("emits hookSpecificOutput.additionalContext when PK matches and injection is opted in", () => {
+    const result = runHook(
+      { prompt: "workflow please", cwd: "/repo" },
+      { mode: "match", extraEnv: { [PK_ENV]: "1" } },
+    );
 
     expect(result.status).toBe(0);
     const payload = JSON.parse(result.stdout);

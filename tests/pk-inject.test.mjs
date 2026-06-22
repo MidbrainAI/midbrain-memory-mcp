@@ -9,9 +9,11 @@ import {
   PK_CONTEXT_MAX_CHARS,
   PK_ENTRY_CONTENT_MAX_CHARS,
   PK_ENTRY_TITLE_MAX_CHARS,
+  PK_INJECTION_ENV,
   PK_TRUNCATION_MARKER,
   extractInjectedPkIds,
   formatPkContext,
+  isPkInjectionEnabled,
   scrubInjectedPkContext,
   stripInjectedContext,
 } from "../shared/pk-inject.mjs";
@@ -27,6 +29,21 @@ describe("marker constants", () => {
 
   it("CONTEXT_MARKER_END is the expected HTML comment", () => {
     expect(CONTEXT_MARKER_END).toBe("<!-- mb:ctx-end -->");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isPkInjectionEnabled
+// ---------------------------------------------------------------------------
+
+describe("isPkInjectionEnabled", () => {
+  it("only enables automatic injection for an explicit env value of 1", () => {
+    expect(isPkInjectionEnabled({})).toBe(false);
+    expect(isPkInjectionEnabled({ [PK_INJECTION_ENV]: "" })).toBe(false);
+    expect(isPkInjectionEnabled({ [PK_INJECTION_ENV]: "0" })).toBe(false);
+    expect(isPkInjectionEnabled({ [PK_INJECTION_ENV]: "false" })).toBe(false);
+    expect(isPkInjectionEnabled({ [PK_INJECTION_ENV]: "true" })).toBe(false);
+    expect(isPkInjectionEnabled({ [PK_INJECTION_ENV]: "1" })).toBe(true);
   });
 });
 

@@ -128,11 +128,19 @@ function midbrainHook(scriptName) {
   };
 }
 
+function normalizedHookCommand(command) {
+  return command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 function isMidbrainHook(hook) {
   const command = typeof hook?.command === 'string' ? hook.command : '';
-  return command.includes(stableHookPath()) ||
+  const normalized = normalizedHookCommand(command);
+  return normalized.includes(stableHookPath()) ||
+    normalized.includes('/.midbrain/bin/codex-hook') ||
+    normalized.includes('~/.midbrain/bin/codex-hook') ||
+    normalized.includes('$HOME/.midbrain/bin/codex-hook') ||
     LEGACY_HOOK_SCRIPTS.some((script) => command.includes(script)) ||
-    (command.includes(PKG_NAME) && command.includes('hook codex'));
+    (normalized.includes(PKG_NAME) && /\bhook\s+codex\b/.test(normalized));
 }
 
 function withoutMidbrainGroups(groups) {
