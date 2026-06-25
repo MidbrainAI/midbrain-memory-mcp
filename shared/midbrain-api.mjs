@@ -13,7 +13,7 @@
  * Node 20 + Bun compatible. No npm deps (uses native fetch).
  */
 
-const API_BASE = "https://memory.midbrain.ai";
+const API_BASE = process.env.MIDBRAIN_API_URL || "https://memory.midbrain.ai";
 const API_V1 = `${API_BASE}/api/v1`;
 
 // Endpoint paths — internal, consumed via instance methods and static constants.

@@ -25,6 +25,7 @@ import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
 import { writeProjectRules } from './shared/agent-rules.mjs';
+import { deviceCodeLogin } from './shared/device-auth.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -142,21 +143,76 @@ async function prompt(question) {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolves keys for all detected clients. Prompts user when no key is found.
+ * Resolves keys for all detected clients. When no key is found and running
+ * interactively, offers device-code login (browser-based) or manual key paste.
+ *
  * In non-interactive mode (explicit flag or no TTY), skips prompts — uses
  * existing key files or env var only.
- * Returns Map<clientId, string>.
+ *
+ * @param {object[]} clients - Detected client instances.
+ * @param {object} [opts]
+ * @param {boolean} [opts.nonInteractive] - Skip all prompts.
+ * @param {boolean} [opts.forceLogin] - Force device-code flow even if a key exists.
+ * @returns {Promise<Map<string, string>>} Map<clientId, string>.
  */
-async function resolveKeys(clients, { nonInteractive = false } = {}) {
+async function resolveKeys(clients, { nonInteractive = false, forceLogin = false } = {}) {
   const interactive = !nonInteractive && process.stdin.isTTY;
   const keys = new Map();
 
+  // Check if any client already has a key
+  let anyKeyFound = false;
   for (const client of clients) {
     const existing = await client.resolveKey();
     if (existing) {
       console.log(`Found ${client.displayName} key: ${existing.source}`);
       keys.set(client.id, existing.key);
-    } else if (interactive) {
+      anyKeyFound = true;
+    }
+  }
+
+  // If --login flag is set and running interactively, force device-code flow
+  if (forceLogin && interactive) {
+    const result = await deviceCodeLogin();
+    for (const client of clients) {
+      keys.set(client.id, result.apiKey);
+    }
+    return keys;
+  }
+
+  // If all clients have keys, we're done
+  if (keys.size === clients.length) {
+    return keys;
+  }
+
+  // Some clients need keys — offer device-code login or manual paste
+  if (interactive && !anyKeyFound) {
+    console.log('');
+    console.log('No API key found. How would you like to authenticate?');
+    console.log('  [1] Log in via browser (recommended)');
+    console.log('  [2] Paste an existing API key');
+    console.log('');
+    const choice = await prompt('Select (1-2): ');
+
+    if (choice === '1') {
+      try {
+        const result = await deviceCodeLogin();
+        for (const client of clients) {
+          keys.set(client.id, result.apiKey);
+        }
+        return keys;
+      } catch (err) {
+        console.error(`Device login failed: ${err.message}`);
+        console.error('Falling back to manual key entry.');
+        console.error('');
+      }
+    }
+  }
+
+  // Manual key entry fallback — fill in any clients still missing keys
+  for (const client of clients) {
+    if (keys.has(client.id)) continue;
+
+    if (interactive) {
       const key = await prompt(`Enter MidBrain API key for ${client.displayName}: `);
       if (!key) throw new Error(`MidBrain API key for ${client.displayName} is required. Aborting.`);
       keys.set(client.id, key);
@@ -252,7 +308,7 @@ async function writeRulesForMainMode(nonInteractive) {
 // Main (interactive mode)
 // ---------------------------------------------------------------------------
 async function main(opts = {}) {
-  const { isDev = false, nonInteractive = false, skipRules = false } = opts;
+  const { isDev = false, nonInteractive = false, skipRules = false, forceLogin = false } = opts;
   const clients = detectClients();
 
   if (clients.length === 0) {
@@ -262,7 +318,7 @@ async function main(opts = {}) {
   }
 
   // Resolve and write keys
-  const keys = await resolveKeys(clients, { nonInteractive });
+  const keys = await resolveKeys(clients, { nonInteractive, forceLogin });
   if (keys.size === 0) {
     throw new Error("No API key found. Run the installer interactively first or set MIDBRAIN_API_KEY.");
   }
@@ -414,6 +470,7 @@ MidBrain Memory MCP — installer
 
 Usage:
   npx midbrain-memory-mcp install                            Interactive install
+  npx midbrain-memory-mcp install --login                    Force browser-based login
   npx midbrain-memory-mcp install --project <absolute-path>  Per-project setup (non-interactive)
   npx midbrain-memory-mcp install --non-interactive           Non-interactive install (uses existing keys/env)
   npx midbrain-memory-mcp install --help                     Show this help
@@ -422,6 +479,11 @@ Development (clone-local):
   node install.mjs [--help | --project <path> | --dev | --non-interactive | --no-rules]
 
 Flags:
+  --login             Authenticate via browser (opens your default browser).
+                      Creates an agent and API key automatically. This is the
+                      default when no existing API key is found.
+  --no-login          Skip browser-based auth. Only use existing key files,
+                      env var, or manual paste.
   --project <path>    Absolute path to the project root directory.
   --dev               Write absolute-path configs pointing at this clone.
                       (For repository contributors. Default is npx @latest,
@@ -466,6 +528,8 @@ async function runInstallerCli(argv) {
   const isDev = argv.includes('--dev');
   const nonInteractive = argv.includes('--non-interactive');
   const skipRules = argv.includes('--no-rules');
+  const forceLogin = argv.includes('--login');
+  const noLogin = argv.includes('--no-login');
   const projectFlagIdx = argv.indexOf('--project');
   if (projectFlagIdx !== -1) {
     const projectArg = argv[projectFlagIdx + 1];
@@ -486,7 +550,7 @@ async function runInstallerCli(argv) {
     }
   } else {
     try {
-      await main({ isDev, nonInteractive, skipRules });
+      await main({ isDev, nonInteractive, skipRules, forceLogin: forceLogin && !noLogin });
     } catch (err) {
       console.error('Fatal error:', err.message);
       process.exit(1);
