@@ -141,6 +141,10 @@ export class MidbrainApi {
    * Never throws.
    */
   async #postEpisodic(text, role, memoryMetadata, debugLogFn) {
+    if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") {
+      debugLogFn("STORE ERROR: simulated offline (MIDBRAIN_SIMULATE_OFFLINE=1)");
+      return false;
+    }
     try {
       const response = await fetch(ENDPOINTS.EPISODIC, {
         method: "POST",
