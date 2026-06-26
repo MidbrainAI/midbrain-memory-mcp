@@ -376,6 +376,83 @@ describe("Codex hook wrappers", () => {
     return result;
   }
 
+  function tempHomeWithNamedKey(key) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-scoped-home-"));
+    writeHomeKey(home, key);
+    return home;
+  }
+
+  function writeHomeKey(home, key) {
+    const keyDir = path.join(home, ".config", "midbrain");
+    fs.mkdirSync(keyDir, { recursive: true });
+    fs.writeFileSync(path.join(keyDir, ".midbrain-key"), `${key}\n`, { mode: 0o600 });
+  }
+
+  function preloadWithRequestLog() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-scoped-preload-"));
+    const file = path.join(dir, "fetch-preload.mjs");
+    fs.writeFileSync(file, `
+      import fs from "node:fs";
+
+      globalThis.fetch = async (url, opts = {}) => {
+        const headers = opts.headers || {};
+        const record = {
+          url: String(url),
+          authorization: headers.Authorization,
+          body: opts.body ? JSON.parse(opts.body) : undefined,
+        };
+        fs.appendFileSync(process.env.MIDBRAIN_TEST_FETCH_LOG, JSON.stringify(record) + "\\n");
+        if (process.env.MIDBRAIN_TEST_FETCH_MODE === "throw") throw new Error("network down");
+        if (String(url).includes("/memories/episodic")) {
+          return { ok: true, status: 201, text: async () => "", json: async () => ({}) };
+        }
+        if (String(url).includes("/memories/search/procedural")) {
+          return { ok: true, status: 200, json: async () => [] };
+        }
+        return { ok: false, status: 404, text: async () => "not found" };
+      };
+    `);
+    return { dir, file };
+  }
+
+  function runPersistentUserHook({ home, preloadFile, fetchLog, mode, prompt }) {
+    return spawnSync(process.execPath, [
+      "--import", preloadFile,
+      path.join(REPO_ROOT, "plugins", "codex", "capture-user.mjs"),
+    ], {
+      input: JSON.stringify({ prompt, cwd: path.join(home, "project") }),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: home,
+        [PK_ENV]: undefined,
+        MIDBRAIN_TEST_FETCH_LOG: fetchLog,
+        MIDBRAIN_TEST_FETCH_MODE: mode,
+      },
+    });
+  }
+
+  function readFetchLog(fetchLog) {
+    if (!fs.existsSync(fetchLog)) return [];
+    return fs.readFileSync(fetchLog, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  }
+
+  function cachedTexts(home) {
+    const cacheDir = path.join(home, ".cache", "midbrain");
+    if (!fs.existsSync(cacheDir)) return [];
+    return fs.readdirSync(cacheDir)
+      .filter((name) => name.endsWith(".ndjson"))
+      .flatMap((name) => fs.readFileSync(path.join(cacheDir, name), "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line).text));
+  }
+
   it("UserPromptSubmit wrapper exits zero with empty stdout on procedural match by default", () => {
     const result = runUserHook({ prompt: "codex workflow", cwd: "/repo" }, "match");
 
@@ -408,6 +485,60 @@ describe("Codex hook wrappers", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
+  });
+
+  it("UserPromptSubmit wrapper caches outage memory and only flushes it with the original key", () => {
+    const home = tempHomeWithNamedKey("key-a");
+    const loaded = preloadWithRequestLog();
+    const fetchLog = path.join(home, "fetch-log.ndjson");
+
+    try {
+      const outage = runPersistentUserHook({
+        home,
+        preloadFile: loaded.file,
+        fetchLog,
+        mode: "throw",
+        prompt: "outage prompt from key A",
+      });
+      expect(outage.status).toBe(0);
+      expect(outage.stdout).toBe("");
+      expect(cachedTexts(home)).toContain("outage prompt from key A");
+
+      writeHomeKey(home, "key-b");
+      const wrongKeyRecovery = runPersistentUserHook({
+        home,
+        preloadFile: loaded.file,
+        fetchLog,
+        mode: "ok",
+        prompt: "fresh prompt from key B",
+      });
+      expect(wrongKeyRecovery.status).toBe(0);
+      expect(cachedTexts(home)).toContain("outage prompt from key A");
+
+      writeHomeKey(home, "key-a");
+      const originalKeyRecovery = runPersistentUserHook({
+        home,
+        preloadFile: loaded.file,
+        fetchLog,
+        mode: "ok",
+        prompt: "fresh prompt from key A",
+      });
+      expect(originalKeyRecovery.status).toBe(0);
+
+      const posts = readFetchLog(fetchLog);
+      expect(posts).not.toContainEqual(expect.objectContaining({
+        authorization: "Bearer key-b",
+        body: expect.objectContaining({ text: "outage prompt from key A" }),
+      }));
+      expect(posts).toContainEqual(expect.objectContaining({
+        authorization: "Bearer key-a",
+        body: expect.objectContaining({ text: "outage prompt from key A" }),
+      }));
+      expect(cachedTexts(home)).not.toContain("outage prompt from key A");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(loaded.dir, { recursive: true, force: true });
+    }
   });
 
   it("Stop wrapper exits zero and writes JSON stdout", () => {

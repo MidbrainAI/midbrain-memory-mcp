@@ -8,6 +8,8 @@ import os from "os";
 import path from "path";
 import {
   appendToCache,
+  beginCacheFlush,
+  finishCacheFlush,
   readAndClearCache,
   rewriteCache,
   hasCachedEntries,
@@ -87,6 +89,18 @@ describe("appendToCache", () => {
 // ---------------------------------------------------------------------------
 
 describe("readAndClearCache", () => {
+  it("keeps cache entries isolated by scope", () => {
+    appendToCache({ text: "from scope a", role: "user" }, "scope-a");
+    appendToCache({ text: "from scope b", role: "assistant" }, "scope-b");
+
+    const scopeB = readAndClearCache("scope-b");
+    expect(scopeB.map((entry) => entry.text)).toEqual(["from scope b"]);
+    expect(hasCachedEntries("scope-a")).toBe(true);
+
+    const scopeA = readAndClearCache("scope-a");
+    expect(scopeA.map((entry) => entry.text)).toEqual(["from scope a"]);
+  });
+
   it("returns all cached entries and removes the file", () => {
     appendToCache({ text: "a", role: "user" });
     appendToCache({ text: "b", role: "assistant", memory_metadata: { client: "codex" } });
@@ -145,6 +159,43 @@ describe("readAndClearCache", () => {
     expect(entries).toEqual([]);
     // File should be cleaned up.
     expect(fs.existsSync(cacheFile)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// safe flush handoff
+// ---------------------------------------------------------------------------
+
+describe("safe flush handoff", () => {
+  it("preserves failed survivors and concurrent appends after handoff", () => {
+    const scope = "safe-handoff-scope";
+    appendToCache({ text: "survivor", role: "user", memory_metadata: { client: "codex" } }, scope);
+    appendToCache({ text: "flushed", role: "assistant" }, scope);
+
+    const batch = beginCacheFlush(scope);
+    expect(batch.map((entry) => entry.text)).toEqual(["survivor", "flushed"]);
+
+    appendToCache({ text: "concurrent append", role: "user" }, scope);
+    finishCacheFlush([batch[0]], scope);
+
+    const remaining = readAndClearCache(scope);
+    expect(remaining.map((entry) => entry.text).sort()).toEqual(["concurrent append", "survivor"]);
+    expect(remaining.find((entry) => entry.text === "survivor").memory_metadata).toEqual({ client: "codex" });
+  });
+
+  it("recovers processing files left by an interrupted flush", () => {
+    const scope = "interrupted-flush-scope";
+    appendToCache({ text: "pending before crash", role: "user" }, scope);
+
+    const firstBatch = beginCacheFlush(scope);
+    expect(firstBatch.map((entry) => entry.text)).toEqual(["pending before crash"]);
+    expect(hasCachedEntries(scope)).toBe(true);
+
+    const recoveredBatch = beginCacheFlush(scope);
+    expect(recoveredBatch.map((entry) => entry.text)).toEqual(["pending before crash"]);
+
+    finishCacheFlush([], scope);
+    expect(hasCachedEntries(scope)).toBe(false);
   });
 });
 

@@ -18,7 +18,9 @@
  * Node 20 + Bun compatible. No npm deps (uses native fetch).
  */
 
-import { appendToCache, hasCachedEntries, readAndClearCache, rewriteCache } from "./episodic-cache.mjs";
+import { createHash } from "crypto";
+
+import { appendToCache, beginCacheFlush, finishCacheFlush, hasCachedEntries } from "./episodic-cache.mjs";
 
 const API_BASE = process.env.MIDBRAIN_API_URL || "https://memory.midbrain.ai";
 const API_V1 = `${API_BASE}/api/v1`;
@@ -42,11 +44,15 @@ const DEFAULT_SEARCH_LIMIT = 10;
 export class MidbrainApi {
   #key;
   #source;
+  #cacheScope;
 
   /** @param {string} key  API key. @param {string} source  Debug label for key origin. */
   constructor(key, source) {
     this.#key = key;
     this.#source = source;
+    this.#cacheScope = createHash("sha256")
+      .update(`${API_BASE}\0${key}`)
+      .digest("hex");
   }
 
   /**
@@ -125,12 +131,12 @@ export class MidbrainApi {
     debugLogFn(`STORE: role=${role} textLen=${text.length}`);
     const ok = await this.#postEpisodic(text, role, memoryMetadata, debugLogFn);
     if (!ok) {
-      appendToCache({ text, role, memory_metadata: memoryMetadata });
+      appendToCache({ text, role, memory_metadata: memoryMetadata }, this.#cacheScope);
       debugLogFn("STORE: cached entry for later flush");
       return false;
     }
     // Success — flush any previously cached entries.
-    if (hasCachedEntries()) {
+    if (hasCachedEntries(this.#cacheScope)) {
       await this.#flushCache(debugLogFn);
     }
     return true;
@@ -172,8 +178,11 @@ export class MidbrainApi {
    * re-written to the cache file so they survive for the next attempt.
    */
   async #flushCache(debugLogFn) {
-    const entries = readAndClearCache();
-    if (entries.length === 0) return;
+    const entries = beginCacheFlush(this.#cacheScope);
+    if (entries.length === 0) {
+      finishCacheFlush([], this.#cacheScope);
+      return;
+    }
     debugLogFn(`CACHE FLUSH: ${entries.length} cached entries`);
     const survivors = [];
     for (const entry of entries) {
@@ -183,9 +192,10 @@ export class MidbrainApi {
       if (!ok) survivors.push(entry);
     }
     if (survivors.length > 0) {
-      rewriteCache(survivors);
+      finishCacheFlush(survivors, this.#cacheScope);
       debugLogFn(`CACHE FLUSH: ${survivors.length} entries still pending`);
     } else {
+      finishCacheFlush([], this.#cacheScope);
       debugLogFn("CACHE FLUSH: all entries flushed successfully");
     }
   }
