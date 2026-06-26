@@ -5,6 +5,11 @@
  * Handles authentication, endpoint routing, and both read-path (GET)
  * and write-path (POST episodic) operations.
  *
+ * Episodic write resilience: when a POST to the episodic endpoint fails,
+ * the entry is appended to a local NDJSON cache file. On the next
+ * successful POST, all cached entries are flushed. Entries that still
+ * fail during flush are re-cached so nothing is lost.
+ *
  * Usage:
  *   const api = await MidbrainApi.create(getClient('opencode'), projectDir);
  *   const results = await api.searchSemantic({ query: '...', limit: 10 });
@@ -12,6 +17,10 @@
  *
  * Node 20 + Bun compatible. No npm deps (uses native fetch).
  */
+
+import { createHash } from "crypto";
+
+import { appendToCache, beginCacheFlush, finishCacheFlush, hasCachedEntries } from "./episodic-cache.mjs";
 
 const API_BASE = process.env.MIDBRAIN_API_URL || "https://memory.midbrain.ai";
 const API_V1 = `${API_BASE}/api/v1`;
@@ -35,11 +44,15 @@ const DEFAULT_SEARCH_LIMIT = 10;
 export class MidbrainApi {
   #key;
   #source;
+  #cacheScope;
 
   /** @param {string} key  API key. @param {string} source  Debug label for key origin. */
   constructor(key, source) {
     this.#key = key;
     this.#source = source;
+    this.#cacheScope = createHash("sha256")
+      .update(`${API_BASE}\0${key}`)
+      .digest("hex");
   }
 
   /**
@@ -105,6 +118,10 @@ export class MidbrainApi {
   /**
    * POST an episodic memory. Callers may ignore the returned promise for
    * fire-and-forget capture, or await its boolean result for retry decisions.
+   *
+   * Resilience: on failure the entry is appended to a local NDJSON cache.
+   * On the next successful call, all cached entries are flushed (best-effort).
+   *
    * @param {string} text
    * @param {"user"|"assistant"} role
    * @param {function(string): void} debugLogFn
@@ -112,6 +129,28 @@ export class MidbrainApi {
    */
   async storeEpisodic(text, role, debugLogFn, memoryMetadata) {
     debugLogFn(`STORE: role=${role} textLen=${text.length}`);
+    const ok = await this.#postEpisodic(text, role, memoryMetadata, debugLogFn);
+    if (!ok) {
+      appendToCache({ text, role, memory_metadata: memoryMetadata }, this.#cacheScope);
+      debugLogFn("STORE: cached entry for later flush");
+      return false;
+    }
+    // Success — flush any previously cached entries.
+    if (hasCachedEntries(this.#cacheScope)) {
+      await this.#flushCache(debugLogFn);
+    }
+    return true;
+  }
+
+  /**
+   * Raw POST to the episodic endpoint. Returns true on 2xx, false otherwise.
+   * Never throws.
+   */
+  async #postEpisodic(text, role, memoryMetadata, debugLogFn) {
+    if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") {
+      debugLogFn("STORE ERROR: simulated offline (MIDBRAIN_SIMULATE_OFFLINE=1)");
+      return false;
+    }
     try {
       const response = await fetch(ENDPOINTS.EPISODIC, {
         method: "POST",
@@ -131,6 +170,35 @@ export class MidbrainApi {
     } catch (err) {
       debugLogFn(`STORE ERROR: ${err instanceof Error ? err.message : String(err)}`);
       return false;
+    }
+  }
+
+  /**
+   * Attempt to POST all cached entries. Entries that still fail are
+   * re-written to the cache file so they survive for the next attempt.
+   */
+  async #flushCache(debugLogFn) {
+    const flush = beginCacheFlush(this.#cacheScope);
+    if (!flush.claimed) return;
+    const entries = flush.entries;
+    if (entries.length === 0) {
+      finishCacheFlush(flush, []);
+      return;
+    }
+    debugLogFn(`CACHE FLUSH: ${entries.length} cached entries`);
+    const survivors = [];
+    for (const entry of entries) {
+      const ok = await this.#postEpisodic(
+        entry.text, entry.role, entry.memory_metadata, debugLogFn,
+      );
+      if (!ok) survivors.push(entry);
+    }
+    if (survivors.length > 0) {
+      finishCacheFlush(flush, survivors);
+      debugLogFn(`CACHE FLUSH: ${survivors.length} entries still pending`);
+    } else {
+      finishCacheFlush(flush, []);
+      debugLogFn("CACHE FLUSH: all entries flushed successfully");
     }
   }
 
