@@ -66,6 +66,17 @@ describe("appendToCache", () => {
     expect(entry.memory_metadata).toEqual({ client: "opencode" });
   });
 
+  it("creates cache directory as 0700 and cache file as 0600 where supported", () => {
+    appendToCache({ text: "hi", role: "user" }, "permission-scope");
+
+    if (process.platform === "win32") return;
+
+    const files = fs.readdirSync(tmpDir);
+    const cacheFile = path.join(tmpDir, files.find((name) => name.endsWith(".ndjson")));
+    expect(fs.statSync(tmpDir).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(cacheFile).mode & 0o777).toBe(0o600);
+  });
+
   it("adds a ts (timestamp) field to each entry", () => {
     const before = Date.now();
     appendToCache({ text: "hi", role: "user" });
@@ -172,29 +183,55 @@ describe("safe flush handoff", () => {
     appendToCache({ text: "survivor", role: "user", memory_metadata: { client: "codex" } }, scope);
     appendToCache({ text: "flushed", role: "assistant" }, scope);
 
-    const batch = beginCacheFlush(scope);
-    expect(batch.map((entry) => entry.text)).toEqual(["survivor", "flushed"]);
+    const flush = beginCacheFlush(scope);
+    expect(flush.claimed).toBe(true);
+    expect(flush.entries.map((entry) => entry.text)).toEqual(["survivor", "flushed"]);
 
     appendToCache({ text: "concurrent append", role: "user" }, scope);
-    finishCacheFlush([batch[0]], scope);
+    finishCacheFlush(flush, [flush.entries[0]]);
 
     const remaining = readAndClearCache(scope);
     expect(remaining.map((entry) => entry.text).sort()).toEqual(["concurrent append", "survivor"]);
     expect(remaining.find((entry) => entry.text === "survivor").memory_metadata).toEqual({ client: "codex" });
   });
 
+  it("does not let a losing flusher delete another flusher's processing batch", () => {
+    const scope = "concurrent-flusher-scope";
+    appendToCache({ text: "owned by winner", role: "user" }, scope);
+
+    const owner = beginCacheFlush(scope);
+    expect(owner.claimed).toBe(true);
+    expect(owner.entries.map((entry) => entry.text)).toEqual(["owned by winner"]);
+
+    const loser = beginCacheFlush(scope);
+    expect(loser.claimed).toBe(false);
+    expect(loser.entries).toEqual([]);
+
+    finishCacheFlush(loser, []);
+    expect(hasCachedEntries(scope)).toBe(true);
+
+    finishCacheFlush(owner, []);
+    expect(hasCachedEntries(scope)).toBe(false);
+  });
+
   it("recovers processing files left by an interrupted flush", () => {
     const scope = "interrupted-flush-scope";
     appendToCache({ text: "pending before crash", role: "user" }, scope);
 
-    const firstBatch = beginCacheFlush(scope);
-    expect(firstBatch.map((entry) => entry.text)).toEqual(["pending before crash"]);
+    const firstFlush = beginCacheFlush(scope);
+    expect(firstFlush.claimed).toBe(true);
+    expect(firstFlush.entries.map((entry) => entry.text)).toEqual(["pending before crash"]);
     expect(hasCachedEntries(scope)).toBe(true);
 
-    const recoveredBatch = beginCacheFlush(scope);
-    expect(recoveredBatch.map((entry) => entry.text)).toEqual(["pending before crash"]);
+    const concurrentFlush = beginCacheFlush(scope);
+    expect(concurrentFlush.claimed).toBe(false);
 
-    finishCacheFlush([], scope);
+    fs.unlinkSync(firstFlush.lockFile);
+    const recoveredFlush = beginCacheFlush(scope);
+    expect(recoveredFlush.claimed).toBe(true);
+    expect(recoveredFlush.entries.map((entry) => entry.text)).toEqual(["pending before crash"]);
+
+    finishCacheFlush(recoveredFlush, []);
     expect(hasCachedEntries(scope)).toBe(false);
   });
 });

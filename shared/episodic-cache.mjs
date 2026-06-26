@@ -20,13 +20,14 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 
 const DEFAULT_CACHE_DIR  = path.join(os.homedir(), ".cache", "midbrain");
 const DEFAULT_CACHE_FILE = "midbrain-episodic-cache.ndjson";
 const SCOPED_CACHE_PREFIX = "midbrain-episodic-cache-";
 const CACHE_EXT = ".ndjson";
 const PROCESSING_EXT = ".processing";
+const LOCK_EXT = ".lock";
 
 /** Resolve the current cache directory. Tests may override via _setCachePath. */
 let cacheDir  = DEFAULT_CACHE_DIR;
@@ -56,9 +57,85 @@ function processingFileForScope(scope) {
   return `${cacheFileForScope(scope)}${PROCESSING_EXT}`;
 }
 
+function lockFileForScope(scope) {
+  return `${processingFileForScope(scope)}${LOCK_EXT}`;
+}
+
 function ensureCacheDir() {
   fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(cacheDir, 0o700); } catch { /* ignore */ }
+}
+
+function emptyFlush() {
+  return { claimed: false, entries: [] };
+}
+
+function makeToken() {
+  return `${process.pid}:${Date.now()}:${randomBytes(8).toString("hex")}`;
+}
+
+function readLock(lockFile) {
+  try {
+    return JSON.parse(fs.readFileSync(lockFile, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === "EPERM";
+  }
+}
+
+function removeDeadLock(lockFile) {
+  const lock = readLock(lockFile);
+  if (!lock || isProcessAlive(lock.pid)) return false;
+  try {
+    fs.unlinkSync(lockFile);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireLock(lockFile) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = makeToken();
+    let fd;
+    try {
+      fd = fs.openSync(lockFile, "wx", 0o600);
+      fs.writeFileSync(fd, JSON.stringify({ token, pid: process.pid, ts: Date.now() }));
+      fs.closeSync(fd);
+      try { fs.chmodSync(lockFile, 0o600); } catch { /* ignore */ }
+      return token;
+    } catch (err) {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+        try { fs.unlinkSync(lockFile); } catch { /* ignore */ }
+      }
+      if (err && err.code === "EEXIST" && removeDeadLock(lockFile)) continue;
+      return null;
+    }
+  }
+  return null;
+}
+
+function ownsLock(flush) {
+  const lock = readLock(flush.lockFile);
+  return Boolean(lock && lock.token === flush.token && lock.pid === process.pid);
+}
+
+function releaseLock(flush) {
+  try {
+    if (ownsLock(flush)) fs.unlinkSync(flush.lockFile);
+  } catch {
+    // Best effort.
+  }
 }
 
 function validEntriesFromRaw(raw) {
@@ -104,19 +181,40 @@ export function appendToCache(entry, scope) {
  * after handoff continue into the live file.
  *
  * @param {string} [scope]
- * @returns {Array<{ text: string, role: string, memory_metadata?: Record<string, string>, ts: number }>}
+ * @returns {{ claimed: boolean, entries: Array<{ text: string, role: string, memory_metadata?: Record<string, string>, ts: number }> }}
  */
 export function beginCacheFlush(scope) {
   const cacheFile = cacheFileForScope(scope);
   const processingFile = processingFileForScope(scope);
+  const lockFile = lockFileForScope(scope);
+  let flush;
   try {
+    if (!fs.existsSync(cacheFile) && !fs.existsSync(processingFile)) return emptyFlush();
+    ensureCacheDir();
+    const token = acquireLock(lockFile);
+    if (!token) return emptyFlush();
+    flush = { claimed: true, entries: [], liveFile: cacheFile, processingFile, lockFile, token };
     if (!fs.existsSync(processingFile)) {
-      fs.renameSync(cacheFile, processingFile);
+      try {
+        fs.renameSync(cacheFile, processingFile);
+      } catch (err) {
+        releaseLock(flush);
+        if (err && err.code === "ENOENT") return emptyFlush();
+        return emptyFlush();
+      }
     }
     const raw = fs.readFileSync(processingFile, "utf8");
-    return validEntriesFromRaw(raw);
+    return {
+      claimed: true,
+      entries: validEntriesFromRaw(raw),
+      liveFile: cacheFile,
+      processingFile,
+      lockFile,
+      token,
+    };
   } catch {
-    return [];
+    if (flush) releaseLock(flush);
+    return emptyFlush();
   }
 }
 
@@ -125,21 +223,22 @@ export function beginCacheFlush(scope) {
  * any concurrent appends already in that file remain intact. The processing
  * file is removed only after survivor preservation succeeds.
  *
+ * @param {{ claimed: boolean, liveFile?: string, processingFile?: string, lockFile?: string, token?: string }} flush
  * @param {Array<{ text: string, role: string, memory_metadata?: Record<string, string>, ts: number }>} survivors
- * @param {string} [scope]
  */
-export function finishCacheFlush(survivors, scope) {
-  const processingFile = processingFileForScope(scope);
+export function finishCacheFlush(flush, survivors) {
+  if (!flush || !flush.claimed || !ownsLock(flush)) return;
   try {
     if (survivors.length > 0) {
       ensureCacheDir();
-      const liveFile = cacheFileForScope(scope);
-      fs.appendFileSync(liveFile, serializeEntries(survivors), { encoding: "utf8", mode: 0o600 });
-      try { fs.chmodSync(liveFile, 0o600); } catch { /* ignore */ }
+      fs.appendFileSync(flush.liveFile, serializeEntries(survivors), { encoding: "utf8", mode: 0o600 });
+      try { fs.chmodSync(flush.liveFile, 0o600); } catch { /* ignore */ }
     }
-    fs.unlinkSync(processingFile);
+    fs.unlinkSync(flush.processingFile);
   } catch {
     // Best effort. Leaving the processing file is recoverable on next flush.
+  } finally {
+    releaseLock(flush);
   }
 }
 
@@ -150,9 +249,10 @@ export function finishCacheFlush(survivors, scope) {
  * @returns {Array<{ text: string, role: string, memory_metadata?: Record<string, string>, ts: number }>}
  */
 export function readAndClearCache(scope) {
-  const entries = beginCacheFlush(scope);
-  finishCacheFlush([], scope);
-  return entries;
+  const flush = beginCacheFlush(scope);
+  if (!flush.claimed) return [];
+  finishCacheFlush(flush, []);
+  return flush.entries;
 }
 
 /**

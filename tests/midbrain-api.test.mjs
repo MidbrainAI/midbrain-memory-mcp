@@ -150,6 +150,7 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
   let fetchSpy;
   let api;
   let tmpDir;
+  let originalSimulateOffline;
   const log = vi.fn();
 
   function cacheScopeForKey(key) {
@@ -159,6 +160,8 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
   }
 
   beforeEach(() => {
+    originalSimulateOffline = process.env.MIDBRAIN_SIMULATE_OFFLINE;
+    delete process.env.MIDBRAIN_SIMULATE_OFFLINE;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-api-cache-test-"));
     _setCachePath(tmpDir);
     fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -167,6 +170,8 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
   });
 
   afterEach(() => {
+    if (originalSimulateOffline === undefined) delete process.env.MIDBRAIN_SIMULATE_OFFLINE;
+    else process.env.MIDBRAIN_SIMULATE_OFFLINE = originalSimulateOffline;
     fetchSpy.mockRestore();
     _setCachePath(null);
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -197,6 +202,23 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
     expect(cached).toHaveLength(1);
     expect(cached[0].text).toBe("world");
     expect(cached[0].role).toBe("assistant");
+  });
+
+  it("caches under the current scope without fetch when MIDBRAIN_SIMULATE_OFFLINE=1", async () => {
+    process.env.MIDBRAIN_SIMULATE_OFFLINE = "1";
+    fetchSpy.mockRejectedValue(new Error("fetch should not be called"));
+
+    await expect(api.storeEpisodic("simulated outage", "user", log, { client: "codex" }))
+      .resolves.toBe(false);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(hasCachedEntries(cacheScopeForKey("test-key"))).toBe(true);
+    expect(hasCachedEntries(cacheScopeForKey("other-key"))).toBe(false);
+
+    const cached = readAndClearCache(cacheScopeForKey("test-key"));
+    expect(cached).toHaveLength(1);
+    expect(cached[0].text).toBe("simulated outage");
+    expect(cached[0].memory_metadata).toEqual({ client: "codex" });
   });
 
   it("does not cache on success", async () => {

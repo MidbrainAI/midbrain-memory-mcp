@@ -178,9 +178,11 @@ export class MidbrainApi {
    * re-written to the cache file so they survive for the next attempt.
    */
   async #flushCache(debugLogFn) {
-    const entries = beginCacheFlush(this.#cacheScope);
+    const flush = beginCacheFlush(this.#cacheScope);
+    if (!flush.claimed) return;
+    const entries = flush.entries;
     if (entries.length === 0) {
-      finishCacheFlush([], this.#cacheScope);
+      finishCacheFlush(flush, []);
       return;
     }
     debugLogFn(`CACHE FLUSH: ${entries.length} cached entries`);
@@ -192,10 +194,10 @@ export class MidbrainApi {
       if (!ok) survivors.push(entry);
     }
     if (survivors.length > 0) {
-      finishCacheFlush(survivors, this.#cacheScope);
+      finishCacheFlush(flush, survivors);
       debugLogFn(`CACHE FLUSH: ${survivors.length} entries still pending`);
     } else {
-      finishCacheFlush([], this.#cacheScope);
+      finishCacheFlush(flush, []);
       debugLogFn("CACHE FLUSH: all entries flushed successfully");
     }
   }
