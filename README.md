@@ -16,10 +16,9 @@ Works with [OpenCode](https://opencode.ai),
 
 ## Quick Start
 
-### 1. Get your API key
+### 1. Sign in
 
-Sign up at [memory.midbrain.ai](https://memory.midbrain.ai), create an
-agent, and generate an API key.
+Sign up or sign in at [memory.midbrain.ai](https://memory.midbrain.ai).
 
 ### 2. Install
 
@@ -28,10 +27,17 @@ npx midbrain-memory-mcp install
 ```
 
 The installer detects OpenCode, Claude Code, Codex, and/or NanoClaw on your
-machine, prompts for your API key, writes per-client key files (chmod 600),
-patches MCP configs, copies hook/plugin/skill files, and adds a bounded
-MidBrain rules block to project instruction files when project setup is used.
-One command, done.
+machine, opens browser-based authentication, creates or selects a memory agent,
+writes key files (chmod 600), patches MCP configs, copies hook/plugin/skill
+files, and adds a bounded MidBrain rules block to project instruction files
+when project setup is used. One command, done.
+
+If browser authentication is unavailable, use the manual fallback and paste an
+existing API key when prompted:
+
+```sh
+npx midbrain-memory-mcp install --no-login
+```
 
 ### 3. Restart and verify
 
@@ -677,7 +683,7 @@ Not shipped to users.
 
 - Node >= 20
 - [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), and/or [NanoClaw](https://nanoclaw.dev)
-- A MidBrain API key ([memory.midbrain.ai](https://memory.midbrain.ai))
+- A MidBrain account ([memory.midbrain.ai](https://memory.midbrain.ai))
 
 ## License
 

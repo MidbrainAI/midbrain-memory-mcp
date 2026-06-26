@@ -23,6 +23,18 @@ const mocks = vi.hoisted(() => ({
   realpath:   vi.fn(),
   copyFile:   vi.fn().mockResolvedValue(undefined),
   existsSync: vi.fn(() => false),
+  deviceCodeLogin: vi.fn(),
+  readlineAnswers: [],
+  readlineQuestions: [],
+  createReadlineInterface: vi.fn(),
+}));
+
+mocks.createReadlineInterface.mockImplementation(() => ({
+  question(question, cb) {
+    mocks.readlineQuestions.push(question);
+    cb(mocks.readlineAnswers.shift() ?? "");
+  },
+  close: vi.fn(),
 }));
 
 vi.mock("fs/promises", () => ({
@@ -34,6 +46,13 @@ vi.mock("fs", async (importOriginal) => {
   const orig = await importOriginal();
   return { ...orig, existsSync: mocks.existsSync, realpathSync: orig.realpathSync };
 });
+vi.mock("readline", () => ({
+  default: { createInterface: mocks.createReadlineInterface },
+  createInterface: mocks.createReadlineInterface,
+}));
+vi.mock("../shared/device-auth.mjs", () => ({
+  deviceCodeLogin: mocks.deviceCodeLogin,
+}));
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
              chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile };
@@ -73,6 +92,15 @@ function fileError(code, filePath) {
   return err;
 }
 
+function withStdinIsTTY(value) {
+  const desc = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+  Object.defineProperty(process.stdin, "isTTY", { value, configurable: true });
+  return () => {
+    if (desc) Object.defineProperty(process.stdin, "isTTY", desc);
+    else delete process.stdin.isTTY;
+  };
+}
+
 // ===================================================================
 // main() — per-client key writing
 // ===================================================================
@@ -83,6 +111,15 @@ describe("main — per-client key writing", () => {
 
   beforeEach(() => {
     resetMocks();
+    mocks.deviceCodeLogin.mockReset();
+    mocks.deviceCodeLogin.mockResolvedValue({
+      apiKey: "device-api-key",
+      agentId: "agent-123",
+      agentName: "My Agent",
+      keyAlias: "CLI key",
+    });
+    mocks.readlineAnswers = [];
+    mocks.readlineQuestions = [];
     savedEnv.MIDBRAIN_API_KEY = process.env.MIDBRAIN_API_KEY;
     delete process.env.MIDBRAIN_API_KEY;
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -94,6 +131,95 @@ describe("main — per-client key writing", () => {
     vi.restoreAllMocks();
     if (savedEnv.MIDBRAIN_API_KEY === undefined) delete process.env.MIDBRAIN_API_KEY;
     else process.env.MIDBRAIN_API_KEY = savedEnv.MIDBRAIN_API_KEY;
+  });
+
+  it("default interactive no-key install uses device login and writes returned key state", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig);
+      mocks.readlineAnswers = ["1"];
+
+      await runInstallerCli(["--no-rules"]);
+
+      expect(mocks.deviceCodeLogin).toHaveBeenCalledTimes(1);
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      expect(globalWrite?.[1]).toBe("device-api-key\n");
+      expect(clientWrite?.[1]).toBe("device-api-key\n");
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("existing key install skips device login", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig);
+      readFileReturns({ [PATHS.opencodeKey]: "existing-key\n" });
+
+      await runInstallerCli(["--no-rules"]);
+
+      expect(mocks.deviceCodeLogin).not.toHaveBeenCalled();
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      expect(globalWrite?.[1]).toBe("existing-key\n");
+      expect(clientWrite?.[1]).toBe("existing-key\n");
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("--login forces device login even when a key exists", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig);
+      readFileReturns({ [PATHS.opencodeKey]: "existing-key\n" });
+
+      await runInstallerCli(["--login", "--no-rules"]);
+
+      expect(mocks.deviceCodeLogin).toHaveBeenCalledTimes(1);
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      expect(globalWrite?.[1]).toBe("device-api-key\n");
+      expect(clientWrite?.[1]).toBe("device-api-key\n");
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("--no-login suppresses device login and uses manual key entry", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig);
+      mocks.readlineAnswers = ["manual-api-key"];
+
+      await runInstallerCli(["--no-login", "--no-rules"]);
+
+      expect(mocks.deviceCodeLogin).not.toHaveBeenCalled();
+      expect(mocks.readlineQuestions.join("\n")).toContain("Enter MidBrain API key");
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      expect(globalWrite?.[1]).toBe("manual-api-key\n");
+      expect(clientWrite?.[1]).toBe("manual-api-key\n");
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("--no-login wins when both --login and --no-login are present", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig);
+      mocks.readlineAnswers = ["manual-api-key"];
+
+      await runInstallerCli(["--login", "--no-login", "--no-rules"]);
+
+      expect(mocks.deviceCodeLogin).not.toHaveBeenCalled();
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      expect(globalWrite?.[1]).toBe("manual-api-key\n");
+    } finally {
+      restoreTTY();
+    }
   });
 
   it("writes global key AND per-client key for OpenCode", async () => {
