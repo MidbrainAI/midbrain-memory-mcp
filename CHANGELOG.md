@@ -3,6 +3,54 @@
 All notable public release changes for `midbrain-memory-mcp` are tracked here.
 Full release-note bodies live in `docs/releases/`.
 
+## 0.4.5
+
+Full notes: [docs/releases/v0.4.5.md](docs/releases/v0.4.5.md)
+
+### Added
+
+- Added a file-backed NDJSON cache for failed episodic memory writes.
+- Added `MIDBRAIN_SIMULATE_OFFLINE=1` as a test/debug path for cache-on-failure
+  behavior without making network requests.
+
+### Fixed
+
+- Scoped episodic cache files by API key and project so cached entries do not
+  flush across accounts or workspaces.
+- Added explicit processing-batch ownership so a losing concurrent flusher
+  cannot delete or merge another process's claimed batch.
+- Preserved interrupted `.processing` batches, survivor entries, and concurrent
+  live appends across later flush attempts.
+
+### Notes
+
+- The MCP tool surface, install flow, API key resolution, generated configs,
+  and procedural-knowledge behavior are unchanged.
+- Breaking changes: None.
+
+## 0.4.4
+
+Full notes: [docs/releases/v0.4.4.md](docs/releases/v0.4.4.md)
+
+### Added
+
+- Added browser/device-code authorization for first-run global installer setup.
+- Let interactive global installs create or select an agent, create an API key,
+  write key files, and patch supported client configs from one command.
+
+### Fixed
+
+- Made `--no-login` correctly skip browser/device auth and stay on the manual
+  key fallback path.
+- Updated README onboarding to match the sign-in, install, restart flow.
+
+### Notes
+
+- Existing users with key files keep the same behavior by default.
+- Manual setup remains available with `npx midbrain-memory-mcp install
+  --no-login`.
+- Breaking changes: None.
+
 ## 0.4.3
 
 Full notes: [docs/releases/v0.4.3.md](docs/releases/v0.4.3.md)
