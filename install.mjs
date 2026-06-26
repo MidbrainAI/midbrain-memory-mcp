@@ -153,9 +153,10 @@ async function prompt(question) {
  * @param {object} [opts]
  * @param {boolean} [opts.nonInteractive] - Skip all prompts.
  * @param {boolean} [opts.forceLogin] - Force device-code flow even if a key exists.
+ * @param {boolean} [opts.noLogin] - Skip browser/device auth and use manual key entry.
  * @returns {Promise<Map<string, string>>} Map<clientId, string>.
  */
-async function resolveKeys(clients, { nonInteractive = false, forceLogin = false } = {}) {
+async function resolveKeys(clients, { nonInteractive = false, forceLogin = false, noLogin = false } = {}) {
   const interactive = !nonInteractive && process.stdin.isTTY;
   const keys = new Map();
 
@@ -171,7 +172,7 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
   }
 
   // If --login flag is set and running interactively, force device-code flow
-  if (forceLogin && interactive) {
+  if (forceLogin && !noLogin && interactive) {
     const result = await deviceCodeLogin();
     for (const client of clients) {
       keys.set(client.id, result.apiKey);
@@ -185,7 +186,7 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
   }
 
   // Some clients need keys — offer device-code login or manual paste
-  if (interactive && !anyKeyFound) {
+  if (interactive && !anyKeyFound && !noLogin) {
     console.log('');
     console.log('No API key found. How would you like to authenticate?');
     console.log('  [1] Log in via browser (recommended)');
@@ -308,7 +309,7 @@ async function writeRulesForMainMode(nonInteractive) {
 // Main (interactive mode)
 // ---------------------------------------------------------------------------
 async function main(opts = {}) {
-  const { isDev = false, nonInteractive = false, skipRules = false, forceLogin = false } = opts;
+  const { isDev = false, nonInteractive = false, skipRules = false, forceLogin = false, noLogin = false } = opts;
   const clients = detectClients();
 
   if (clients.length === 0) {
@@ -318,7 +319,7 @@ async function main(opts = {}) {
   }
 
   // Resolve and write keys
-  const keys = await resolveKeys(clients, { nonInteractive, forceLogin });
+  const keys = await resolveKeys(clients, { nonInteractive, forceLogin, noLogin });
   if (keys.size === 0) {
     throw new Error("No API key found. Run the installer interactively first or set MIDBRAIN_API_KEY.");
   }
@@ -550,7 +551,7 @@ async function runInstallerCli(argv) {
     }
   } else {
     try {
-      await main({ isDev, nonInteractive, skipRules, forceLogin: forceLogin && !noLogin });
+      await main({ isDev, nonInteractive, skipRules, forceLogin, noLogin });
     } catch (err) {
       console.error('Fatal error:', err.message);
       process.exit(1);
