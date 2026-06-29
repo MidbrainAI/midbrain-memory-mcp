@@ -13,7 +13,7 @@
  * turns within one session. min_score=0.5 limits repetition to relevant entries.
  */
 
-import { readStdinJSON, createApi, debugLog } from "./common.mjs";
+import { readStdinJSON, createApi, log } from "./common.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
 try {
@@ -24,12 +24,12 @@ try {
   try {
     api = await createApi(input.cwd);
   } catch {
-    debugLog("NO KEY");
+    log.warn("NO KEY");
     process.exit(0);
   }
 
   // Episodic capture must complete before default-off exits.
-  await api.storeEpisodic(input.prompt, "user", debugLog, { client: "claude" });
+  await api.storeEpisodic(input.prompt, "user", log, { client: "claude" });
 
   if (!isPkInjectionEnabled()) process.exit(0);
 
@@ -37,7 +37,7 @@ try {
   const entries = await api.searchProcedural({ query: input.prompt, excludeIds: [] });
   if (entries.length > 0) {
     const ctx = formatPkContext(entries);
-    debugLog(`PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`);
+    log.debug(`PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`);
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",

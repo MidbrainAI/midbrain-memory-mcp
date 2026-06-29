@@ -24,7 +24,7 @@ shared/
   agent-rules.mjs                MidBrain rules block writer for AGENTS.md/CLAUDE.md
   midbrain-api.mjs               MidbrainApi client; all HTTP calls go here
   pk-inject.mjs                  Procedural-knowledge context helpers
-  logger.mjs                     Timestamped file appender
+  logger.mjs                     Leveled file logger + platform log dir
   plugin-entry.mjs               esbuild bundle entry point
   clients/
     base.mjs                     BaseClient; owns key resolution
@@ -97,7 +97,7 @@ Claude Code:
 
 - `plugins/claude-code/*.mjs` run in Node 20.
 - Hook paths are written into Claude settings by the installer.
-- `common.mjs` owns `createApi()`, `debugLog()`, and stdin parsing.
+- `common.mjs` owns `createApi()`, the leveled `log` logger, and stdin parsing.
 
 Codex:
 
@@ -119,6 +119,31 @@ NanoClaw:
   `data/v2-sessions/<group-id>/.claude-shared/settings.json`.
 - Inline hook keys used inside container settings must be redacted from output,
   docs, logs, and review artifacts.
+
+## Logging
+
+All file logging goes through `shared/logger.mjs`. Do not call `appendFileSync`
+or hand-roll log files in plugins or hooks.
+
+- `makeLogger(logPath, { level, maxSize })` returns a leveled logger with
+  `error`, `warn`, `info`, and `debug` methods. All methods swallow errors and
+  never throw.
+- Levels: `error` < `warn` < `info` < `debug`. The threshold defaults to
+  `info`; `debug` (per-request detail, payload sizes, PK ids) is suppressed
+  unless explicitly enabled.
+- `MIDBRAIN_LOG_LEVEL` (`error|warn|info|debug`) overrides the threshold.
+  `MIDBRAIN_LOG_MAX_SIZE` overrides the rotation cap (bytes, default 5 MiB).
+- Log files rotate to `<file>.1` once they exceed the cap (one generation
+  kept). Total footprint per client is bounded at ~2x the cap.
+- `logDir()` resolves a platform-appropriate directory and honors
+  `MIDBRAIN_LOG_DIR`:
+  - Linux/other: `$XDG_STATE_HOME/midbrain` or `~/.local/state/midbrain`
+  - macOS: `~/Library/Logs/midbrain`
+  - Windows: `%LOCALAPPDATA%/midbrain/logs` or `%APPDATA%/midbrain/logs`
+- Per-client log files: `midbrain-opencode.log`, `midbrain-claude.log`,
+  `midbrain-codex.log`.
+- `MidbrainApi.storeEpisodic(text, role, logger, metadata)` takes a logger
+  object (not a bare function). Pass the client's `log`/`logger` instance.
 
 ## Procedural Knowledge Injection
 

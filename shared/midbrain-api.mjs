@@ -13,7 +13,7 @@
  * Usage:
  *   const api = await MidbrainApi.create(getClient('opencode'), projectDir);
  *   const results = await api.searchSemantic({ query: '...', limit: 10 });
- *   api.storeEpisodic(text, 'user', debugLog);
+ *   api.storeEpisodic(text, 'user', logger);
  *
  * Node 20 + Bun compatible. No npm deps (uses native fetch).
  */
@@ -124,20 +124,22 @@ export class MidbrainApi {
    *
    * @param {string} text
    * @param {"user"|"assistant"} role
-   * @param {function(string): void} debugLogFn
+   * @param {{info: function(string): void, debug: function(string): void,
+   *   warn: function(string): void, error: function(string): void}} logger
+   *   Leveled logger (see shared/logger.mjs).
    * @param {Record<string, string>} [memoryMetadata] - Optional metadata (e.g. { client: "codex" }).
    */
-  async storeEpisodic(text, role, debugLogFn, memoryMetadata) {
-    debugLogFn(`STORE: role=${role} textLen=${text.length}`);
-    const ok = await this.#postEpisodic(text, role, memoryMetadata, debugLogFn);
+  async storeEpisodic(text, role, logger, memoryMetadata) {
+    logger.info(`STORE: role=${role} textLen=${text.length}`);
+    const ok = await this.#postEpisodic(text, role, memoryMetadata, logger);
     if (!ok) {
       appendToCache({ text, role, memory_metadata: memoryMetadata }, this.#cacheScope);
-      debugLogFn("STORE: cached entry for later flush");
+      logger.debug("STORE: cached entry for later flush");
       return false;
     }
     // Success — flush any previously cached entries.
     if (hasCachedEntries(this.#cacheScope)) {
-      await this.#flushCache(debugLogFn);
+      await this.#flushCache(logger);
     }
     return true;
   }
@@ -146,9 +148,9 @@ export class MidbrainApi {
    * Raw POST to the episodic endpoint. Returns true on 2xx, false otherwise.
    * Never throws.
    */
-  async #postEpisodic(text, role, memoryMetadata, debugLogFn) {
+  async #postEpisodic(text, role, memoryMetadata, logger) {
     if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") {
-      debugLogFn("STORE ERROR: simulated offline (MIDBRAIN_SIMULATE_OFFLINE=1)");
+      logger.warn("STORE ERROR: simulated offline (MIDBRAIN_SIMULATE_OFFLINE=1)");
       return false;
     }
     try {
@@ -162,13 +164,13 @@ export class MidbrainApi {
       });
       if (!response.ok) {
         const body = await response.text().catch(() => "(no body)");
-        debugLogFn(`STORE ERROR: status=${response.status} body=${body}`);
+        logger.error(`STORE ERROR: status=${response.status} body=${body}`);
         return false;
       }
-      debugLogFn(`STORED: status=${response.status}`);
+      logger.debug(`STORED: status=${response.status}`);
       return true;
     } catch (err) {
-      debugLogFn(`STORE ERROR: ${err instanceof Error ? err.message : String(err)}`);
+      logger.error(`STORE ERROR: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -177,7 +179,7 @@ export class MidbrainApi {
    * Attempt to POST all cached entries. Entries that still fail are
    * re-written to the cache file so they survive for the next attempt.
    */
-  async #flushCache(debugLogFn) {
+  async #flushCache(logger) {
     const flush = beginCacheFlush(this.#cacheScope);
     if (!flush.claimed) return;
     const entries = flush.entries;
@@ -185,20 +187,20 @@ export class MidbrainApi {
       finishCacheFlush(flush, []);
       return;
     }
-    debugLogFn(`CACHE FLUSH: ${entries.length} cached entries`);
+    logger.info(`CACHE FLUSH: ${entries.length} cached entries`);
     const survivors = [];
     for (const entry of entries) {
       const ok = await this.#postEpisodic(
-        entry.text, entry.role, entry.memory_metadata, debugLogFn,
+        entry.text, entry.role, entry.memory_metadata, logger,
       );
       if (!ok) survivors.push(entry);
     }
     if (survivors.length > 0) {
       finishCacheFlush(flush, survivors);
-      debugLogFn(`CACHE FLUSH: ${survivors.length} entries still pending`);
+      logger.warn(`CACHE FLUSH: ${survivors.length} entries still pending`);
     } else {
       finishCacheFlush(flush, []);
-      debugLogFn("CACHE FLUSH: all entries flushed successfully");
+      logger.info("CACHE FLUSH: all entries flushed successfully");
     }
   }
 

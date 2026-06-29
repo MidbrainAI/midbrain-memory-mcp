@@ -28,7 +28,7 @@ function makeDeps() {
   return {
     api,
     createApi: vi.fn(async () => api),
-    debugLog: vi.fn(),
+    logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
     assistantBufferDir: fs.mkdtempSync(path.join(os.tmpdir(), "codex-assistant-")),
     toolBufferDir: fs.mkdtempSync(path.join(os.tmpdir(), "codex-hooks-")),
   };
@@ -68,7 +68,7 @@ describe("Codex hook capture", () => {
     expect(firstStore(deps)).toEqual([
       "remember this",
       "user",
-      deps.debugLog,
+      deps.logger,
       { client: "codex" },
     ]);
   });
@@ -120,7 +120,7 @@ describe("Codex hook capture", () => {
     expect(firstStore(deps)).toEqual([
       "done",
       "assistant",
-      deps.debugLog,
+      deps.logger,
       { client: "codex" },
     ]);
   });
@@ -158,7 +158,7 @@ describe("Codex hook capture", () => {
     expect(deps.api.storeEpisodic.mock.calls[0]).toEqual([
       "done",
       "assistant",
-      deps.debugLog,
+      deps.logger,
       { client: "codex" },
     ]);
     expect(deps.api.storeEpisodic.mock.calls[0][0]).not.toMatch(/final|response|answer/i);
@@ -327,7 +327,7 @@ describe("Codex hook capture", () => {
 
     await expect(captureUser({ prompt: "hi", cwd: "/repo" }, deps)).resolves.toBeUndefined();
 
-    expect(deps.debugLog).toHaveBeenCalledWith(expect.stringContaining("CODEX CAPTURE ERROR (user)"));
+    expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("CODEX CAPTURE ERROR (user)"));
   });
 });
 

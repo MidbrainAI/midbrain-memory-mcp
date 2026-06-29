@@ -10,11 +10,9 @@ import path from "path";
 import { createHash, randomUUID } from "crypto";
 
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
-import { makeDebugLogger } from "../../shared/logger.mjs";
+import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
-
-const DEBUG_LOG = path.join(os.homedir(), "midbrain-codex-debug.log");
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-assistant-turns");
 const TOOL_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-tool-events");
 const TURN_BUFFER_TTL_MS = 24 * 60 * 60 * 1000;
@@ -54,7 +52,7 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
   try {
     api = await deps.createApi(projectDir);
   } catch (err) {
-    safeLog(deps.debugLog, `CODEX CAPTURE ERROR (user): ${errorMessage(err)}`);
+    safeLog(deps.logger, `CODEX CAPTURE ERROR (user): ${errorMessage(err)}`);
     return undefined;
   }
 
@@ -66,7 +64,7 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
   try {
     const entries = await api.searchProcedural({ query: prompt, excludeIds: [] });
     if (entries.length > 0) {
-      safeLog(deps.debugLog, `PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`);
+      safeLog(deps.logger, `PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`, "debug");
       return {
         hookSpecificOutput: {
           hookEventName: "UserPromptSubmit",
@@ -75,7 +73,7 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
       };
     }
   } catch (err) {
-    safeLog(deps.debugLog, `PK INJECT ERROR: ${errorMessage(err)}`);
+    safeLog(deps.logger, `PK INJECT ERROR: ${errorMessage(err)}`);
   }
   return undefined;
 }
@@ -102,11 +100,11 @@ export async function captureToolUse(input, deps = makeDefaultDeps()) {
     const event = toolEvent(input);
     const dir = toolTurnDir(input, deps);
     if (!event || !dir) return;
-    cleanupOldTurnBuffers(toolBufferRoot(deps), deps.debugLog, "TOOL");
+    cleanupOldTurnBuffers(toolBufferRoot(deps), deps.logger, "TOOL");
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(toolEventPath(dir, event), JSON.stringify(event), { encoding: "utf8", mode: 0o600 });
   } catch (err) {
-    safeLog(deps.debugLog, `TOOL BUFFER ERROR: ${errorMessage(err)}`);
+    safeLog(deps.logger, `TOOL BUFFER ERROR: ${errorMessage(err)}`);
   }
 }
 
@@ -144,10 +142,10 @@ async function postEpisodic(text, role, cwd, deps, api) {
       const projectDir = typeof cwd === "string" && cwd.trim() ? cwd : undefined;
       api = await deps.createApi(projectDir);
     }
-    const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.debugLog, CODEX_METADATA));
+    const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.logger, CODEX_METADATA));
     return stored !== false;
   } catch (err) {
-    safeLog(deps.debugLog, `CODEX CAPTURE ERROR (${role}): ${errorMessage(err)}`);
+    safeLog(deps.logger, `CODEX CAPTURE ERROR (${role}): ${errorMessage(err)}`);
     return false;
   }
 }
@@ -168,7 +166,7 @@ function transcriptAssistantCapturePlan(input, deps) {
   try {
     return formatAssistantTurn(parseTranscriptTurn(input.transcript_path, input.turn_id), input, deps);
   } catch (err) {
-    safeLog(deps.debugLog, `TRANSCRIPT READ ERROR: ${errorMessage(err)}`);
+    safeLog(deps.logger, `TRANSCRIPT READ ERROR: ${errorMessage(err)}`);
     return null;
   }
 }
@@ -252,26 +250,26 @@ function bufferAssistantNotes(input, notes, deps) {
   const dir = assistantTurnDir(input, deps);
   if (!dir) return;
   try {
-    cleanupOldTurnBuffers(assistantBufferRoot(deps), deps.debugLog, "ASSISTANT");
+    cleanupOldTurnBuffers(assistantBufferRoot(deps), deps.logger, "ASSISTANT");
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const items = dedupeAssistantItems([...readAssistantNotesFile(dir, deps.debugLog), ...notes]);
+    const items = dedupeAssistantItems([...readAssistantNotesFile(dir, deps.logger), ...notes]);
     fs.writeFileSync(assistantNotesPath(dir), JSON.stringify(items), { encoding: "utf8", mode: 0o600 });
   } catch (err) {
-    safeLog(deps.debugLog, `ASSISTANT BUFFER ERROR: ${errorMessage(err)}`);
+    safeLog(deps.logger, `ASSISTANT BUFFER ERROR: ${errorMessage(err)}`);
   }
 }
 
 function readBufferedAssistantNotes(input, deps) {
   const dir = assistantTurnDir(input, deps);
-  return dir ? readAssistantNotesFile(dir, deps.debugLog) : [];
+  return dir ? readAssistantNotesFile(dir, deps.logger) : [];
 }
 
-function readAssistantNotesFile(dir, debugLog) {
+function readAssistantNotesFile(dir, logger) {
   try {
     const items = JSON.parse(fs.readFileSync(assistantNotesPath(dir), "utf8"));
     return Array.isArray(items) ? items.filter(isAssistantNote) : [];
   } catch (err) {
-    if (err?.code !== "ENOENT") safeLog(debugLog, `ASSISTANT BUFFER READ ERROR: ${errorMessage(err)}`);
+    if (err?.code !== "ENOENT") safeLog(logger, `ASSISTANT BUFFER READ ERROR: ${errorMessage(err)}`);
     return [];
   }
 }
@@ -284,7 +282,7 @@ function markAssistantTurnStored(input, deps) {
     fs.rmSync(assistantNotesPath(dir), { force: true });
     fs.writeFileSync(assistantStoredPath(dir), "1", { encoding: "utf8", mode: 0o600 });
   } catch (err) {
-    safeLog(deps.debugLog, `ASSISTANT STORE MARK ERROR: ${errorMessage(err)}`);
+    safeLog(deps.logger, `ASSISTANT STORE MARK ERROR: ${errorMessage(err)}`);
   }
 }
 
@@ -342,10 +340,10 @@ function readToolSummary(input, deps) {
   const dir = toolTurnDir(input, deps);
   if (!dir || !fs.existsSync(dir)) return "";
   try {
-    const events = readToolEvents(dir, deps.debugLog);
+    const events = readToolEvents(dir, deps.logger);
     return events.length > 0 ? formatToolSummary(events) : "";
   } catch (err) {
-    safeLog(deps.debugLog, `TOOL BUFFER READ ERROR: ${errorMessage(err)}`);
+    safeLog(deps.logger, `TOOL BUFFER READ ERROR: ${errorMessage(err)}`);
     return "";
   }
 }
@@ -356,21 +354,21 @@ function removeToolBuffer(input, deps) {
   try {
     fs.rmSync(dir, { recursive: true, force: true });
   } catch (err) {
-    safeLog(deps.debugLog, `TOOL BUFFER REMOVE ERROR: ${errorMessage(err)}`);
+    safeLog(deps.logger, `TOOL BUFFER REMOVE ERROR: ${errorMessage(err)}`);
   }
 }
 
-function readToolEvents(dir, debugLog) {
+function readToolEvents(dir, logger) {
   return fs.readdirSync(dir).filter((file) => file.endsWith(".json")).sort()
-    .flatMap((file) => readToolEvent(path.join(dir, file), debugLog));
+    .flatMap((file) => readToolEvent(path.join(dir, file), logger));
 }
 
-function readToolEvent(filePath, debugLog) {
+function readToolEvent(filePath, logger) {
   try {
     const event = JSON.parse(fs.readFileSync(filePath, "utf8"));
     return typeof event?.name === "string" ? [event] : [];
   } catch (err) {
-    safeLog(debugLog, `TOOL BUFFER READ ERROR: ${errorMessage(err)}`);
+    safeLog(logger, `TOOL BUFFER READ ERROR: ${errorMessage(err)}`);
     return [];
   }
 }
@@ -455,7 +453,7 @@ function toolEventPath(dir, event) {
   return path.join(dir, `${Date.now()}-${safePathPart(event.id) || "unknown"}-${randomUUID()}.json`);
 }
 
-function cleanupOldTurnBuffers(root, debugLog, label) {
+function cleanupOldTurnBuffers(root, logger, label) {
   const cutoff = Date.now() - TURN_BUFFER_TTL_MS;
   try {
     for (const sessionDir of childDirs(root)) {
@@ -463,7 +461,7 @@ function cleanupOldTurnBuffers(root, debugLog, label) {
       removeEmptyDir(sessionDir);
     }
   } catch (err) {
-    safeLog(debugLog, `${label} BUFFER CLEANUP ERROR: ${errorMessage(err)}`);
+    safeLog(logger, `${label} BUFFER CLEANUP ERROR: ${errorMessage(err)}`);
   }
 }
 
@@ -529,8 +527,12 @@ function shortHash(value) {
   return createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
 }
 
-function safeLog(debugLog, message) {
-  try { debugLog(message); } catch { /* ignore */ }
+/**
+ * Invoke a logger level method without ever throwing. Defaults to "error"
+ * because most Codex hook log sites report recoverable failures.
+ */
+function safeLog(logger, message, level = "error") {
+  try { logger?.[level]?.(message); } catch { /* ignore */ }
 }
 
 function errorMessage(err) {
@@ -540,7 +542,7 @@ function errorMessage(err) {
 export function makeDefaultDeps() {
   return {
     createApi,
-    debugLog: makeDebugLogger(DEBUG_LOG),
+    logger: makeLogger(logFile("midbrain-codex.log")),
     assistantBufferDir: ASSISTANT_BUFFER_DIR,
     toolBufferDir: TOOL_BUFFER_DIR,
   };

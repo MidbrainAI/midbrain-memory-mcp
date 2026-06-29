@@ -8,7 +8,7 @@
  * Fails silently on any error.
  */
 
-import { readStdinJSON, createApi, debugLog } from "./common.mjs";
+import { readStdinJSON, createApi, log } from "./common.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 try {
@@ -22,10 +22,10 @@ try {
   try {
     api = await createApi(input.cwd);
   } catch {
-    debugLog("NO KEY");
+    log.warn("NO KEY");
     process.exit(0);
   }
 
   const text = scrubInjectedPkContext(input.last_assistant_message);
-  if (text) api.storeEpisodic(text, "assistant", debugLog, { client: "claude" });
+  if (text) api.storeEpisodic(text, "assistant", log, { client: "claude" });
 } catch { /* fail silently */ }
