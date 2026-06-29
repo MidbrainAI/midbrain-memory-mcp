@@ -133,7 +133,7 @@ describe("main — per-client key writing", () => {
     else process.env.MIDBRAIN_API_KEY = savedEnv.MIDBRAIN_API_KEY;
   });
 
-  it("default interactive no-key install uses device login and writes returned key state", async () => {
+  it("default interactive no-key install uses device login and writes global key only", async () => {
     const restoreTTY = withStdinIsTTY(true);
     try {
       existsFor(PATHS.opencodeConfig);
@@ -145,13 +145,14 @@ describe("main — per-client key writing", () => {
       const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
       const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
       expect(globalWrite?.[1]).toBe("device-api-key\n");
-      expect(clientWrite?.[1]).toBe("device-api-key\n");
+      // Single client + shared key => no per-client key file written.
+      expect(clientWrite).toBeUndefined();
     } finally {
       restoreTTY();
     }
   });
 
-  it("existing key install skips device login", async () => {
+  it("existing key install skips device login and writes global key only", async () => {
     const restoreTTY = withStdinIsTTY(true);
     try {
       existsFor(PATHS.opencodeConfig);
@@ -163,13 +164,14 @@ describe("main — per-client key writing", () => {
       const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
       const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
       expect(globalWrite?.[1]).toBe("existing-key\n");
-      expect(clientWrite?.[1]).toBe("existing-key\n");
+      // One detected client with one key => shared, global only.
+      expect(clientWrite).toBeUndefined();
     } finally {
       restoreTTY();
     }
   });
 
-  it("--login forces device login even when a key exists", async () => {
+  it("--login forces device login and writes global key only", async () => {
     const restoreTTY = withStdinIsTTY(true);
     try {
       existsFor(PATHS.opencodeConfig);
@@ -181,13 +183,13 @@ describe("main — per-client key writing", () => {
       const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
       const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
       expect(globalWrite?.[1]).toBe("device-api-key\n");
-      expect(clientWrite?.[1]).toBe("device-api-key\n");
+      expect(clientWrite).toBeUndefined();
     } finally {
       restoreTTY();
     }
   });
 
-  it("--no-login suppresses device login and uses manual key entry", async () => {
+  it("--no-login suppresses device login and uses manual key entry (global only)", async () => {
     const restoreTTY = withStdinIsTTY(true);
     try {
       existsFor(PATHS.opencodeConfig);
@@ -200,7 +202,8 @@ describe("main — per-client key writing", () => {
       const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
       const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
       expect(globalWrite?.[1]).toBe("manual-api-key\n");
-      expect(clientWrite?.[1]).toBe("manual-api-key\n");
+      // Manual entry for a single client => one key, shared, global only.
+      expect(clientWrite).toBeUndefined();
     } finally {
       restoreTTY();
     }
@@ -222,25 +225,22 @@ describe("main — per-client key writing", () => {
     }
   });
 
-  it("writes global key AND per-client key for OpenCode", async () => {
-    // Simulate OpenCode detected (opencode.json present), existing key in place
+  it("writes global key only for a single detected client (OpenCode)", async () => {
+    // Single client + single key => shared; only the global key file is written.
     existsFor(PATHS.opencodeConfig);
     readFileReturns({ [PATHS.opencodeKey]: "my-oc-key\n" });
 
     await main();
 
-    // Global key written
     const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
     expect(globalWrite).toBeDefined();
     expect(globalWrite[1]).toBe("my-oc-key\n");
 
-    // OpenCode per-client key also written
     const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
-    expect(ocWrite).toBeDefined();
-    expect(ocWrite[1]).toBe("my-oc-key\n");
+    expect(ocWrite).toBeUndefined();
   });
 
-  it("writes global key AND per-client key for Claude Code", async () => {
+  it("writes global key only for a single detected client (Claude Code)", async () => {
     existsFor(PATHS.claudeJson);
     readFileReturns({ [PATHS.claudeKey]: "my-cc-key\n" });
 
@@ -248,15 +248,33 @@ describe("main — per-client key writing", () => {
 
     const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
     expect(globalWrite).toBeDefined();
+    expect(globalWrite[1]).toBe("my-cc-key\n");
 
     const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
-    expect(ccWrite).toBeDefined();
-    expect(ccWrite[1]).toBe("my-cc-key\n");
+    expect(ccWrite).toBeUndefined();
   });
 
-  it("writes both per-client keys when both clients detected", async () => {
+  it("writes global key only when two clients share the same existing key", async () => {
     existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
-    // OpenCode key already present, Claude key also present
+    readFileReturns({
+      [PATHS.opencodeKey]: "shared-key\n",
+      [PATHS.claudeKey]: "shared-key\n",
+    });
+
+    await main();
+
+    const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+    expect(globalWrite?.[1]).toBe("shared-key\n");
+
+    // Identical keys => treated as shared, no per-client files written.
+    const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+    const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+    expect(ocWrite).toBeUndefined();
+    expect(ccWrite).toBeUndefined();
+  });
+
+  it("preserves distinct per-client keys already present on disk", async () => {
+    existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
     readFileReturns({
       [PATHS.opencodeKey]: "oc-key\n",
       [PATHS.claudeKey]: "cc-key\n",
@@ -266,22 +284,189 @@ describe("main — per-client key writing", () => {
 
     const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
     const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
-    expect(ocWrite).toBeDefined();
-    expect(ccWrite).toBeDefined();
+    expect(ocWrite?.[1]).toBe("oc-key\n");
+    expect(ccWrite?.[1]).toBe("cc-key\n");
   });
 
-  it("writes global key AND per-client key for Codex", async () => {
+  it("asks to share the key and writes global only when the user answers yes", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      // [1] choose device login, then "" (default Yes) to the share prompt.
+      mocks.readlineAnswers = ["1", ""];
+
+      await runInstallerCli(["--no-rules"]);
+
+      expect(mocks.readlineQuestions.join("\n")).toContain("Use the same key for all detected clients");
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      expect(globalWrite?.[1]).toBe("device-api-key\n");
+
+      const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+      expect(ocWrite).toBeUndefined();
+      expect(ccWrite).toBeUndefined();
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("prompts per client and writes per-client keys when the user declines sharing", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      // [1] device login, "n" to share prompt, then a key per detected client.
+      mocks.readlineAnswers = ["1", "n", "oc-distinct", "cc-distinct"];
+
+      await runInstallerCli(["--no-rules"]);
+
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      expect(globalWrite).toBeDefined();
+
+      const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+      expect(ocWrite?.[1]).toBe("oc-distinct\n");
+      expect(ccWrite?.[1]).toBe("cc-distinct\n");
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("paste path: asks to share and writes global only when the user answers yes", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      // [2] paste, the pasted key, then "" (default Yes) to the share prompt.
+      mocks.readlineAnswers = ["2", "pasted-key", ""];
+
+      await runInstallerCli(["--no-rules"]);
+
+      expect(mocks.deviceCodeLogin).not.toHaveBeenCalled();
+      expect(mocks.readlineQuestions.join("\n")).toContain("Use the same key for all detected clients");
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      expect(globalWrite?.[1]).toBe("pasted-key\n");
+
+      const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+      expect(ocWrite).toBeUndefined();
+      expect(ccWrite).toBeUndefined();
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("paste path: prompts per client when the user declines sharing", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      // [2] paste, initial key (discarded on decline), "n", then a key per client.
+      mocks.readlineAnswers = ["2", "ignored-key", "n", "oc-distinct", "cc-distinct"];
+
+      await runInstallerCli(["--no-rules"]);
+
+      const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+      expect(ocWrite?.[1]).toBe("oc-distinct\n");
+      expect(ccWrite?.[1]).toBe("cc-distinct\n");
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("paste path: single client writes global only without a share prompt", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig);
+      mocks.readlineAnswers = ["2", "solo-key"];
+
+      await runInstallerCli(["--no-rules"]);
+
+      expect(mocks.readlineQuestions.join("\n")).not.toContain("Use the same key for all detected clients");
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      expect(globalWrite?.[1]).toBe("solo-key\n");
+      const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      expect(ocWrite).toBeUndefined();
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("device login failure falls back to single paste + share question", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      mocks.deviceCodeLogin.mockRejectedValueOnce(new Error("login boom"));
+      // [1] login (fails), pasted fallback key, "" (default Yes) to share.
+      mocks.readlineAnswers = ["1", "fallback-key", ""];
+
+      await runInstallerCli(["--no-rules"]);
+
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      expect(globalWrite?.[1]).toBe("fallback-key\n");
+      const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+      expect(ocWrite).toBeUndefined();
+      expect(ccWrite).toBeUndefined();
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("--no-login with multiple clients uses single paste + share question", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      // No auth menu shown; single paste then "" (default Yes) to share.
+      mocks.readlineAnswers = ["nologin-key", ""];
+
+      await runInstallerCli(["--no-login", "--no-rules"]);
+
+      expect(mocks.deviceCodeLogin).not.toHaveBeenCalled();
+      expect(mocks.readlineQuestions.join("\n")).toContain("Use the same key for all detected clients");
+      const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+      expect(globalWrite?.[1]).toBe("nologin-key\n");
+      const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+      expect(ocWrite).toBeUndefined();
+      expect(ccWrite).toBeUndefined();
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("partial fill: prompts only for the client missing a key", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      // OpenCode already has a key on disk; only Claude should be prompted.
+      readFileReturns({ [PATHS.opencodeKey]: "oc-existing\n" });
+      mocks.readlineAnswers = ["cc-new"];
+
+      await runInstallerCli(["--no-rules"]);
+
+      // No auth menu / share prompt in the partial-fill path.
+      expect(mocks.readlineQuestions.join("\n")).not.toContain("How would you like to authenticate");
+      expect(mocks.readlineQuestions.join("\n")).toContain("Enter MidBrain API key for Claude Code");
+      // Distinct keys => per-client files written.
+      const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+      expect(ocWrite?.[1]).toBe("oc-existing\n");
+      expect(ccWrite?.[1]).toBe("cc-new\n");
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("writes global key only for a single detected client (Codex)", async () => {
     existsFor(PATHS.codexConfig);
     readFileReturns({ [PATHS.codexKey]: "my-codex-key\n" });
 
     await main();
 
     const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
-    expect(globalWrite).toBeDefined();
+    expect(globalWrite?.[1]).toBe("my-codex-key\n");
 
     const codexWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexKey);
-    expect(codexWrite).toBeDefined();
-    expect(codexWrite[1]).toBe("my-codex-key\n");
+    expect(codexWrite).toBeUndefined();
 
     const configWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexConfig);
     expect(configWrite).toBeDefined();
@@ -310,7 +495,7 @@ describe("main — per-client key writing", () => {
     else Object.defineProperty(process.stdin, "isTTY", { value: originalIsTty, configurable: true });
   });
 
-  it("--non-interactive uses an existing client key without prompting", async () => {
+  it("--non-interactive uses an existing client key without prompting (global only)", async () => {
     existsFor(PATHS.opencodeConfig);
     readFileReturns({ [PATHS.opencodeKey]: "existing-key\n" });
 
@@ -319,10 +504,11 @@ describe("main — per-client key writing", () => {
     const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
     const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
     expect(globalWrite?.[1]).toBe("existing-key\n");
-    expect(clientWrite?.[1]).toBe("existing-key\n");
+    // Non-interactive never splits keys — global only.
+    expect(clientWrite).toBeUndefined();
   });
 
-  it("--non-interactive uses MIDBRAIN_API_KEY through shared key resolution", async () => {
+  it("--non-interactive uses MIDBRAIN_API_KEY through shared key resolution (global only)", async () => {
     process.env.MIDBRAIN_API_KEY = "env-fallback-key";
     existsFor(PATHS.opencodeConfig);
 
@@ -331,7 +517,7 @@ describe("main — per-client key writing", () => {
     const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
     const clientWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
     expect(globalWrite?.[1]).toBe("env-fallback-key\n");
-    expect(clientWrite?.[1]).toBe("env-fallback-key\n");
+    expect(clientWrite).toBeUndefined();
   });
 });
 
