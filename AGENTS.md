@@ -84,6 +84,21 @@ Rules:
 - Falling through from project key to global key emits a warning to stderr.
 - Never commit `.midbrain-key` files or real API keys.
 
+Key-write policy at install time:
+
+- Global install writes only `~/.config/midbrain/.midbrain-key` by default and
+  relies on the resolution chain; it does not duplicate that key into every
+  detected client's config dir.
+- When two or more clients are detected interactively, the installer asks
+  whether to share one key across all of them. Declining prompts for a distinct
+  key per client and writes the per-client files via each client's `writeKey()`.
+- Distinct per-client keys already present on disk are preserved (treated as an
+  intentional per-client setup). Identical existing keys collapse to global.
+- Non-interactive installs always use a single shared (global) key and never
+  write per-client key files.
+- `resolveKeys()` returns `{ keys, perClient }`; `main()` writes per-client key
+  files only when `perClient` is true.
+
 ## Capture Paths
 
 OpenCode:

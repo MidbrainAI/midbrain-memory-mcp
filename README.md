@@ -288,6 +288,15 @@ Resolution order:
 - Empty key files are a hard error naming the file path
 - Fallthrough from project to global key emits a warning to stderr
 
+By default the installer writes a single global key at
+`~/.config/midbrain/.midbrain-key` and relies on the resolution chain above —
+it does **not** duplicate that key into each client's config directory. When two
+or more clients are detected, the interactive installer asks whether to share
+one key across all of them. Answer no to enter a distinct key per client; those
+keys are written to the per-client locations (row 3) and take priority over the
+global key. Distinct per-client keys already present on disk are preserved.
+Non-interactive installs always use the single shared (global) key.
+
 ### MCP Config Examples
 
 **OpenCode**: `~/.config/opencode/opencode.json` (global) or

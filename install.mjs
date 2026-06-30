@@ -154,7 +154,11 @@ async function prompt(question) {
  * @param {boolean} [opts.nonInteractive] - Skip all prompts.
  * @param {boolean} [opts.forceLogin] - Force device-code flow even if a key exists.
  * @param {boolean} [opts.noLogin] - Skip browser/device auth and use manual key entry.
- * @returns {Promise<Map<string, string>>} Map<clientId, string>.
+ * @returns {Promise<{keys: Map<string, string>, perClient: boolean}>}
+ *   keys: Map<clientId, string>.
+ *   perClient: true when the interactive user wants a distinct per-client key
+ *   written (or distinct keys already exist on disk); false for a single shared
+ *   key that only needs the global key file.
  */
 async function resolveKeys(clients, { nonInteractive = false, forceLogin = false, noLogin = false } = {}) {
   const interactive = !nonInteractive && process.stdin.isTTY;
@@ -171,22 +175,33 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
     }
   }
 
-  // If --login flag is set and running interactively, force device-code flow
+  // If --login flag is set and running interactively, force device-code flow.
+  // A single freshly-issued key is shared across clients; ask whether to keep
+  // it shared (global key only) or split into per-client keys.
   if (forceLogin && !noLogin && interactive) {
     const result = await deviceCodeLogin();
-    for (const client of clients) {
-      keys.set(client.id, result.apiKey);
-    }
-    return keys;
+    return await distributeSharedKey(clients, result.apiKey, { interactive });
   }
 
-  // If all clients have keys, we're done
+  // If all clients already have keys on disk, honor them. Distinct values mean
+  // the interactive user deliberately set per-client keys; identical values can
+  // stay global. Non-interactive installs never write per-client key files.
   if (keys.size === clients.length) {
-    return keys;
+    return { keys, perClient: interactive && hasDistinctKeys(keys) };
   }
 
-  // Some clients need keys — offer device-code login or manual paste
-  if (interactive && !anyKeyFound && !noLogin) {
+  // Fresh interactive install (no key found anywhere). Obtain a single key —
+  // via browser login or a manual paste — then ask whether to share it across
+  // all detected clients. This keeps every auth entry point consistent: one
+  // key, one share decision.
+  if (interactive && !anyKeyFound) {
+    // --no-login skips the browser option but still uses the single-key +
+    // share flow rather than prompting separately for every client.
+    if (noLogin) {
+      const key = await promptForKey();
+      return await distributeSharedKey(clients, key, { interactive });
+    }
+
     console.log('');
     console.log('No API key found. How would you like to authenticate?');
     console.log('  [1] Log in via browser (recommended)');
@@ -197,32 +212,80 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
     if (choice === '1') {
       try {
         const result = await deviceCodeLogin();
-        for (const client of clients) {
-          keys.set(client.id, result.apiKey);
-        }
-        return keys;
+        return await distributeSharedKey(clients, result.apiKey, { interactive });
       } catch (err) {
         console.error(`Device login failed: ${err.message}`);
         console.error('Falling back to manual key entry.');
         console.error('');
       }
     }
+
+    // Choice [2], a blank choice, or a failed login: paste a single key.
+    const key = await promptForKey();
+    return await distributeSharedKey(clients, key, { interactive });
   }
 
-  // Manual key entry fallback — fill in any clients still missing keys
+  // Partial fill: some clients already have keys on disk, others don't.
+  // Prompt only for the missing ones (or warn in non-interactive mode).
   for (const client of clients) {
     if (keys.has(client.id)) continue;
 
     if (interactive) {
-      const key = await prompt(`Enter MidBrain API key for ${client.displayName}: `);
-      if (!key) throw new Error(`MidBrain API key for ${client.displayName} is required. Aborting.`);
+      const key = await promptForKey(`Enter MidBrain API key for ${client.displayName}: `);
       keys.set(client.id, key);
     } else {
       console.error(`WARN: no key found for ${client.displayName} (non-interactive mode, skipping)`);
     }
   }
 
-  return keys;
+  return { keys, perClient: hasDistinctKeys(keys) };
+}
+
+/** Prompt for a single API key, rejecting empty input. */
+async function promptForKey(label = 'Enter MidBrain API key: ') {
+  const key = await prompt(label);
+  if (!key) throw new Error('MidBrain API key is required. Aborting.');
+  return key;
+}
+
+/** True if the map holds more than one distinct key value. */
+function hasDistinctKeys(keys) {
+  return new Set(keys.values()).size > 1;
+}
+
+/**
+ * Given a single shared key (from device login or a single paste), decide
+ * whether to keep it shared across all clients (global key only) or to prompt
+ * for a distinct key per detected client.
+ *
+ * @returns {Promise<{keys: Map<string, string>, perClient: boolean}>}
+ */
+async function distributeSharedKey(clients, sharedKey, { interactive }) {
+  const keys = new Map();
+
+  // Non-interactive or a single client: nothing to split — share the key.
+  if (!interactive || clients.length < 2) {
+    for (const client of clients) keys.set(client.id, sharedKey);
+    return { keys, perClient: false };
+  }
+
+  const names = clients.map((c) => c.displayName).join(', ');
+  const answer = await prompt(
+    `Use the same key for all detected clients (${names})? [Y/n] `
+  );
+
+  // Default (empty) and anything other than an explicit "n" means: share it.
+  if (answer.toLowerCase() !== 'n') {
+    for (const client of clients) keys.set(client.id, sharedKey);
+    return { keys, perClient: false };
+  }
+
+  // User opted out — prompt for a distinct key per client.
+  for (const client of clients) {
+    const key = await promptForKey(`Enter MidBrain API key for ${client.displayName}: `);
+    keys.set(client.id, key);
+  }
+  return { keys, perClient: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -319,15 +382,25 @@ async function main(opts = {}) {
   }
 
   // Resolve and write keys
-  const keys = await resolveKeys(clients, { nonInteractive, forceLogin, noLogin });
+  const { keys, perClient } = await resolveKeys(clients, { nonInteractive, forceLogin, noLogin });
   if (keys.size === 0) {
     throw new Error("No API key found. Run the installer interactively first or set MIDBRAIN_API_KEY.");
   }
   const keyLines = [];
-  keyLines.push(await getClient('generic').writeKey(keys.values().next().value));
-  for (const client of clients) {
-    const key = keys.get(client.id);
-    if (key) keyLines.push(await client.writeKey(key));
+
+  // The global key is always written and is the single source of truth for the
+  // shared-key case. Use the first detected client's key as the global value.
+  const primaryKey = keys.values().next().value;
+  keyLines.push(await getClient('generic').writeKey(primaryKey));
+
+  // Per-client key files are only written when the user opted into distinct
+  // keys (or distinct keys already existed). Otherwise the global key alone
+  // serves every client via the resolution chain.
+  if (perClient) {
+    for (const client of clients) {
+      const key = keys.get(client.id);
+      if (key) keyLines.push(await client.writeKey(key));
+    }
   }
 
   // Install each detected client
