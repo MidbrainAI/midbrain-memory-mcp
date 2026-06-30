@@ -3,6 +3,34 @@
 All notable public release changes for `midbrain-memory-mcp` are tracked here.
 Full release-note bodies live in `docs/releases/`.
 
+## 0.4.6
+
+Full notes: [docs/releases/v0.4.6.md](docs/releases/v0.4.6.md)
+
+### Changed
+
+- Made global installs write one shared MidBrain key by default instead of
+  duplicating it into every detected client config directory.
+- Replaced unconditional debug-file writes with the shared `makeLogger()`,
+  `logFile()`, and `logDir()` logger API.
+- Moved hook and plugin logs into platform log directories with log levels and
+  one-file rotation.
+
+### Fixed
+
+- Kept non-interactive installs on the global shared-key path even when
+  detected clients already have distinct existing key files.
+- Suppressed debug-level request and payload detail by default unless
+  `MIDBRAIN_LOG_LEVEL=debug` is set.
+
+### Notes
+
+- Interactive multi-client installs can still choose distinct per-client keys,
+  and existing distinct per-client keys are preserved.
+- The MCP tool surface, existing key resolution chain, and generated client
+  config shape are unchanged.
+- Breaking changes: None.
+
 ## 0.4.5
 
 Full notes: [docs/releases/v0.4.5.md](docs/releases/v0.4.5.md)
