@@ -618,7 +618,7 @@ mcp.mjs                        MCP tool definitions (createServer factory)
 install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
   midbrain-api.mjs             MidbrainApi class: ALL API calls go here
-  logger.mjs                   makeDebugLogger()
+  logger.mjs                   makeLogger(), logFile(), logDir()
   plugin-entry.mjs             esbuild bundle entry point
   clients/
     utils.mjs                  Shared constants + utilities (deduplication)
