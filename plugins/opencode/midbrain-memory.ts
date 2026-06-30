@@ -22,7 +22,7 @@
 
 import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
-import { MidbrainApi, makeDebugLogger, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
+import { MidbrainApi, makeLogger, logFile, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
 
 const OPENCODE_HISTORY_TIMEOUT_MS = 500;
 
@@ -74,16 +74,15 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 // --- Plugin ---
 
 export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
-  const HOME = process.env.HOME ?? "/tmp";
-  const debugLog = makeDebugLogger(`${HOME}/midbrain-plugin-debug.log`);
+  const log = makeLogger(logFile("midbrain-opencode.log"));
 
   let api: InstanceType<typeof MidbrainApi>;
   try {
     api = await MidbrainApi.create(getClient("opencode"), directory);
-    debugLog(`INIT: dir=${directory} src=${api.keySource} key=${api.keyFingerprint}`);
+    log.info(`INIT: dir=${directory} src=${api.keySource} key=${api.keyFingerprint}`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    debugLog(`INIT ERROR: ${msg}`);
+    log.error(`INIT ERROR: ${msg}`);
     console.error(`[midbrain-memory] ${msg}`);
     return {};
   }
@@ -105,9 +104,9 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
       if (!text) return;
 
-      debugLog(`USER: id=${messageID} len=${text.length}`);
+      log.info(`USER: id=${messageID} len=${text.length}`);
       storedMessages.add(messageID);
-      api.storeEpisodic(text, "user", debugLog, { client: "opencode" });
+      api.storeEpisodic(text, "user", log, { client: "opencode" });
 
       if (!isPkInjectionEnabled()) return;
 
@@ -134,11 +133,11 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
           } else {
             parts.unshift({ type: "text", text: ctxBlock });
           }
-          debugLog(`PK: injected ${entries.length} entries ids=${entries.map((e: { id: number }) => e.id).join(",")}`);
+          log.debug(`PK: injected ${entries.length} entries ids=${entries.map((e: { id: number }) => e.id).join(",")}`);
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        debugLog(`PK INJECT ERROR: ${msg}`);
+        log.error(`PK INJECT ERROR: ${msg}`);
       }
     },
 
@@ -163,7 +162,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
       const sessionID = info.sessionID as string;
 
-      debugLog(`ASSISTANT: id=${msgID} session=${sessionID} fetching parts`);
+      log.debug(`ASSISTANT: id=${msgID} session=${sessionID} fetching parts`);
 
       try {
         const result = await client.session.message({
@@ -171,7 +170,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
         });
 
         if (!result.data) {
-          debugLog(`ASSISTANT: no data for ${msgID}`);
+          log.debug(`ASSISTANT: no data for ${msgID}`);
           return;
         }
 
@@ -187,18 +186,18 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
           .trim();
 
         if (!text) {
-          debugLog(`ASSISTANT: empty text for ${msgID}`);
+          log.debug(`ASSISTANT: empty text for ${msgID}`);
           return;
         }
 
         const safeText = scrubInjectedPkContext(text);
         if (!safeText) return;
 
-        debugLog(`ASSISTANT: storing id=${msgID} len=${safeText.length}`);
-        api.storeEpisodic(safeText, "assistant", debugLog, { client: "opencode" });
+        log.info(`ASSISTANT: storing id=${msgID} len=${safeText.length}`);
+        api.storeEpisodic(safeText, "assistant", log, { client: "opencode" });
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        debugLog(`ASSISTANT ERROR: ${errMsg}`);
+        log.error(`ASSISTANT ERROR: ${errMsg}`);
       }
     },
   };

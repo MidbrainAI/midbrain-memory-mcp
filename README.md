@@ -383,6 +383,29 @@ to the Codex TOML env table.
   `[mcp_servers.<id>]` TOML tables. Wrong key = silent failure.
 - MCP servers in `~/.claude/settings.json` are silently ignored. Use `~/.claude.json`.
 
+### Logging
+
+Capture hooks and plugins write debug logs to a platform-appropriate
+directory (not your home directory):
+
+| Platform | Log directory |
+|---|---|
+| Linux/other | `$XDG_STATE_HOME/midbrain` or `~/.local/state/midbrain` |
+| macOS | `~/Library/Logs/midbrain` |
+| Windows | `%LOCALAPPDATA%\midbrain\logs` |
+
+Per-client files: `midbrain-opencode.log`, `midbrain-claude.log`,
+`midbrain-codex.log`.
+
+- Logs default to the `info` level. Per-request detail (individual REST
+  calls, payload sizes) is logged at `debug` and suppressed by default.
+- Set `MIDBRAIN_LOG_LEVEL=debug` in the hook/plugin environment for verbose
+  output, or `MIDBRAIN_LOG_LEVEL=error` to keep only failures. Valid values:
+  `error`, `warn`, `info`, `debug`.
+- Logs rotate to `<file>.1` once they exceed 5 MiB (override with
+  `MIDBRAIN_LOG_MAX_SIZE`, in bytes). Only one rotated generation is kept.
+- Override the log directory entirely with `MIDBRAIN_LOG_DIR`.
+
 ### NanoClaw
 
 NanoClaw runs Claude Code inside Docker containers. MidBrain integrates via
@@ -604,7 +627,7 @@ mcp.mjs                        MCP tool definitions (createServer factory)
 install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
   midbrain-api.mjs             MidbrainApi class: ALL API calls go here
-  logger.mjs                   makeDebugLogger()
+  logger.mjs                   makeLogger(), logFile(), logDir()
   plugin-entry.mjs             esbuild bundle entry point
   clients/
     utils.mjs                  Shared constants + utilities (deduplication)

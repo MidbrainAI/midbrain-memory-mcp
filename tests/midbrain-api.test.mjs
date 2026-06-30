@@ -15,6 +15,11 @@ import {
   appendToCache,
 } from "../shared/episodic-cache.mjs";
 
+/** Logger-shaped mock: each level method is an independent spy. */
+function makeLog() {
+  return { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -54,7 +59,7 @@ describe("MidbrainApi.storeEpisodic", () => {
   });
 
   it("POSTs to the episodic endpoint with correct body", async () => {
-    const log = vi.fn();
+    const log = makeLog();
     api.storeEpisodic("hello world", "user", log);
 
     await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
@@ -69,7 +74,7 @@ describe("MidbrainApi.storeEpisodic", () => {
   it.each(["opencode", "claude", "codex"])(
     "includes %s client memory_metadata in POST body",
     async (client) => {
-      const log = vi.fn();
+      const log = makeLog();
       api.storeEpisodic("hello", "assistant", log, { client });
 
       await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
@@ -84,7 +89,7 @@ describe("MidbrainApi.storeEpisodic", () => {
   );
 
   it("omits memory_metadata from POST body when metadata not provided", async () => {
-    const log = vi.fn();
+    const log = makeLog();
     api.storeEpisodic("hello", "user", log);
 
     await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
@@ -96,16 +101,16 @@ describe("MidbrainApi.storeEpisodic", () => {
   });
 
   it("calls debug log function on success", async () => {
-    const log = vi.fn();
+    const log = makeLog();
     api.storeEpisodic("msg", "assistant", log);
 
-    await vi.waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining("STORED")));
+    await vi.waitFor(() => expect(log.debug).toHaveBeenCalledWith(expect.stringContaining("STORED")));
   });
 
   it("returns the POST promise so hook callers can await storage", async () => {
     let resolveFetch;
     fetchSpy.mockReturnValueOnce(new Promise((resolve) => { resolveFetch = resolve; }));
-    const log = vi.fn();
+    const log = makeLog();
 
     const promise = api.storeEpisodic("msg", "assistant", log);
     let settled = false;
@@ -118,15 +123,15 @@ describe("MidbrainApi.storeEpisodic", () => {
     resolveFetch({ ok: true, status: 201 });
     await expect(promise).resolves.toBe(true);
 
-    expect(log).toHaveBeenCalledWith("STORED: status=201");
+    expect(log.debug).toHaveBeenCalledWith("STORED: status=201");
   });
 
   it("returns false and logs when fetch fails", async () => {
     fetchSpy.mockRejectedValueOnce(new Error("network down"));
-    const log = vi.fn();
+    const log = makeLog();
 
     await expect(api.storeEpisodic("msg", "user", log)).resolves.toBe(false);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR"));
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR"));
   });
 
   it("returns false and logs when the API returns a non-2xx status", async () => {
@@ -135,10 +140,10 @@ describe("MidbrainApi.storeEpisodic", () => {
       status: 503,
       text: vi.fn().mockResolvedValue("temporarily unavailable"),
     });
-    const log = vi.fn();
+    const log = makeLog();
 
     await expect(api.storeEpisodic("msg", "user", log)).resolves.toBe(false);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR: status=503"));
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR: status=503"));
   });
 });
 
@@ -151,7 +156,7 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
   let api;
   let tmpDir;
   let originalSimulateOffline;
-  const log = vi.fn();
+  const log = makeLog();
 
   function cacheScopeForKey(key) {
     return createHash("sha256")
@@ -166,7 +171,7 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
     _setCachePath(tmpDir);
     fetchSpy = vi.spyOn(globalThis, "fetch");
     api = new MidbrainApi("test-key", "test-source");
-    log.mockClear();
+    for (const fn of Object.values(log)) fn.mockClear();
   });
 
   afterEach(() => {
@@ -335,7 +340,7 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
   it("logs cache activity", async () => {
     fetchSpy.mockRejectedValueOnce(new Error("offline"));
     await api.storeEpisodic("msg", "user", log);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("cached entry"));
+    expect(log.debug).toHaveBeenCalledWith(expect.stringContaining("cached entry"));
   });
 
   it("accumulates multiple failures in the cache", async () => {

@@ -44,10 +44,10 @@ describe("OpenCode plugin bundle", () => {
     expect(existsSync(BUNDLE_PATH)).toBe(true);
   });
 
-  it("bundle exports MidbrainApi, makeDebugLogger, getClient", async () => {
+  it("bundle exports MidbrainApi, makeLogger, getClient", async () => {
     const bundle = await import(pathToFileURL(BUNDLE_PATH).href);
     expect(typeof bundle.MidbrainApi).toBe("function");
-    expect(typeof bundle.makeDebugLogger).toBe("function");
+    expect(typeof bundle.makeLogger).toBe("function");
     expect(typeof bundle.getClient).toBe("function");
   });
 
@@ -70,7 +70,7 @@ describe("OpenCode plugin bundle", () => {
   it("dev shim re-exports the same symbols as the bundle", async () => {
     const shim = await import(pathToFileURL(SHIM_PATH).href);
     expect(typeof shim.MidbrainApi).toBe("function");
-    expect(typeof shim.makeDebugLogger).toBe("function");
+    expect(typeof shim.makeLogger).toBe("function");
     expect(typeof shim.getClient).toBe("function");
   });
 

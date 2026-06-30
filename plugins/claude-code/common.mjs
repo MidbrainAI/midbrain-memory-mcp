@@ -6,13 +6,11 @@
  * Hook scripts import from this file — their imports don't change.
  */
 
-import { join } from "path";
-import { homedir } from "os";
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
-import { makeDebugLogger } from "../../shared/logger.mjs";
+import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 
-export { MidbrainApi, makeDebugLogger };
+export { MidbrainApi, makeLogger };
 
 /**
  * Creates a MidbrainApi instance for the Claude Code client.
@@ -26,12 +24,11 @@ export async function createApi(cwd) {
 }
 
 /**
- * Pre-built debug logger for Claude Code hooks. Appends timestamped lines
- * to ~/midbrain-claude-code-debug.log. Never throws.
+ * Pre-built leveled logger for Claude Code hooks. Appends timestamped,
+ * level-tagged lines to the platform log dir (see shared/logger.mjs).
+ * Never throws.
  */
-export const debugLog = makeDebugLogger(
-  join(homedir(), "midbrain-claude-code-debug.log")
-);
+export const log = makeLogger(logFile("midbrain-claude.log"));
 
 /**
  * Reads all of stdin as a string, parses JSON. Returns null on failure.
