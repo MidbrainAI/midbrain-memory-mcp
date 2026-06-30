@@ -156,9 +156,9 @@ async function prompt(question) {
  * @param {boolean} [opts.noLogin] - Skip browser/device auth and use manual key entry.
  * @returns {Promise<{keys: Map<string, string>, perClient: boolean}>}
  *   keys: Map<clientId, string>.
- *   perClient: true when the user wants a distinct per-client key written
- *   (or distinct keys already exist on disk); false for a single shared key
- *   that only needs the global key file.
+ *   perClient: true when the interactive user wants a distinct per-client key
+ *   written (or distinct keys already exist on disk); false for a single shared
+ *   key that only needs the global key file.
  */
 async function resolveKeys(clients, { nonInteractive = false, forceLogin = false, noLogin = false } = {}) {
   const interactive = !nonInteractive && process.stdin.isTTY;
@@ -184,9 +184,10 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
   }
 
   // If all clients already have keys on disk, honor them. Distinct values mean
-  // the user deliberately set per-client keys; identical values can stay global.
+  // the interactive user deliberately set per-client keys; identical values can
+  // stay global. Non-interactive installs never write per-client key files.
   if (keys.size === clients.length) {
-    return { keys, perClient: hasDistinctKeys(keys) };
+    return { keys, perClient: interactive && hasDistinctKeys(keys) };
   }
 
   // Fresh interactive install (no key found anywhere). Obtain a single key —

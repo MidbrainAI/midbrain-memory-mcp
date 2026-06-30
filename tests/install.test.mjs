@@ -274,18 +274,23 @@ describe("main — per-client key writing", () => {
   });
 
   it("preserves distinct per-client keys already present on disk", async () => {
-    existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
-    readFileReturns({
-      [PATHS.opencodeKey]: "oc-key\n",
-      [PATHS.claudeKey]: "cc-key\n",
-    });
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      readFileReturns({
+        [PATHS.opencodeKey]: "oc-key\n",
+        [PATHS.claudeKey]: "cc-key\n",
+      });
 
-    await main();
+      await main();
 
-    const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
-    const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
-    expect(ocWrite?.[1]).toBe("oc-key\n");
-    expect(ccWrite?.[1]).toBe("cc-key\n");
+      const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+      const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+      expect(ocWrite?.[1]).toBe("oc-key\n");
+      expect(ccWrite?.[1]).toBe("cc-key\n");
+    } finally {
+      restoreTTY();
+    }
   });
 
   it("asks to share the key and writes global only when the user answers yes", async () => {
@@ -506,6 +511,24 @@ describe("main — per-client key writing", () => {
     expect(globalWrite?.[1]).toBe("existing-key\n");
     // Non-interactive never splits keys — global only.
     expect(clientWrite).toBeUndefined();
+  });
+
+  it("--non-interactive uses distinct existing client keys as global only", async () => {
+    existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+    readFileReturns({
+      [PATHS.opencodeKey]: "oc-existing\n",
+      [PATHS.claudeKey]: "cc-existing\n",
+    });
+
+    await main({ nonInteractive: true });
+
+    const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
+    expect(globalWrite?.[1]).toBe("oc-existing\n");
+
+    const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
+    const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
+    expect(ocWrite).toBeUndefined();
+    expect(ccWrite).toBeUndefined();
   });
 
   it("--non-interactive uses MIDBRAIN_API_KEY through shared key resolution (global only)", async () => {
