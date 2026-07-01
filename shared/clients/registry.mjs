@@ -9,9 +9,10 @@ import { OpenCode } from './opencode.mjs';
 import { Claude } from './claude.mjs';
 import { Codex } from './codex.mjs';
 import { NanoClaw } from './nanoclaw.mjs';
+import { Hermes } from './hermes.mjs';
 import { Generic } from './generic.mjs';
 
-const CLIENTS = [new OpenCode(), new Claude(), new Codex(), new NanoClaw()];
+const CLIENTS = [new OpenCode(), new Claude(), new Codex(), new NanoClaw(), new Hermes()];
 const FALLBACK = new Generic();
 
 /** Returns all registered client adapters (excludes generic fallback). */
@@ -48,6 +49,10 @@ function inferClientId() {
   if (dir.includes('nanoclaw')) {
     console.error('[midbrain] WARN: MIDBRAIN_CLIENT not set, inferred "nanoclaw" from MIDBRAIN_CONFIG_DIR. Re-run: npx midbrain-memory-mcp install');
     return 'nanoclaw';
+  }
+  if (dir.includes('hermes')) {
+    console.error('[midbrain] WARN: MIDBRAIN_CLIENT not set, inferred "hermes" from MIDBRAIN_CONFIG_DIR. Re-run: npx midbrain-memory-mcp install');
+    return 'hermes';
   }
   return null;
 }

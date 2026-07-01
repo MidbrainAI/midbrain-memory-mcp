@@ -58,7 +58,7 @@ describe("detectClients", () => {
   });
 
   it("registers Codex in allClients", () => {
-    expect(allClients().map((c) => c.id)).toEqual(["opencode", "claude", "codex", "nanoclaw"]);
+    expect(allClients().map((c) => c.id)).toEqual(["opencode", "claude", "codex", "nanoclaw", "hermes"]);
   });
 
   it("returns Codex by id", () => {
@@ -67,6 +67,10 @@ describe("detectClients", () => {
 
   it("returns NanoClaw by id", () => {
     expect(getClient("nanoclaw").id).toBe("nanoclaw");
+  });
+
+  it("returns Hermes by id", () => {
+    expect(getClient("hermes").id).toBe("hermes");
   });
 
   it("detects only OpenCode when only OpenCode installed", () => {
@@ -102,6 +106,13 @@ describe("detectClients", () => {
     const clients = detectClients();
     expect(clients).toHaveLength(1);
     expect(clients[0].id).toBe("nanoclaw");
+  });
+
+  it("detects only Hermes when only ~/.hermes exists", () => {
+    existsFor(path.join(HOME, ".hermes"));
+    const clients = detectClients();
+    expect(clients).toHaveLength(1);
+    expect(clients[0].id).toBe("hermes");
   });
 
   it("returns empty when nothing installed", () => {

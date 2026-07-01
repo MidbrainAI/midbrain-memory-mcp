@@ -508,6 +508,7 @@ describe("memory_setup_project — config file integration", () => {
   let tmpProjectDir;
   let savedConfigDir;
   let savedHome;
+  let savedHermesHome;
   let fakeHome;
 
   beforeEach(() => {
@@ -519,6 +520,12 @@ describe("memory_setup_project — config file integration", () => {
     savedHome = process.env.HOME;
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fake-home-"));
     process.env.HOME = fakeHome;
+
+    // The Hermes adapter honors $HERMES_HOME ahead of ~/.hermes; unset it so a
+    // developer running the suite from inside a Hermes session (HERMES_HOME set)
+    // doesn't leak the real config dir into detection. Keeps the block hermetic.
+    savedHermesHome = process.env.HERMES_HOME;
+    delete process.env.HERMES_HOME;
 
     // Seed fake HOME so existsSync-based client detection in index.js succeeds
     // for both OpenCode and Claude Code by default. Individual tests can override.
@@ -532,6 +539,9 @@ describe("memory_setup_project — config file integration", () => {
 
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
+
+    if (savedHermesHome === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = savedHermesHome;
 
     try { fs.rmSync(tmpProjectDir, { recursive: true, force: true }); } catch { /* ignore */ }
     try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
