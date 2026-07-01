@@ -217,15 +217,37 @@ with `MIDBRAIN_PROJECT_DIR`, and restart.
 ## Auto-Update
 
 The installer writes `npx -y midbrain-memory-mcp@latest` as the MCP
-command. This re-resolves the latest published version from the npm
-registry on every client cold start. When a new version ships, your
-next restart picks it up automatically.
+command. `@latest` re-resolves the newest published version only when npx has
+no warm cache for that spec. Once npx has populated its `_npx/<hash>` cache with
+a version that satisfies the recorded semver range, it reuses that cached
+install and does **not** re-contact the registry — so `@latest` alone freezes at
+whatever version was current when the cache was first populated.
+
+To make updates actually propagate, MidBrain self-heals the npx cache: on
+startup (and from capture hooks), it checks the npm registry at most once per
+24h and, when the running version is older than `latest`, removes its own
+`_npx/<hash>` cache directory. The next cold start finds no cache, re-resolves
+`@latest`, and installs the newer version. The check is self-verified (it only
+removes a cache dir that installed this package) and fire-and-forget (never
+blocks startup or capture, never crashes).
 
 | Spec form | Behavior |
 |---|---|
-| `midbrain-memory-mcp@latest` | Auto-updates on every cold start (recommended) |
+| `midbrain-memory-mcp@latest` | Self-healing auto-update via cache clear (recommended) |
 | `midbrain-memory-mcp@X.Y.Z` | Pinned. You are responsible for bumping |
 | `midbrain-memory-mcp` (bare) | Looks auto-updating but is sticky on first resolved version. Avoid |
+
+**Already-stuck clients:** a client running a version *older* than the release
+that introduced self-healing cannot self-heal (its code predates the fix). Clear
+the npx cache once manually, then it re-resolves `@latest` and stays current
+automatically:
+
+```bash
+npx clear-npx-cache
+# or delete the _npx dir directly:
+#   macOS/Linux: rm -rf "$(npm config get cache)/_npx"
+#   Windows:     rmdir /s /q "%LocalAppData%\npm-cache\_npx"
+```
 
 ### Automatic Hook & Plugin Repair
 
