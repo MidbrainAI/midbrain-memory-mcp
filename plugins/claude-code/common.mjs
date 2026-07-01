@@ -44,3 +44,20 @@ export async function readStdinJSON() {
     return null;
   }
 }
+
+/**
+ * Complete a Claude capture hook: fire the throttled npx self-update check,
+ * then exit. Self-update self-heals a stale npx cache so the next cold start
+ * resolves @latest. Throttled to once/24h; never throws, never blocks capture.
+ *
+ * Call this at every hook exit point instead of process.exit(0) directly.
+ * @param {number} [code=0] - Exit code.
+ * @returns {Promise<never>}
+ */
+export async function finishHook(code = 0) {
+  try {
+    const { maybeSelfUpdate } = await import("../../install.mjs");
+    await maybeSelfUpdate();
+  } catch { /* never break the hook */ }
+  process.exit(code);
+}
