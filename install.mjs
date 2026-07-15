@@ -50,9 +50,14 @@ const UPDATE_CACHE_FILENAME = '.midbrain-update-check.json';
 const UPDATE_FETCH_TIMEOUT_MS = 5000;
 const NPX_DIR_NAME = '_npx';
 const SELF_PKG_SUBPATH = path.join('node_modules', PKG_NAME, 'package.json');
+const STABLE_VERSION_RE = /^\d+\.\d+\.\d+$/;
+
+function isStableVersion(version) {
+  return typeof version === 'string' && STABLE_VERSION_RE.test(version);
+}
 
 export function isNewerVersion(current, latest) {
-  if (!current || !latest) return false;
+  if (!isStableVersion(current) || !isStableVersion(latest)) return false;
   const c = current.split('.').map((s) => parseInt(s, 10));
   const l = latest.split('.').map((s) => parseInt(s, 10));
   for (let i = 0; i < 3; i++) {
@@ -141,20 +146,25 @@ async function fetchLatestVersion() {
   if (await isUpdateCacheFresh(cachePath)) return null;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS);
+  let latestVersion = null;
   try {
     const response = await fetch(NPM_REGISTRY_URL, { signal: controller.signal });
     if (!response.ok) return null;
-    const { version: latestVersion } = await response.json();
-    await fs.writeFile(
-      cachePath,
-      JSON.stringify({ lastCheck: Date.now(), latestVersion }),
-      'utf8',
-    ).catch(() => {});
-    return typeof latestVersion === 'string' ? latestVersion : null;
+    const { version } = await response.json();
+    if (!isStableVersion(version)) return null;
+    latestVersion = version;
+    return latestVersion;
   } catch {
     return null;
   } finally {
     clearTimeout(timeout);
+    const cache = { lastCheck: Date.now() };
+    if (latestVersion) cache.latestVersion = latestVersion;
+    await fs.writeFile(
+      cachePath,
+      JSON.stringify(cache),
+      'utf8',
+    ).catch(() => {});
   }
 }
 
