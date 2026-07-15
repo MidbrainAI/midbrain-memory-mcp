@@ -139,9 +139,10 @@ async function isUpdateCacheFresh(cachePath) {
 
 /**
  * Fetch the latest published version from npm, honoring a 24h throttle cache.
- * Every completed attempt records lastCheck, including failures, so an
- * unavailable registry cannot delay every hook. Returns the latest version
- * string, or null when throttled/unavailable. Never throws.
+ * Every completed attempt tries to record lastCheck, including failures, so an
+ * unavailable registry cannot delay every hook when cache state is writable.
+ * Returns the latest version string, or null when throttled/unavailable. Never
+ * throws.
  *
  * @returns {Promise<string|null>}
  */

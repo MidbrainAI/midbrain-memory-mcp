@@ -224,10 +224,11 @@ install and does **not** re-contact the registry — so `@latest` alone freezes 
 whatever version was current when the cache was first populated.
 
 To make updates actually propagate, MidBrain self-heals the npx cache: on
-startup (and from capture hooks), it checks the npm registry at most once per
-24h and, when the running version is older than `latest`, removes its own
-`_npx/<hash>` cache directory. The next cold start finds no cache, re-resolves
-`@latest`, and installs the newer version. Before deletion, the check parses the
+startup (and from capture hooks), it uses a best-effort cache to check the npm
+registry at most once per 24h when that cache state can be persisted. When the
+running version is older than `latest`, it removes its own `_npx/<hash>` cache
+directory. The next cold start finds no cache, re-resolves `@latest`, and
+installs the newer version. Before deletion, the check parses the
 target package metadata and requires the exact `midbrain-memory-mcp` package
 name. Startup begins this best-effort work only after the MCP server connects.
 Capture hooks finish capture and any required stdout first; hook exit may then
