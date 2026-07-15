@@ -67,11 +67,14 @@ OpenCode / Claude Code / Codex session
 API and returns scored results as formatted text.
 
 **Capture**: Companion hooks POST conversation events to the episodic
-endpoint. Fire-and-forget, never blocks. OpenCode uses a Bun/TS plugin;
-Claude Code and Codex use standalone Node scripts wired to their hook
-systems. Codex captures prompts, assistant messages, plaintext reasoning
-summaries when available, and bounded per-turn tool summaries. Codex
-assistant capture stores the clean assistant answer separately from one
+endpoint. OpenCode submits capture without awaiting the API response. Claude
+Code and Codex hooks complete capture and any required stdout before their
+throttled self-update check; that check may delay hook exit by up to
+`UPDATE_FETCH_TIMEOUT_MS`. Capture and update failures are non-fatal. OpenCode
+uses a Bun/TS plugin; Claude Code and Codex use standalone Node scripts wired
+to their hook systems. Codex captures prompts, assistant messages, plaintext
+reasoning summaries when available, and bounded per-turn tool summaries.
+Codex assistant capture stores the clean assistant answer separately from one
 bounded reasoning/commentary summary, so interim commentary does not create
 many standalone memories.
 
@@ -717,8 +720,11 @@ branching inside MCP tools or hook scripts.
    comments and existing settings when that client's format supports it.
 5. **Choose a capture surface.** Use a plugin when the client exposes a runtime
    message hook (OpenCode). Use hook scripts when the client exposes lifecycle
-   hooks (Claude Code, Codex). Capture must be fire-and-forget and must not
-   block the chat on API responses.
+   hooks (Claude Code, Codex). OpenCode submits capture without awaiting the
+   API response. Claude Code and Codex hooks complete capture and any required
+   stdout before the throttled self-update check, which may delay hook exit by
+   up to `UPDATE_FETCH_TIMEOUT_MS`; capture and update failures remain
+   non-fatal.
 6. **Package runtime files.** Add any new plugin, hook, or skill directory to
    `package.json#files` if it is not already covered. Verify with
    `npm pack --dry-run`.

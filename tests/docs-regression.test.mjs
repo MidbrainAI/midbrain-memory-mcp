@@ -253,6 +253,18 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(readme).toMatch(/trust.*shim|shim.*trust/i);
     expect(readme).not.toMatch(/hooks\.json[\s\S]{0,300}plugins\/codex\/capture-user\.mjs/);
   });
+
+  it("D-21: awaited hook paths do not promise fire-and-forget timing", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const claudeUserHook = await fs.readFile(
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-user.mjs"),
+      "utf8",
+    );
+
+    expect(readme).not.toMatch(/\*\*Capture\*\*[\s\S]{0,120}fire-and-forget, never blocks/i);
+    expect(readme).not.toMatch(/capture must be fire-and-forget and must not\s+block/i);
+    expect(claudeUserHook).not.toMatch(/capture never blocks the turn/i);
+  });
 });
 
 async function readNanoClawDocParts() {

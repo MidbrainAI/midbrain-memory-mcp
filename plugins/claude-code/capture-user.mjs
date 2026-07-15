@@ -6,7 +6,8 @@
  *
  * Stdin JSON: { prompt: "...", session_id, cwd, ... }
  * Stdout JSON (on opted-in PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
- * Fails silently on any error — capture never blocks the turn.
+ * Capture failures are non-fatal. Capture completes before finishHook(), whose
+ * throttled self-update check may delay hook exit by up to UPDATE_FETCH_TIMEOUT_MS.
  *
  * Note: Claude Code does not provide conversation history in the hook payload,
  * so exclude_ids is always empty. The same PK entry may appear on subsequent
