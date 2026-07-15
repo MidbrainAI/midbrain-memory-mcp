@@ -4,28 +4,31 @@
  * Captures the assistant's final response as episodic memory.
  *
  * Stdin JSON: { last_assistant_message: "...", stop_hook_active, ... }
- * Exits immediately if stop_hook_active (prevents infinite loops).
+ * If stop_hook_active, skips capture to prevent loops, then completes the
+ * non-fatal hook finish/update path.
  * Fails silently on any error.
  */
 
-import { readStdinJSON, createApi, log } from "./common.mjs";
+import { readStdinJSON, createApi, log, finishHook } from "./common.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 try {
   const input = await readStdinJSON();
   // input.cwd is confirmed present in Claude Desktop's Stop payload
-  if (!input) process.exit(0);
-  if (input.stop_hook_active) process.exit(0);
-  if (!input.last_assistant_message) process.exit(0);
+  if (!input) await finishHook(0);
+  if (input.stop_hook_active) await finishHook(0);
+  if (!input.last_assistant_message) await finishHook(0);
 
   let api;
   try {
     api = await createApi(input.cwd);
   } catch {
     log.warn("NO KEY");
-    process.exit(0);
+    await finishHook(0);
   }
 
   const text = scrubInjectedPkContext(input.last_assistant_message);
-  if (text) api.storeEpisodic(text, "assistant", log, { client: "claude" });
+  if (text) await api.storeEpisodic(text, "assistant", log, { client: "claude" });
 } catch { /* fail silently */ }
+
+await finishHook(0);

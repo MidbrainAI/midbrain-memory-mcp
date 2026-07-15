@@ -67,11 +67,14 @@ OpenCode / Claude Code / Codex session
 API and returns scored results as formatted text.
 
 **Capture**: Companion hooks POST conversation events to the episodic
-endpoint. Fire-and-forget, never blocks. OpenCode uses a Bun/TS plugin;
-Claude Code and Codex use standalone Node scripts wired to their hook
-systems. Codex captures prompts, assistant messages, plaintext reasoning
-summaries when available, and bounded per-turn tool summaries. Codex
-assistant capture stores the clean assistant answer separately from one
+endpoint. OpenCode submits capture without awaiting the API response. Claude
+Code and Codex hooks complete capture and any required stdout before their
+throttled self-update check; that check may delay hook exit by up to
+`UPDATE_FETCH_TIMEOUT_MS`. Capture and update failures are non-fatal. OpenCode
+uses a Bun/TS plugin; Claude Code and Codex use standalone Node scripts wired
+to their hook systems. Codex captures prompts, assistant messages, plaintext
+reasoning summaries when available, and bounded per-turn tool summaries.
+Codex assistant capture stores the clean assistant answer separately from one
 bounded reasoning/commentary summary, so interim commentary does not create
 many standalone memories.
 
@@ -217,15 +220,48 @@ with `MIDBRAIN_PROJECT_DIR`, and restart.
 ## Auto-Update
 
 The installer writes `npx -y midbrain-memory-mcp@latest` as the MCP
-command. This re-resolves the latest published version from the npm
-registry on every client cold start. When a new version ships, your
-next restart picks it up automatically.
+command. `@latest` re-resolves the newest published version only when npx has
+no warm cache for that spec. Once npx has populated its `_npx/<hash>` cache with
+a version that satisfies the recorded semver range, it reuses that cached
+install and does **not** re-contact the registry — so `@latest` alone freezes at
+whatever version was current when the cache was first populated.
+
+To make updates actually propagate, MidBrain self-heals the npx cache: on
+startup (and from capture hooks), it uses a best-effort cache to check the npm
+registry at most once per 24h when that cache state can be persisted. When the
+running version is older than `latest`, it removes its own `_npx/<hash>` cache
+directory. The next cold start finds no cache, re-resolves `@latest`, and
+installs the newer version. Before deletion, the check parses the
+target package metadata and requires the exact `midbrain-memory-mcp` package
+name. Startup begins this best-effort work only after the MCP server connects.
+Capture hooks finish capture and any required stdout first; hook exit may then
+wait up to `UPDATE_FETCH_TIMEOUT_MS` for the throttled registry check. Registry,
+cache, and deletion failures are non-fatal.
+
+POSIX paths and normal drive-letter Windows npm caches are supported. Custom
+UNC-configured Windows caches may not self-heal; the package check normally
+fails closed, leaving the cache untouched.
 
 | Spec form | Behavior |
 |---|---|
-| `midbrain-memory-mcp@latest` | Auto-updates on every cold start (recommended) |
+| `midbrain-memory-mcp@latest` | Self-healing auto-update via cache clear (recommended) |
 | `midbrain-memory-mcp@X.Y.Z` | Pinned. You are responsible for bumping |
 | `midbrain-memory-mcp` (bare) | Looks auto-updating but is sticky on first resolved version. Avoid |
+
+**Already-stuck clients:** a client running a version *older* than the release
+that introduced self-healing cannot self-heal (its code predates the fix). Clear
+the npx cache once manually, then it re-resolves `@latest` and stays current
+automatically:
+
+```bash
+npx clear-npx-cache
+# or delete the _npx dir directly:
+#   macOS/Linux: rm -rf "$(npm config get cache)/_npx"
+#   PowerShell:  Remove-Item -Recurse -Force "$(npm config get cache)\_npx"
+```
+
+Manual `_npx` clearing also removes cached installs for other npx tools; each
+tool downloads again on its next cold start.
 
 ### Automatic Hook & Plugin Repair
 
@@ -684,8 +720,11 @@ branching inside MCP tools or hook scripts.
    comments and existing settings when that client's format supports it.
 5. **Choose a capture surface.** Use a plugin when the client exposes a runtime
    message hook (OpenCode). Use hook scripts when the client exposes lifecycle
-   hooks (Claude Code, Codex). Capture must be fire-and-forget and must not
-   block the chat on API responses.
+   hooks (Claude Code, Codex). OpenCode submits capture without awaiting the
+   API response. Claude Code and Codex hooks complete capture and any required
+   stdout before the throttled self-update check, which may delay hook exit by
+   up to `UPDATE_FETCH_TIMEOUT_MS`; capture and update failures remain
+   non-fatal.
 6. **Package runtime files.** Add any new plugin, hook, or skill directory to
    `package.json#files` if it is not already covered. Verify with
    `npm pack --dry-run`.

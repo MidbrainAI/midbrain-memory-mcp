@@ -26,6 +26,7 @@ import { createRequire } from 'module';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
 import { writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
+import { PKG_NAME } from './shared/clients/utils.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,10 +48,16 @@ const NPM_REGISTRY_URL = 'https://registry.npmjs.org/midbrain-memory-mcp/latest'
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_CACHE_FILENAME = '.midbrain-update-check.json';
 const UPDATE_FETCH_TIMEOUT_MS = 5000;
-const NPX_CACHE_MARKER = '/_npx/';
+const NPX_DIR_NAME = '_npx';
+const SELF_PKG_SUBPATH = path.join('node_modules', PKG_NAME, 'package.json');
+const STABLE_VERSION_RE = /^\d+\.\d+\.\d+$/;
+
+function isStableVersion(version) {
+  return typeof version === 'string' && STABLE_VERSION_RE.test(version);
+}
 
 export function isNewerVersion(current, latest) {
-  if (!current || !latest) return false;
+  if (!isStableVersion(current) || !isStableVersion(latest)) return false;
   const c = current.split('.').map((s) => parseInt(s, 10));
   const l = latest.split('.').map((s) => parseInt(s, 10));
   for (let i = 0; i < 3; i++) {
@@ -58,6 +65,68 @@ export function isNewerVersion(current, latest) {
     if ((l[i] || 0) < (c[i] || 0)) return false;
   }
   return false;
+}
+
+/**
+ * Given a directory (typically this module's __dirname), find the
+ * `_npx/<hash>` cache directory that resolved the running process.
+ *
+ * npx installs each `<pkg>@<spec>` invocation under a stable hash dir inside
+ * `<npm-cache>/_npx/`. We walk up from `dirname` until the *parent* segment is
+ * `_npx`; that child is the hash dir. Works with POSIX and drive-letter Windows
+ * paths. UNC prefixes are not preserved and normally fail closed at the package
+ * metadata check. Returns null when not running from an npx cache.
+ *
+ * @param {string} dirname - Absolute path inside a package install.
+ * @returns {string|null} Absolute path to the `_npx/<hash>` dir, or null.
+ */
+export function selfNpxCacheDir(dirname) {
+  if (typeof dirname !== 'string' || !dirname) return null;
+  const segments = dirname.split(/[\\/]+/);
+  const idx = segments.lastIndexOf(NPX_DIR_NAME);
+  // Need a hash segment after `_npx`.
+  if (idx === -1 || idx + 1 >= segments.length) return null;
+  // Preserve the separator style of the input path so a POSIX path stays POSIX
+  // even when this runs on Windows (and vice versa).
+  const sep = dirname.includes('\\') && !dirname.includes('/') ? '\\' : '/';
+  const hashDir = segments.slice(0, idx + 2).join(sep);
+  // Preserve a leading separator that split() dropped on absolute POSIX paths.
+  if (/^[\\/]/.test(dirname) && !/^[\\/]/.test(hashDir)) return `${dirname[0]}${hashDir}`;
+  return hashDir;
+}
+
+/**
+ * Self-heal the npx cache when the running version is stale.
+ *
+ * npx `<pkg>@latest` caches per spec-string and reuses the cached install as
+ * long as it satisfies the recorded semver range, so it never re-resolves the
+ * registry on a warm cache. Removing this process's own `_npx/<hash>` dir forces
+ * the next cold start to re-resolve `@latest` and pick up the newer version.
+ *
+ * Parses the hash dir's package metadata and requires our exact package name
+ * before removing it. Best-effort: never throws.
+ *
+ * @param {string} dirname - This module's __dirname.
+ * @param {string} latest - Latest version from the registry.
+ * @returns {Promise<boolean>} True when a stale cache dir was removed.
+ */
+export async function clearStaleSelfNpxCache(dirname, latest) {
+  try {
+    const hashDir = selfNpxCacheDir(dirname);
+    if (!hashDir) return false;
+    // Self-verification: only remove a dir with our package metadata.
+    try {
+      const packageJson = JSON.parse(
+        await fs.readFile(path.join(hashDir, SELF_PKG_SUBPATH), 'utf8'),
+      );
+      if (packageJson?.name !== PKG_NAME) return false;
+    } catch { return false; }
+    await fs.rm(hashDir, { recursive: true, force: true });
+    console.error(
+      `[midbrain] Cleared stale npx cache (${PKG_VERSION} -> ${latest}); next start will use v${latest}.`,
+    );
+    return true;
+  } catch { return false; }
 }
 
 async function isUpdateCacheFresh(cachePath) {
@@ -69,8 +138,44 @@ async function isUpdateCacheFresh(cachePath) {
 }
 
 /**
+ * Fetch the latest published version from npm, honoring a 24h throttle cache.
+ * Every completed attempt tries to record lastCheck, including failures, so an
+ * unavailable registry cannot delay every hook when cache state is writable.
+ * Returns the latest version string, or null when throttled/unavailable. Never
+ * throws.
+ *
+ * @returns {Promise<string|null>}
+ */
+async function fetchLatestVersion() {
+  const cachePath = path.join(os.tmpdir(), UPDATE_CACHE_FILENAME);
+  if (await isUpdateCacheFresh(cachePath)) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS);
+  let latestVersion = null;
+  try {
+    const response = await fetch(NPM_REGISTRY_URL, { signal: controller.signal });
+    if (!response.ok) return null;
+    const { version } = await response.json();
+    if (!isStableVersion(version)) return null;
+    latestVersion = version;
+    return latestVersion;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+    const cache = { lastCheck: Date.now() };
+    if (latestVersion) cache.latestVersion = latestVersion;
+    await fs.writeFile(
+      cachePath,
+      JSON.stringify(cache),
+      'utf8',
+    ).catch(() => {});
+  }
+}
+
+/**
  * Detect and repair stale hooks/plugins for all installed clients.
- * Fire-and-forget: never throws, logs repairs to stderr.
+ * Best-effort: never throws, logs repairs to stderr.
  */
 async function ensureHooksFresh() {
   const { detectClients } = await import('./shared/clients/registry.mjs');
@@ -96,30 +201,45 @@ async function ensureHooksFresh() {
 
 /**
  * Combined startup check: repair stale hooks, then check for npm updates.
- * Fire-and-forget: called from index.js after server.connect(), never throws.
+ * Started from index.js after server.connect(); never throws.
  */
 export async function checkForUpdate() {
   try {
     // Phase 1: Hook/plugin freshness (always, local I/O only)
     await ensureHooksFresh();
 
-    // Phase 2: npm version notification (throttled, skip for npx users)
-    if (__dirname.includes(NPX_CACHE_MARKER)) return;
-    const cachePath = path.join(os.tmpdir(), UPDATE_CACHE_FILENAME);
-    if (await isUpdateCacheFresh(cachePath)) return;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS);
-    try {
-      const response = await fetch(NPM_REGISTRY_URL, { signal: controller.signal });
-      if (!response.ok) return;
-      const { version: latestVersion } = await response.json();
-      await fs.writeFile(cachePath, JSON.stringify({ lastCheck: Date.now(), latestVersion }), 'utf8').catch(() => {});
-      if (isNewerVersion(PKG_VERSION, latestVersion)) {
-        console.error(`[midbrain] Update available: ${PKG_VERSION} -> ${latestVersion}. Run: npm update -g midbrain-memory-mcp`);
-      }
-    } finally {
-      clearTimeout(timeout);
+    // Phase 2: npm version check (throttled). Applies to npx AND global installs.
+    const latestVersion = await fetchLatestVersion();
+    if (!latestVersion || !isNewerVersion(PKG_VERSION, latestVersion)) return;
+
+    if (selfNpxCacheDir(__dirname)) {
+      // npx cache freezes per spec-string; self-heal so the next cold start
+      // re-resolves @latest instead of reusing the stale cached install.
+      await clearStaleSelfNpxCache(__dirname, latestVersion);
+    } else {
+      // Global (npm -g) install: cache clearing does not apply; advise update.
+      console.error(
+        `[midbrain] Update available: ${PKG_VERSION} -> ${latestVersion}. Run: npm update -g midbrain-memory-mcp`,
+      );
     }
+  } catch { /* never crash */ }
+}
+
+/**
+ * Lightweight self-update check for capture hooks. Unlike checkForUpdate(),
+ * it skips hook/plugin freshness repair (hooks don't need it) and only
+ * self-heals a stale npx cache. Throttled via the shared 24h cache file.
+ * Hook callers await it only after capture and required stdout complete, so it
+ * may delay hook exit by up to UPDATE_FETCH_TIMEOUT_MS. Never throws or writes
+ * to stdout.
+ *
+ * @returns {Promise<void>}
+ */
+export async function maybeSelfUpdate() {
+  try {
+    const latestVersion = await fetchLatestVersion();
+    if (!latestVersion || !isNewerVersion(PKG_VERSION, latestVersion)) return;
+    await clearStaleSelfNpxCache(__dirname, latestVersion);
   } catch { /* never crash */ }
 }
 
