@@ -68,7 +68,7 @@ const readFileReturns = makeReadFileReturns(mocks);
 
 const {
   main, setupProject, projectSetup, runInstallerCli, printHelp, checkForUpdate,
-  selfNpxCacheDir, clearStaleSelfNpxCache, maybeSelfUpdate,
+  isNewerVersion, selfNpxCacheDir, clearStaleSelfNpxCache, maybeSelfUpdate,
   PKG_VERSION,
 } = await import("../install.mjs");
 
@@ -81,6 +81,32 @@ function bumpVersion(v, delta) {
 const NEWER_VERSION = bumpVersion(PKG_VERSION, 1);
 const { buildRulesBlock } = await import("../shared/agent-rules.mjs");
 const { REPO_ROOT } = await import("../shared/clients/utils.mjs");
+
+describe("isNewerVersion", () => {
+  it.each([
+    ["0.4.6", "0.4.7", true],
+    ["0.4.6", "0.5.0", true],
+    ["0.4.6", "0.4.6", false],
+    ["0.4.6", "0.4.5", false],
+  ])("compares valid stable versions: %s -> %s", (current, latest, expected) => {
+    expect(isNewerVersion(current, latest)).toBe(expected);
+  });
+
+  it.each([
+    ["0.4.6junk", "0.4.7"],
+    ["unknown", "0.4.7"],
+    ["0.4", "0.4.7"],
+    ["0.4.6-alpha", "0.4.7"],
+    [" 0.4.6", "0.4.7"],
+    [406, "0.4.7"],
+    ["0.4.6", "0.4.7junk"],
+    ["0.4.6", "0.4.7+build"],
+    ["0.4.6", "0.4"],
+    ["0.4.6", 407],
+  ])("rejects a non-X.Y.Z comparator input: %s -> %s", (current, latest) => {
+    expect(isNewerVersion(current, latest)).toBe(false);
+  });
+});
 
 const HOME = os.homedir();
 
@@ -779,6 +805,7 @@ describe("checkForUpdate — version phase", () => {
 describe("maybeSelfUpdate", () => {
   let errSpy;
   let fetchSpy;
+  const cachePath = path.join(os.tmpdir(), ".midbrain-update-check.json");
 
   beforeEach(() => {
     resetMocks();
@@ -799,6 +826,50 @@ describe("maybeSelfUpdate", () => {
     await expect(maybeSelfUpdate()).resolves.toBeUndefined();
     expect(logSpy).not.toHaveBeenCalled();
     logSpy.mockRestore();
+  });
+
+  it.each([
+    ["network rejection", () => Promise.reject(new Error("network down"))],
+    ["abort", () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      return Promise.reject(error);
+    }],
+    ["non-OK response", () => Promise.resolve({ ok: false })],
+    ["invalid JSON", () => Promise.resolve({
+      ok: true,
+      json: async () => { throw new SyntaxError("invalid JSON"); },
+    })],
+    ["unusable version", () => Promise.resolve({
+      ok: true,
+      json: async () => ({ version: "0.4.7junk" }),
+    })],
+  ])("throttles an immediate retry after %s", async (_label, attempt) => {
+    fetchSpy.mockImplementation(attempt);
+
+    await expect(maybeSelfUpdate()).resolves.toBeUndefined();
+
+    const cacheWrite = mocks.writeFile.mock.calls.find(([filePath]) => filePath === cachePath);
+    expect(cacheWrite).toBeDefined();
+    const cacheRecord = JSON.parse(cacheWrite[1]);
+    expect(cacheRecord.lastCheck).toEqual(expect.any(Number));
+    expect(cacheRecord).not.toHaveProperty("latestVersion");
+
+    readFileReturns({ [cachePath]: cacheWrite[1] });
+    await expect(maybeSelfUpdate()).resolves.toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps failure-throttle cache write errors non-fatal", async () => {
+    fetchSpy.mockRejectedValue(new Error("network down"));
+    mocks.writeFile.mockRejectedValue(new Error("read-only temp dir"));
+
+    await expect(maybeSelfUpdate()).resolves.toBeUndefined();
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      cachePath,
+      expect.any(String),
+      "utf8",
+    );
   });
 
   it("does not touch the npx cache when running from a non-npx install", async () => {
