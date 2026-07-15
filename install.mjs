@@ -114,9 +114,12 @@ export async function clearStaleSelfNpxCache(dirname, latest) {
   try {
     const hashDir = selfNpxCacheDir(dirname);
     if (!hashDir) return false;
-    // Self-verification: only remove a dir that installed OUR package.
+    // Self-verification: only remove a dir with our package metadata.
     try {
-      await fs.access(path.join(hashDir, SELF_PKG_SUBPATH));
+      const packageJson = JSON.parse(
+        await fs.readFile(path.join(hashDir, SELF_PKG_SUBPATH), 'utf8'),
+      );
+      if (packageJson?.name !== PKG_NAME) return false;
     } catch { return false; }
     await fs.rm(hashDir, { recursive: true, force: true });
     console.error(
