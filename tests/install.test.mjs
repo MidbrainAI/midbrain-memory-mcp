@@ -712,7 +712,10 @@ describe("clearStaleSelfNpxCache", () => {
   afterEach(() => errSpy.mockRestore());
 
   it("removes the self-verified hash dir and logs to stderr", async () => {
-    mocks.access.mockResolvedValue(undefined); // self package present
+    readFileReturns({
+      [path.join(HASH_DIR, "node_modules", "midbrain-memory-mcp", "package.json")]:
+        JSON.stringify({ name: "midbrain-memory-mcp" }),
+    });
     const removed = await clearStaleSelfNpxCache(NPX_DIR, NEWER_VERSION);
     expect(removed).toBe(true);
     const rmCall = fs.rm.mock.calls.find(([p]) => p === HASH_DIR);
@@ -728,14 +731,28 @@ describe("clearStaleSelfNpxCache", () => {
   });
 
   it("does not remove when self package is absent (self-verification fails)", async () => {
-    mocks.access.mockRejectedValue(fileError("ENOENT", "missing"));
+    const removed = await clearStaleSelfNpxCache(NPX_DIR, NEWER_VERSION);
+    expect(removed).toBe(false);
+    expect(fs.rm).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["malformed", "not-json"],
+    ["mismatched", JSON.stringify({ name: "another-package" })],
+  ])("does not remove when package metadata is %s", async (_label, metadata) => {
+    readFileReturns({
+      [path.join(HASH_DIR, "node_modules", "midbrain-memory-mcp", "package.json")]: metadata,
+    });
     const removed = await clearStaleSelfNpxCache(NPX_DIR, NEWER_VERSION);
     expect(removed).toBe(false);
     expect(fs.rm).not.toHaveBeenCalled();
   });
 
   it("never throws when fs.rm fails", async () => {
-    mocks.access.mockResolvedValue(undefined);
+    readFileReturns({
+      [path.join(HASH_DIR, "node_modules", "midbrain-memory-mcp", "package.json")]:
+        JSON.stringify({ name: "midbrain-memory-mcp" }),
+    });
     mocks.rm.mockRejectedValue(new Error("rm boom"));
     await expect(clearStaleSelfNpxCache(NPX_DIR, NEWER_VERSION)).resolves.toBe(false);
   });
