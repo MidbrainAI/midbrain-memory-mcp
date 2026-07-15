@@ -73,8 +73,9 @@ export function isNewerVersion(current, latest) {
  *
  * npx installs each `<pkg>@<spec>` invocation under a stable hash dir inside
  * `<npm-cache>/_npx/`. We walk up from `dirname` until the *parent* segment is
- * `_npx`; that child is the hash dir. Works with both POSIX and Windows
- * separators. Returns null when not running from an npx cache.
+ * `_npx`; that child is the hash dir. Works with POSIX and drive-letter Windows
+ * paths. UNC prefixes are not preserved and normally fail closed at the package
+ * metadata check. Returns null when not running from an npx cache.
  *
  * @param {string} dirname - Absolute path inside a package install.
  * @returns {string|null} Absolute path to the `_npx/<hash>` dir, or null.
@@ -102,9 +103,8 @@ export function selfNpxCacheDir(dirname) {
  * registry on a warm cache. Removing this process's own `_npx/<hash>` dir forces
  * the next cold start to re-resolve `@latest` and pick up the newer version.
  *
- * Self-verifies that the hash dir actually contains our package before removing
- * it, so an unexpected path can never delete an unrelated cache. Fire-and-forget:
- * never throws.
+ * Parses the hash dir's package metadata and requires our exact package name
+ * before removing it. Best-effort: never throws.
  *
  * @param {string} dirname - This module's __dirname.
  * @param {string} latest - Latest version from the registry.
@@ -139,8 +139,9 @@ async function isUpdateCacheFresh(cachePath) {
 
 /**
  * Fetch the latest published version from npm, honoring a 24h throttle cache.
- * Returns the latest version string, or null when throttled/unavailable.
- * Never throws.
+ * Every completed attempt records lastCheck, including failures, so an
+ * unavailable registry cannot delay every hook. Returns the latest version
+ * string, or null when throttled/unavailable. Never throws.
  *
  * @returns {Promise<string|null>}
  */
@@ -173,7 +174,7 @@ async function fetchLatestVersion() {
 
 /**
  * Detect and repair stale hooks/plugins for all installed clients.
- * Fire-and-forget: never throws, logs repairs to stderr.
+ * Best-effort: never throws, logs repairs to stderr.
  */
 async function ensureHooksFresh() {
   const { detectClients } = await import('./shared/clients/registry.mjs');
@@ -199,7 +200,7 @@ async function ensureHooksFresh() {
 
 /**
  * Combined startup check: repair stale hooks, then check for npm updates.
- * Fire-and-forget: called from index.js after server.connect(), never throws.
+ * Started from index.js after server.connect(); never throws.
  */
 export async function checkForUpdate() {
   try {
@@ -227,7 +228,9 @@ export async function checkForUpdate() {
  * Lightweight self-update check for capture hooks. Unlike checkForUpdate(),
  * it skips hook/plugin freshness repair (hooks don't need it) and only
  * self-heals a stale npx cache. Throttled via the shared 24h cache file.
- * Fire-and-forget: never throws, never writes to stdout.
+ * Hook callers await it only after capture and required stdout complete, so it
+ * may delay hook exit by up to UPDATE_FETCH_TIMEOUT_MS. Never throws or writes
+ * to stdout.
  *
  * @returns {Promise<void>}
  */

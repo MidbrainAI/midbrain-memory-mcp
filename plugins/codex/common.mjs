@@ -130,16 +130,17 @@ export function runJsonHook(captureFn, { stdoutJson = false } = {}) {
     } else if (stdoutJson) {
       process.stdout.write("{}");
     }
-    // Self-heal a stale npx cache so the next cold start picks up @latest.
-    // Throttled to once/24h; runs after stdout is written, never blocks capture output.
+    // Capture and required stdout finish before this throttled update check.
+    // It may delay exit by install.mjs's UPDATE_FETCH_TIMEOUT_MS.
     await runSelfUpdate();
     process.exit(0);
   });
 }
 
 /**
- * Fire the throttled npx self-update check. Never throws; swallows import or
- * runtime errors so a hook can never fail because of the update path.
+ * Run the throttled npx self-update check after capture and required stdout.
+ * Import/runtime failures are non-fatal; the awaited fetch may delay hook exit
+ * by install.mjs's UPDATE_FETCH_TIMEOUT_MS.
  */
 async function runSelfUpdate() {
   try {

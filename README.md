@@ -227,9 +227,16 @@ To make updates actually propagate, MidBrain self-heals the npx cache: on
 startup (and from capture hooks), it checks the npm registry at most once per
 24h and, when the running version is older than `latest`, removes its own
 `_npx/<hash>` cache directory. The next cold start finds no cache, re-resolves
-`@latest`, and installs the newer version. The check is self-verified (it only
-removes a cache dir that installed this package) and fire-and-forget (never
-blocks startup or capture, never crashes).
+`@latest`, and installs the newer version. Before deletion, the check parses the
+target package metadata and requires the exact `midbrain-memory-mcp` package
+name. Startup begins this best-effort work only after the MCP server connects.
+Capture hooks finish capture and any required stdout first; hook exit may then
+wait up to `UPDATE_FETCH_TIMEOUT_MS` for the throttled registry check. Registry,
+cache, and deletion failures are non-fatal.
+
+POSIX paths and normal drive-letter Windows npm caches are supported. Custom
+UNC-configured Windows caches may not self-heal; the package check normally
+fails closed, leaving the cache untouched.
 
 | Spec form | Behavior |
 |---|---|
@@ -246,8 +253,11 @@ automatically:
 npx clear-npx-cache
 # or delete the _npx dir directly:
 #   macOS/Linux: rm -rf "$(npm config get cache)/_npx"
-#   Windows:     rmdir /s /q "%LocalAppData%\npm-cache\_npx"
+#   PowerShell:  Remove-Item -Recurse -Force "$(npm config get cache)\_npx"
 ```
+
+Manual `_npx` clearing also removes cached installs for other npx tools; each
+tool downloads again on its next cold start.
 
 ### Automatic Hook & Plugin Repair
 
