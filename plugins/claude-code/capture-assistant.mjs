@@ -4,7 +4,8 @@
  * Captures the assistant's final response as episodic memory.
  *
  * Stdin JSON: { last_assistant_message: "...", stop_hook_active, ... }
- * Exits immediately if stop_hook_active (prevents infinite loops).
+ * If stop_hook_active, skips capture to prevent loops, then completes the
+ * non-fatal hook finish/update path.
  * Fails silently on any error.
  */
 

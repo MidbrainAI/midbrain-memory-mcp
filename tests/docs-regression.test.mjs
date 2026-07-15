@@ -260,10 +260,15 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       path.join(REPO_ROOT, "plugins", "claude-code", "capture-user.mjs"),
       "utf8",
     );
+    const claudeAssistantHook = await fs.readFile(
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
+      "utf8",
+    );
 
     expect(readme).not.toMatch(/\*\*Capture\*\*[\s\S]{0,120}fire-and-forget, never blocks/i);
     expect(readme).not.toMatch(/capture must be fire-and-forget and must not\s+block/i);
     expect(claudeUserHook).not.toMatch(/capture never blocks the turn/i);
+    expect(claudeAssistantHook).not.toMatch(/exits immediately if stop_hook_active/i);
   });
 });
 
