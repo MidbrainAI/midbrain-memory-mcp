@@ -116,6 +116,7 @@ const PATHS = {
   claudeKey:        path.join(HOME, ".config", "claude", ".midbrain-key"),
   codexKey:         path.join(HOME, ".config", "codex", ".midbrain-key"),
   nanoclawKey:      path.join(HOME, ".config", "nanoclaw", ".midbrain-key"),
+  hermesKey:        path.join(HOME, ".config", "hermes", ".midbrain-key"),
   opencodeConfig:   path.join(HOME, ".config", "opencode", "opencode.json"),
   claudeJson:       path.join(HOME, ".claude.json"),
   codexConfig:      path.join(HOME, ".codex", "config.toml"),
@@ -124,6 +125,7 @@ const PATHS = {
   nanoclawDocker:   path.join(HOME, "nanoclaw-v2", "container", "Dockerfile"),
   nanoclawSkills:   path.join(HOME, "nanoclaw-v2", ".claude", "skills"),
   nanoclawSkill:    path.join(HOME, "nanoclaw-v2", ".claude", "skills", "add-midbrain", "SKILL.md"),
+  hermesConfig:     path.join(HOME, ".hermes", "config.yaml"),
 };
 const NANOCLAW_SKILL_SRC = path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md");
 
@@ -316,21 +318,21 @@ describe("main — per-client key writing", () => {
     expect(ccWrite).toBeUndefined();
   });
 
-  it("preserves distinct per-client keys already present on disk", async () => {
+  it("preserves distinct per-client keys already present on disk without rewriting them", async () => {
     const restoreTTY = withStdinIsTTY(true);
     try {
-      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      existsFor(PATHS.opencodeConfig, PATHS.hermesConfig);
       readFileReturns({
         [PATHS.opencodeKey]: "oc-key\n",
-        [PATHS.claudeKey]: "cc-key\n",
+        [PATHS.hermesKey]: "hermes-key\n",
       });
 
       await main();
 
       const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
-      const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
-      expect(ocWrite?.[1]).toBe("oc-key\n");
-      expect(ccWrite?.[1]).toBe("cc-key\n");
+      const hermesWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.hermesKey);
+      expect(ocWrite).toBeUndefined();
+      expect(hermesWrite).toBeUndefined();
     } finally {
       restoreTTY();
     }
@@ -494,10 +496,10 @@ describe("main — per-client key writing", () => {
       // No auth menu / share prompt in the partial-fill path.
       expect(mocks.readlineQuestions.join("\n")).not.toContain("How would you like to authenticate");
       expect(mocks.readlineQuestions.join("\n")).toContain("Enter MidBrain API key for Claude Code");
-      // Distinct keys => per-client files written.
+      // Distinct keys => preserve the existing client file and write only the new one.
       const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
       const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
-      expect(ocWrite?.[1]).toBe("oc-existing\n");
+      expect(ocWrite).toBeUndefined();
       expect(ccWrite?.[1]).toBe("cc-new\n");
     } finally {
       restoreTTY();

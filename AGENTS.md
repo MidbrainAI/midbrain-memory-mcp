@@ -3,7 +3,8 @@
 ## Purpose
 
 `midbrain-memory-mcp` is an MCP server plus capture hooks for persistent AI
-memory. It supports OpenCode, Claude Code, OpenAI Codex, and NanoClaw.
+memory. It supports OpenCode, Claude Code, OpenAI Codex, Hermes Agent, and
+NanoClaw.
 
 Public package:
 
@@ -35,12 +36,14 @@ shared/
     claude.mjs                   Claude hooks, .mcp.json, .claude.json
     codex.mjs                    Codex TOML config and hooks.json
     nanoclaw.mjs                 NanoClaw skill copy
+    hermes.mjs                   Hermes YAML config (mcp_servers + shell hooks)
     generic.mjs                  Fallback client
     registry.mjs                 getClient(), detectClients(), allClients()
 plugins/
   opencode/                      Bun/TypeScript plugin and dev shim
   claude-code/                   Claude Code hook scripts
   codex/                         Codex hook scripts
+  hermes/                        Hermes shell-hook capture scripts
 skills/
   nanoclaw/                      /add-midbrain skill
 dist/
@@ -137,6 +140,35 @@ NanoClaw:
   `data/v2-sessions/<group-id>/.claude-shared/settings.json`.
 - Inline hook keys used inside container settings must be redacted from output,
   docs, logs, and review artifacts.
+
+Hermes Agent:
+
+- `plugins/hermes/*.mjs` run in Node 20.
+- Hermes has no bespoke hook file; capture rides Hermes' own shell-hooks system
+  declared in `~/.hermes/config.yaml` under `hooks:`. Fires in CLI + gateway.
+- `pre_llm_call` captures the user prompt (`extra.user_message`); `post_llm_call`
+  captures the assistant response (`extra.assistant_response`). Both read the Hermes
+  JSON payload from stdin and always write `{}` (or a `{ context }` injection
+  payload when legacy PK is explicitly enabled) to stdout.
+- Installer-written hooks call the stable `~/.midbrain/bin/hermes-hook` shim,
+  not package-cache script paths, so the allowlisted command survives package
+  and Node updates. Hermes prompts once per `(event, command)` pair; non-TTY
+  runs need `hooks_auto_accept: true` / `HERMES_ACCEPT_HOOKS=1`. The installer
+  never sets that toggle (security-sensitive; user-owned).
+- `common.mjs` owns `createApi()`, the leveled logger, stdin parsing, and
+  `MidbrainApi.create(getClient("hermes"), cwd)` for key resolution.
+- Hermes config is YAML, edited through the `yaml` document API so comments and
+  key order on untouched nodes survive; unparseable config fails closed (no
+  write), mirroring the Codex TOML adapter. `yaml` is lazily imported and marked
+  `--external` in the OpenCode plugin esbuild bundle (like `smol-toml`).
+- Global and project setup both patch the active Hermes config. The MCP entry
+  uses Hermes' `${TERMINAL_CWD}` expansion for project key scoping; project
+  setup does not create an inactive `<project>/.hermes/config.yaml`.
+- Installed hooks pass only the capture role to the stable shim, use a 30-second
+  timeout, and require an already-running gateway to be restarted after setup.
+- Per-client key file: `~/.config/hermes/.midbrain-key` (falls through to the
+  global key via the standard resolution chain). Detection keys on
+  `~/.hermes/config.yaml` or `~/.hermes/`.
 
 ## Logging
 

@@ -23,6 +23,7 @@ import { join } from 'path';
 const KEY_FILENAME = ".midbrain-key";
 const MIDBRAIN_DIR = '.midbrain';
 const ENV_VAR = 'MIDBRAIN_API_KEY';
+const UNRESOLVED_TERMINAL_CWD = '${TERMINAL_CWD}';
 
 /**
  * Read a key file. Returns trimmed content, or null on ENOENT.
@@ -68,25 +69,40 @@ export class BaseClient {
    *   4. MIDBRAIN_API_KEY env var
    *
    * @param {string} [projectDir] - Explicit project directory (overrides MIDBRAIN_PROJECT_DIR env).
-   * @returns {Promise<{key: string, source: string} | null>}
+   * @param {{includeScope?: boolean}} [opts] - Include the selected resolution
+   * scope for installer bookkeeping without bypassing this resolver.
+   * @returns {Promise<{key: string, source: string, scope?: string} | null>}
    */
-  async resolveKey(projectDir) {
-    const projDir = projectDir || process.env.MIDBRAIN_PROJECT_DIR;
+  async resolveKey(projectDir, { includeScope = false } = {}) {
+    const explicitProjectDir = typeof projectDir === 'string' && projectDir.trim()
+      ? projectDir
+      : undefined;
+    const envProjectDir = explicitProjectDir ? undefined : process.env.MIDBRAIN_PROJECT_DIR;
+    const unresolvedEnv = envProjectDir === UNRESOLVED_TERMINAL_CWD;
+    const projDir = explicitProjectDir || (unresolvedEnv ? undefined : envProjectDir);
+    if (unresolvedEnv) {
+      console.error(
+        'WARN: MIDBRAIN_PROJECT_DIR TERMINAL_CWD placeholder is unresolved (${TERMINAL_CWD}); falling through to global key.',
+      );
+    }
     if (projDir) {
       const key = await this.#resolveProjectKey(projDir);
-      if (key) return key;
+      if (key) return includeScope ? { ...key, scope: 'project' } : key;
       console.error(`WARN: no project key found in "${projDir}", falling through to global key.`);
     }
 
     const own = await this.resolveClientKey();
-    if (own) return own;
+    if (own) return includeScope ? { ...own, scope: 'client' } : own;
 
     const global_ = await this.#resolveGlobalKey();
-    if (global_) return global_;
+    if (global_) return includeScope ? { ...global_, scope: 'global' } : global_;
 
     if (process.env[ENV_VAR]) {
       const key = process.env[ENV_VAR].trim();
-      if (key) return { key, source: `env:${ENV_VAR}` };
+      if (key) {
+        const result = { key, source: `env:${ENV_VAR}` };
+        return includeScope ? { ...result, scope: 'environment' } : result;
+      }
     }
 
     return null;

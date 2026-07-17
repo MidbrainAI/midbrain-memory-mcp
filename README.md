@@ -5,8 +5,9 @@ long-term memory through semantic search, episodic recall, and automatic capture
 that consolidates into procedural knowledge over time.
 
 Works with [OpenCode](https://opencode.ai),
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code), and
-[OpenAI Codex](https://developers.openai.com/codex), plus
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code),
+[OpenAI Codex](https://developers.openai.com/codex), and
+[Hermes Agent](https://github.com/NousResearch/hermes-agent), plus
 [NanoClaw](https://nanoclaw.dev) via the bundled `/add-midbrain` skill.
 
 [![npm version](https://img.shields.io/npm/v/midbrain-memory-mcp.svg?style=flat-square)](https://www.npmjs.com/package/midbrain-memory-mcp)
@@ -26,7 +27,8 @@ Sign up or sign in at [memory.midbrain.ai](https://memory.midbrain.ai).
 npx midbrain-memory-mcp install
 ```
 
-The installer detects OpenCode, Claude Code, Codex, and/or NanoClaw on your
+The installer detects OpenCode, Claude Code, Codex, Hermes Agent, and/or
+NanoClaw on your
 machine, opens browser-based authentication, creates or selects a memory agent,
 writes key files (chmod 600), patches MCP configs, copies hook/plugin/skill
 files, and adds a bounded MidBrain rules block to project instruction files
@@ -413,6 +415,57 @@ For per-project configs, add `"MIDBRAIN_PROJECT_DIR": "/absolute/path/to/project
 to the JSON environment/env block or `MIDBRAIN_PROJECT_DIR = "/absolute/path/to/project"`
 to the Codex TOML env table.
 
+**Hermes Agent**: the active Hermes config (`~/.hermes/config.yaml` by
+default, or `$HERMES_HOME/config.yaml`):
+
+```yaml
+mcp_servers:
+  midbrain-memory:
+    command: npx
+    args: ["-y", "midbrain-memory-mcp@latest"]
+    env:
+      MIDBRAIN_CLIENT: hermes
+      MIDBRAIN_PROJECT_DIR: "${TERMINAL_CWD}"
+hooks:
+  pre_llm_call:
+    - command: "~/.midbrain/bin/hermes-hook user"
+      timeout: 30
+  post_llm_call:
+    - command: "~/.midbrain/bin/hermes-hook assistant"
+      timeout: 30
+```
+
+Hermes stores config in YAML and exposes both an `mcp_servers` map (for
+`memory_search` and the other tools) and a `hooks` map (for episodic capture).
+MidBrain wires the MCP entry for search and adds two shell hooks for capture:
+`pre_llm_call` records the user prompt and `post_llm_call` records the
+assistant's response. These fire in both the Hermes CLI and gateway.
+
+Hermes hooks call a stable local shim, exactly like Codex:
+
+```text
+~/.midbrain/bin/hermes-hook user
+~/.midbrain/bin/hermes-hook assistant
+```
+
+The shim resolves `midbrain-memory-mcp@latest` internally, keeping the hook
+command in `config.yaml` stable across package and Node updates. Hermes prompts
+once per `(event, command)` pair to approve a shell hook and remembers the
+decision; for non-interactive use (gateway, CI) approve on first run or set
+`hooks_auto_accept: true` in `config.yaml` (or `HERMES_ACCEPT_HOOKS=1`). The
+installer does not flip that global toggle for you — it is security-sensitive
+and stays under your control. Project setup writes only the `mcp_servers` entry
+to the active Hermes config and uses Hermes' `${TERMINAL_CWD}` expansion for
+project key scoping; capture hooks remain global. It does not create an inactive
+`<project>/.hermes/config.yaml`. If a Hermes gateway is already running, restart
+that gateway after setup so it reloads the MCP configuration. The YAML editor
+preserves comments and key order on untouched nodes and fails closed on
+unparseable config.
+
+The YAML config is edited through the `yaml` document API, mirroring how the
+Codex adapter uses `smol-toml`. The parser is lazily imported and marked
+`--external` in the OpenCode plugin bundle so it never bloats the runtime.
+
 **Important:**
 - All paths must be absolute. JSON does not expand `~`.
 - OpenCode uses `mcp`. Claude Code uses `mcpServers`. Codex uses
@@ -743,6 +796,7 @@ branching inside MCP tools or hook scripts.
 | `@modelcontextprotocol/sdk` | MCP protocol |
 | `jsonc-parser` | JSONC parsing with comment preservation |
 | `smol-toml` | Codex `config.toml` parsing and serialization |
+| `yaml` | Hermes `config.yaml` parsing and serialization (comment-preserving) |
 | `zod` | Schema validation |
 
 Dev: esbuild (plugin bundler), eslint, vitest, husky, lint-staged.
@@ -753,7 +807,7 @@ Not shipped to users.
 ## Prerequisites
 
 - Node >= 20
-- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), and/or [NanoClaw](https://nanoclaw.dev)
+- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), [Hermes Agent](https://github.com/NousResearch/hermes-agent), and/or [NanoClaw](https://nanoclaw.dev)
 - A MidBrain account ([memory.midbrain.ai](https://memory.midbrain.ai))
 
 ## License

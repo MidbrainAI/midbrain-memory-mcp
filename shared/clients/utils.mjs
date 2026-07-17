@@ -78,7 +78,7 @@ export async function writeSecure(filePath, key) {
  */
 export function extractCustomEnv(entry, envKey) {
   const source = entry && typeof entry === 'object' && entry[envKey];
-  if (!source || typeof source !== 'object') return {};
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
   const out = {};
   for (const [k, v] of Object.entries(source)) {
     if (!RESERVED_ENV_KEYS.has(k)) out[k] = v;

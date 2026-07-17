@@ -114,6 +114,8 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       const names = files.map((file) => file.path);
       expect(names).toContain("plugins/codex/common.mjs");
       expect(names).toContain("plugins/codex/capture-user.mjs");
+      expect(names).toContain("plugins/hermes/common.mjs");
+      expect(names).toContain("plugins/hermes/capture-user.mjs");
       expect(names).toContain("skills/nanoclaw/SKILL.md");
       expect(names).not.toContain("tests/codex-hooks.test.mjs");
       expect(names.some((name) => name.startsWith("tasks/"))).toBe(false);
@@ -169,6 +171,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       "shared/clients/codex.mjs",
       "shared/clients/opencode.mjs",
       "shared/clients/nanoclaw.mjs",
+      "shared/clients/hermes.mjs",
     ];
 
     for (const sourcePath of configSources) {
@@ -273,6 +276,19 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       staleClaudeStopClaim,
     );
     expect(claudeAssistantHook).not.toMatch(staleClaudeStopClaim);
+  });
+
+  it("D-22: docs describe Hermes support (MCP + shell-hook capture)", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+    for (const text of [readme, agents]) {
+      expect(text).toMatch(/Hermes/);
+      expect(text).toContain("~/.hermes/config.yaml");
+    }
+    // Hermes capture rides Hermes' shell-hooks (pre/post_llm_call), not Claude hooks.
+    expect(readme).toContain("pre_llm_call");
+    expect(readme).toContain("post_llm_call");
+    expect(readme).toContain("~/.midbrain/bin/hermes-hook");
   });
 });
 

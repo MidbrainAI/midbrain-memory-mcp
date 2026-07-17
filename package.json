@@ -37,6 +37,7 @@
     "claude",
     "codex",
     "nanoclaw",
+    "hermes",
     "episodic",
     "coding-agent"
   ],
@@ -46,7 +47,7 @@
   "scripts": {
     "start": "node index.js",
     "setup": "node install.mjs",
-    "build:plugin": "esbuild shared/plugin-entry.mjs --bundle --format=esm --platform=node --external:jsonc-parser --external:smol-toml --outfile=dist/midbrain-shared.mjs",
+    "build:plugin": "esbuild shared/plugin-entry.mjs --bundle --format=esm --platform=node --external:jsonc-parser --external:smol-toml --external:yaml --outfile=dist/midbrain-shared.mjs",
     "bootstrap": "npm install && npm run build:plugin && husky",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -62,6 +63,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "jsonc-parser": "^3.3.1",
     "smol-toml": "^1.6.1",
+    "yaml": "^2.9.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
