@@ -66,6 +66,8 @@ export function makeResetMocks(mocks) {
     mocks.stat.mockRejectedValue(enoent("default"));
     mocks.realpath.mockImplementation(async (p) => p);
     mocks.existsSync.mockReturnValue(false);
+    if (mocks.rm) mocks.rm.mockResolvedValue(undefined);
+    if (mocks.access) mocks.access.mockResolvedValue(undefined);
   };
 }
 

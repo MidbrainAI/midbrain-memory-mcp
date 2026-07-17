@@ -44,3 +44,20 @@ export async function readStdinJSON() {
     return null;
   }
 }
+
+/**
+ * Complete a Claude capture hook after capture work has finished: run the
+ * throttled npx self-update check, then exit. The update path may delay hook
+ * exit by up to install.mjs's UPDATE_FETCH_TIMEOUT_MS; failures are non-fatal.
+ *
+ * Call this at every hook exit point instead of process.exit(0) directly.
+ * @param {number} [code=0] - Exit code.
+ * @returns {Promise<never>}
+ */
+export async function finishHook(code = 0) {
+  try {
+    const { maybeSelfUpdate } = await import("../../install.mjs");
+    await maybeSelfUpdate();
+  } catch { /* never break the hook */ }
+  process.exit(code);
+}

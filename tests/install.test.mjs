@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   stat:       vi.fn(),
   realpath:   vi.fn(),
   copyFile:   vi.fn().mockResolvedValue(undefined),
+  rm:         vi.fn().mockResolvedValue(undefined),
+  access:     vi.fn().mockResolvedValue(undefined),
   existsSync: vi.fn(() => false),
   deviceCodeLogin: vi.fn(),
   readlineAnswers: [],
@@ -39,8 +41,10 @@ mocks.createReadlineInterface.mockImplementation(() => ({
 
 vi.mock("fs/promises", () => ({
   default: { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
-             chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile },
+             chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile,
+             rm: mocks.rm, access: mocks.access },
   readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir, chmod: mocks.chmod,
+  rm: mocks.rm, access: mocks.access,
 }));
 vi.mock("fs", async (importOriginal) => {
   const orig = await importOriginal();
@@ -55,15 +59,54 @@ vi.mock("../shared/device-auth.mjs", () => ({
 }));
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
-             chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile };
+             chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile,
+             rm: mocks.rm, access: mocks.access };
 const existsSync = mocks.existsSync;
 const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
-const { main, setupProject, projectSetup, runInstallerCli, printHelp, checkForUpdate } = await import("../install.mjs");
+const {
+  main, setupProject, projectSetup, runInstallerCli, printHelp, checkForUpdate,
+  isNewerVersion, selfNpxCacheDir, clearStaleSelfNpxCache, maybeSelfUpdate,
+  PKG_VERSION,
+} = await import("../install.mjs");
+
+// Versions relative to the running package version, for update-check tests.
+function bumpVersion(v, delta) {
+  const parts = String(v).split(".").map((n) => parseInt(n, 10) || 0);
+  parts[2] += delta;
+  return parts.join(".");
+}
+const NEWER_VERSION = bumpVersion(PKG_VERSION, 1);
 const { buildRulesBlock } = await import("../shared/agent-rules.mjs");
 const { REPO_ROOT } = await import("../shared/clients/utils.mjs");
+
+describe("isNewerVersion", () => {
+  it.each([
+    ["0.4.6", "0.4.7", true],
+    ["0.4.6", "0.5.0", true],
+    ["0.4.6", "0.4.6", false],
+    ["0.4.6", "0.4.5", false],
+  ])("compares valid stable versions: %s -> %s", (current, latest, expected) => {
+    expect(isNewerVersion(current, latest)).toBe(expected);
+  });
+
+  it.each([
+    ["0.4.6junk", "0.4.7"],
+    ["unknown", "0.4.7"],
+    ["0.4", "0.4.7"],
+    ["0.4.6-alpha", "0.4.7"],
+    [" 0.4.6", "0.4.7"],
+    [406, "0.4.7"],
+    ["0.4.6", "0.4.7junk"],
+    ["0.4.6", "0.4.7+build"],
+    ["0.4.6", "0.4"],
+    ["0.4.6", 407],
+  ])("rejects a non-X.Y.Z comparator input: %s -> %s", (current, latest) => {
+    expect(isNewerVersion(current, latest)).toBe(false);
+  });
+});
 
 const HOME = os.homedir();
 
@@ -623,6 +666,233 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
     expect(hooksWrites).toHaveLength(0);
     expect(logSpy).not.toHaveBeenCalled();
     expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).not.toContain("Codex hooks repaired");
+  });
+});
+
+// ===================================================================
+// npx self-heal — selfNpxCacheDir / clearStaleSelfNpxCache
+// ===================================================================
+
+describe("selfNpxCacheDir", () => {
+  it("returns the hash dir for a POSIX _npx install path", () => {
+    const dir = "/home/u/.npm/_npx/abc123/node_modules/midbrain-memory-mcp";
+    expect(selfNpxCacheDir(dir)).toBe("/home/u/.npm/_npx/abc123");
+  });
+
+  it("returns the hash dir for a Windows _npx install path", () => {
+    const dir = "C:\\Users\\Radu\\AppData\\Local\\npm-cache\\_npx\\abc123\\node_modules\\midbrain-memory-mcp";
+    const result = selfNpxCacheDir(dir);
+    expect(result).toContain("_npx");
+    expect(result.split(/[\\/]+/).pop()).toBe("abc123");
+  });
+
+  it("returns null when not under _npx", () => {
+    expect(selfNpxCacheDir("/usr/lib/node_modules/midbrain-memory-mcp")).toBeNull();
+  });
+
+  it("returns null for empty or non-string input", () => {
+    expect(selfNpxCacheDir("")).toBeNull();
+    expect(selfNpxCacheDir(undefined)).toBeNull();
+  });
+
+  it("returns null when _npx is the last segment (no hash dir)", () => {
+    expect(selfNpxCacheDir("/home/u/.npm/_npx")).toBeNull();
+  });
+});
+
+describe("clearStaleSelfNpxCache", () => {
+  let errSpy;
+  const NPX_DIR = "/home/u/.npm/_npx/abc123/node_modules/midbrain-memory-mcp";
+  const HASH_DIR = "/home/u/.npm/_npx/abc123";
+
+  beforeEach(() => {
+    resetMocks();
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => errSpy.mockRestore());
+
+  it("removes the self-verified hash dir and logs to stderr", async () => {
+    readFileReturns({
+      [path.join(HASH_DIR, "node_modules", "midbrain-memory-mcp", "package.json")]:
+        JSON.stringify({ name: "midbrain-memory-mcp" }),
+    });
+    const removed = await clearStaleSelfNpxCache(NPX_DIR, NEWER_VERSION);
+    expect(removed).toBe(true);
+    const rmCall = fs.rm.mock.calls.find(([p]) => p === HASH_DIR);
+    expect(rmCall).toBeDefined();
+    expect(rmCall[1]).toMatchObject({ recursive: true, force: true });
+    expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("Cleared stale npx cache");
+  });
+
+  it("does not remove when the dir is not an _npx cache", async () => {
+    const removed = await clearStaleSelfNpxCache("/usr/lib/node_modules/midbrain-memory-mcp", NEWER_VERSION);
+    expect(removed).toBe(false);
+    expect(fs.rm).not.toHaveBeenCalled();
+  });
+
+  it("does not remove when self package is absent (self-verification fails)", async () => {
+    const removed = await clearStaleSelfNpxCache(NPX_DIR, NEWER_VERSION);
+    expect(removed).toBe(false);
+    expect(fs.rm).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["malformed", "not-json"],
+    ["mismatched", JSON.stringify({ name: "another-package" })],
+  ])("does not remove when package metadata is %s", async (_label, metadata) => {
+    readFileReturns({
+      [path.join(HASH_DIR, "node_modules", "midbrain-memory-mcp", "package.json")]: metadata,
+    });
+    const removed = await clearStaleSelfNpxCache(NPX_DIR, NEWER_VERSION);
+    expect(removed).toBe(false);
+    expect(fs.rm).not.toHaveBeenCalled();
+  });
+
+  it("never throws when fs.rm fails", async () => {
+    readFileReturns({
+      [path.join(HASH_DIR, "node_modules", "midbrain-memory-mcp", "package.json")]:
+        JSON.stringify({ name: "midbrain-memory-mcp" }),
+    });
+    mocks.rm.mockRejectedValue(new Error("rm boom"));
+    await expect(clearStaleSelfNpxCache(NPX_DIR, NEWER_VERSION)).resolves.toBe(false);
+  });
+});
+
+// ===================================================================
+// checkForUpdate / maybeSelfUpdate — version phase
+// ===================================================================
+
+describe("checkForUpdate — version phase", () => {
+  let errSpy;
+  let fetchSpy;
+  const cachePath = path.join(os.tmpdir(), ".midbrain-update-check.json");
+
+  beforeEach(() => {
+    resetMocks();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Throttle cache stale => fetch runs. readFile rejects by default (no cache file).
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: NEWER_VERSION }),
+    });
+  });
+  afterEach(() => {
+    errSpy.mockRestore();
+    fetchSpy.mockRestore();
+  });
+
+  it("advises npm update -g for a stale global (non-npx) install", async () => {
+    // __dirname of install.mjs is the repo root — not an _npx path.
+    await checkForUpdate();
+    const err = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(err).toContain("Update available");
+    expect(err).toContain("npm update -g midbrain-memory-mcp");
+    // Global path must not touch the npx cache.
+    expect(fs.rm).not.toHaveBeenCalled();
+  });
+
+  it("does not advise when already at latest", async () => {
+    fetchSpy.mockResolvedValue({ ok: true, json: async () => ({ version: PKG_VERSION }) });
+    await checkForUpdate();
+    const err = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(err).not.toContain("Update available");
+    expect(fs.rm).not.toHaveBeenCalled();
+  });
+
+  it("skips fetch when the throttle cache is fresh", async () => {
+    readFileReturns({ [cachePath]: JSON.stringify({ lastCheck: Date.now(), latestVersion: NEWER_VERSION }) });
+    await checkForUpdate();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fs.rm).not.toHaveBeenCalled();
+  });
+
+  it("re-checks when the throttle cache is stale", async () => {
+    readFileReturns({ [cachePath]: JSON.stringify({ lastCheck: 0, latestVersion: PKG_VERSION }) });
+    await checkForUpdate();
+    expect(fetchSpy).toHaveBeenCalled();
+  });
+
+  it("never throws when fetch rejects", async () => {
+    fetchSpy.mockRejectedValue(new Error("network down"));
+    await expect(checkForUpdate()).resolves.toBeUndefined();
+  });
+});
+
+describe("maybeSelfUpdate", () => {
+  let errSpy;
+  let fetchSpy;
+  const cachePath = path.join(os.tmpdir(), ".midbrain-update-check.json");
+
+  beforeEach(() => {
+    resetMocks();
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: NEWER_VERSION }),
+    });
+  });
+  afterEach(() => {
+    errSpy.mockRestore();
+    fetchSpy.mockRestore();
+  });
+
+  it("does not write stdout and never throws on fetch failure", async () => {
+    fetchSpy.mockRejectedValue(new Error("boom"));
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await expect(maybeSelfUpdate()).resolves.toBeUndefined();
+    expect(logSpy).not.toHaveBeenCalled();
+    logSpy.mockRestore();
+  });
+
+  it.each([
+    ["network rejection", () => Promise.reject(new Error("network down"))],
+    ["abort", () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      return Promise.reject(error);
+    }],
+    ["non-OK response", () => Promise.resolve({ ok: false })],
+    ["invalid JSON", () => Promise.resolve({
+      ok: true,
+      json: async () => { throw new SyntaxError("invalid JSON"); },
+    })],
+    ["unusable version", () => Promise.resolve({
+      ok: true,
+      json: async () => ({ version: "0.4.7junk" }),
+    })],
+  ])("throttles an immediate retry after %s", async (_label, attempt) => {
+    fetchSpy.mockImplementation(attempt);
+
+    await expect(maybeSelfUpdate()).resolves.toBeUndefined();
+
+    const cacheWrite = mocks.writeFile.mock.calls.find(([filePath]) => filePath === cachePath);
+    expect(cacheWrite).toBeDefined();
+    const cacheRecord = JSON.parse(cacheWrite[1]);
+    expect(cacheRecord.lastCheck).toEqual(expect.any(Number));
+    expect(cacheRecord).not.toHaveProperty("latestVersion");
+
+    readFileReturns({ [cachePath]: cacheWrite[1] });
+    await expect(maybeSelfUpdate()).resolves.toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps failure-throttle cache write errors non-fatal", async () => {
+    fetchSpy.mockRejectedValue(new Error("network down"));
+    mocks.writeFile.mockRejectedValue(new Error("read-only temp dir"));
+
+    await expect(maybeSelfUpdate()).resolves.toBeUndefined();
+    expect(mocks.writeFile).toHaveBeenCalledWith(
+      cachePath,
+      expect.any(String),
+      "utf8",
+    );
+  });
+
+  it("does not touch the npx cache when running from a non-npx install", async () => {
+    // install.mjs __dirname is the repo root — clearStaleSelfNpxCache bails on it.
+    await maybeSelfUpdate();
+    expect(fs.rm).not.toHaveBeenCalled();
   });
 });
 

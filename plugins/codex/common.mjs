@@ -130,8 +130,23 @@ export function runJsonHook(captureFn, { stdoutJson = false } = {}) {
     } else if (stdoutJson) {
       process.stdout.write("{}");
     }
+    // Capture and required stdout finish before this throttled update check.
+    // It may delay exit by install.mjs's UPDATE_FETCH_TIMEOUT_MS.
+    await runSelfUpdate();
     process.exit(0);
   });
+}
+
+/**
+ * Run the throttled npx self-update check after capture and required stdout.
+ * Import/runtime failures are non-fatal; the awaited fetch may delay hook exit
+ * by install.mjs's UPDATE_FETCH_TIMEOUT_MS.
+ */
+async function runSelfUpdate() {
+  try {
+    const { maybeSelfUpdate } = await import("../../install.mjs");
+    await maybeSelfUpdate();
+  } catch { /* never break the hook */ }
 }
 
 async function postEpisodic(text, role, cwd, deps, api) {

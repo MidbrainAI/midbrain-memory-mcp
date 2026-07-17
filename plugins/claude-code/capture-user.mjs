@@ -6,32 +6,33 @@
  *
  * Stdin JSON: { prompt: "...", session_id, cwd, ... }
  * Stdout JSON (on opted-in PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
- * Fails silently on any error — capture never blocks the turn.
+ * Capture failures are non-fatal. Capture completes before finishHook(), whose
+ * throttled self-update check may delay hook exit by up to UPDATE_FETCH_TIMEOUT_MS.
  *
  * Note: Claude Code does not provide conversation history in the hook payload,
  * so exclude_ids is always empty. The same PK entry may appear on subsequent
  * turns within one session. min_score=0.5 limits repetition to relevant entries.
  */
 
-import { readStdinJSON, createApi, log } from "./common.mjs";
+import { readStdinJSON, createApi, log, finishHook } from "./common.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
 try {
   const input = await readStdinJSON();
-  if (!input?.prompt) process.exit(0);
+  if (!input?.prompt) await finishHook(0);
 
   let api;
   try {
     api = await createApi(input.cwd);
   } catch {
     log.warn("NO KEY");
-    process.exit(0);
+    await finishHook(0);
   }
 
   // Episodic capture must complete before default-off exits.
   await api.storeEpisodic(input.prompt, "user", log, { client: "claude" });
 
-  if (!isPkInjectionEnabled()) process.exit(0);
+  if (!isPkInjectionEnabled()) await finishHook(0);
 
   // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
   const entries = await api.searchProcedural({ query: input.prompt, excludeIds: [] });
@@ -46,3 +47,5 @@ try {
     }));
   }
 } catch { /* fail silently */ }
+
+await finishHook(0);
