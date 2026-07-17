@@ -415,8 +415,8 @@ For per-project configs, add `"MIDBRAIN_PROJECT_DIR": "/absolute/path/to/project
 to the JSON environment/env block or `MIDBRAIN_PROJECT_DIR = "/absolute/path/to/project"`
 to the Codex TOML env table.
 
-**Hermes Agent**: `~/.hermes/config.yaml` (global) or
-`<project>/.hermes/config.yaml` (per-project):
+**Hermes Agent**: the active Hermes config (`~/.hermes/config.yaml` by
+default, or `$HERMES_HOME/config.yaml`):
 
 ```yaml
 mcp_servers:
@@ -425,13 +425,14 @@ mcp_servers:
     args: ["-y", "midbrain-memory-mcp@latest"]
     env:
       MIDBRAIN_CLIENT: hermes
+      MIDBRAIN_PROJECT_DIR: "${TERMINAL_CWD}"
 hooks:
   pre_llm_call:
-    - command: "~/.midbrain/bin/hermes-hook hermes user"
-      timeout: 10
+    - command: "~/.midbrain/bin/hermes-hook user"
+      timeout: 30
   post_llm_call:
-    - command: "~/.midbrain/bin/hermes-hook hermes assistant"
-      timeout: 10
+    - command: "~/.midbrain/bin/hermes-hook assistant"
+      timeout: 30
 ```
 
 Hermes stores config in YAML and exposes both an `mcp_servers` map (for
@@ -443,8 +444,8 @@ assistant's response. These fire in both the Hermes CLI and gateway.
 Hermes hooks call a stable local shim, exactly like Codex:
 
 ```text
-~/.midbrain/bin/hermes-hook hermes user
-~/.midbrain/bin/hermes-hook hermes assistant
+~/.midbrain/bin/hermes-hook user
+~/.midbrain/bin/hermes-hook assistant
 ```
 
 The shim resolves `midbrain-memory-mcp@latest` internally, keeping the hook
@@ -454,9 +455,12 @@ decision; for non-interactive use (gateway, CI) approve on first run or set
 `hooks_auto_accept: true` in `config.yaml` (or `HERMES_ACCEPT_HOOKS=1`). The
 installer does not flip that global toggle for you — it is security-sensitive
 and stays under your control. Project setup writes only the `mcp_servers` entry
-(with `MIDBRAIN_PROJECT_DIR`) into `<project>/.hermes/config.yaml`; capture
-hooks are global. The YAML editor preserves comments and key order on untouched
-nodes and fails closed on unparseable config.
+to the active Hermes config and uses Hermes' `${TERMINAL_CWD}` expansion for
+project key scoping; capture hooks remain global. It does not create an inactive
+`<project>/.hermes/config.yaml`. If a Hermes gateway is already running, restart
+that gateway after setup so it reloads the MCP configuration. The YAML editor
+preserves comments and key order on untouched nodes and fails closed on
+unparseable config.
 
 The YAML config is edited through the `yaml` document API, mirroring how the
 Codex adapter uses `smol-toml`. The parser is lazily imported and marked

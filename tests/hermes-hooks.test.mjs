@@ -5,20 +5,26 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { CONTEXT_MARKER_END, CONTEXT_MARKER_START } from "../shared/pk-inject.mjs";
 
-const { captureUser, captureAssistant } = await import("../plugins/hermes/common.mjs");
+const {
+  captureUser,
+  captureAssistant,
+  finishHook,
+} = await import("../plugins/hermes/common.mjs");
 
 function makeDeps() {
   const stored = [];
   const deps = {
     createApi: vi.fn(async () => ({
+      keySource: "global-config",
       storeEpisodic: vi.fn(async (text, role, _logger, metadata) => {
         stored.push({ text, role, metadata });
         return true;
       }),
       searchProcedural: vi.fn(async () => []),
     })),
-    logger: { info() {}, debug() {}, warn() {}, error() {} },
+    logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
   };
   return { deps, stored };
 }
@@ -80,10 +86,33 @@ describe("captureUser", () => {
 });
 
 describe("captureAssistant", () => {
-  it("stores the assistant response with hermes metadata", async () => {
+  beforeEach(() => { delete process.env.MIDBRAIN_ENABLE_PK_INJECTION; });
+
+  it("stores the current Hermes assistant_response wire field with metadata", async () => {
     const { deps, stored } = makeDeps();
-    await captureAssistant({ extra: { response_text: "the answer" } }, deps);
+    await captureAssistant({ extra: { assistant_response: "the answer" } }, deps);
     expect(stored).toEqual([{ text: "the answer", role: "assistant", metadata: { client: "hermes" } }]);
+  });
+
+  it("preserves marker-like assistant text verbatim when PK injection is disabled", async () => {
+    const { deps, stored } = makeDeps();
+    const literal = [
+      "literal example",
+      CONTEXT_MARKER_START,
+      "<!-- mb:ctx-meta nonce=fake sig=deadbeef -->",
+      "## Procedural knowledge:",
+      "<!-- mb:pk 123 -->",
+      CONTEXT_MARKER_END,
+    ].join("\n");
+    await captureAssistant({ extra: { assistant_response: literal } }, deps);
+    expect(stored[0].text).toBe(literal);
+  });
+
+  it("logs only the selected key source after API creation", async () => {
+    const { deps } = makeDeps();
+    await captureAssistant({ extra: { assistant_response: "answer" } }, deps);
+    expect(deps.logger.debug).toHaveBeenCalledWith("KEY SOURCE: global-config");
+    expect(deps.logger.debug.mock.calls.flat().join(" ")).not.toMatch(/test-key|fingerprint/i);
   });
 
   it("no-ops on an empty response", async () => {
@@ -100,5 +129,29 @@ describe("captureAssistant", () => {
     await expect(
       captureAssistant({ extra: { response_text: "x" } }, deps),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("finishHook", () => {
+  it("writes required JSON before awaiting exactly one self-update", async () => {
+    const order = [];
+    await finishHook({ context: "ok" }, {
+      write: (text) => order.push(`write:${text}`),
+      update: async () => { order.push("update"); },
+      exit: (code) => { order.push(`exit:${code}`); },
+    });
+    expect(order).toEqual(['write:{"context":"ok"}', "update", "exit:0"]);
+  });
+
+  it("fails open when self-update throws without changing stdout", async () => {
+    const writes = [];
+    const exits = [];
+    await finishHook(undefined, {
+      write: (text) => writes.push(text),
+      update: async () => { throw new Error("offline"); },
+      exit: (code) => exits.push(code),
+    });
+    expect(writes).toEqual(["{}"]);
+    expect(exits).toEqual([0]);
   });
 });

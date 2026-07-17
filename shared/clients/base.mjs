@@ -23,6 +23,7 @@ import { join } from 'path';
 const KEY_FILENAME = ".midbrain-key";
 const MIDBRAIN_DIR = '.midbrain';
 const ENV_VAR = 'MIDBRAIN_API_KEY';
+const UNRESOLVED_TERMINAL_CWD = '${TERMINAL_CWD}';
 
 /**
  * Read a key file. Returns trimmed content, or null on ENOENT.
@@ -71,7 +72,17 @@ export class BaseClient {
    * @returns {Promise<{key: string, source: string} | null>}
    */
   async resolveKey(projectDir) {
-    const projDir = projectDir || process.env.MIDBRAIN_PROJECT_DIR;
+    const explicitProjectDir = typeof projectDir === 'string' && projectDir.trim()
+      ? projectDir
+      : undefined;
+    const envProjectDir = explicitProjectDir ? undefined : process.env.MIDBRAIN_PROJECT_DIR;
+    const unresolvedEnv = envProjectDir === UNRESOLVED_TERMINAL_CWD;
+    const projDir = explicitProjectDir || (unresolvedEnv ? undefined : envProjectDir);
+    if (unresolvedEnv) {
+      console.error(
+        'WARN: MIDBRAIN_PROJECT_DIR TERMINAL_CWD placeholder is unresolved (${TERMINAL_CWD}); falling through to global key.',
+      );
+    }
     if (projDir) {
       const key = await this.#resolveProjectKey(projDir);
       if (key) return key;

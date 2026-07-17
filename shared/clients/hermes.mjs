@@ -6,7 +6,7 @@
  * - mcp_servers.midbrain-memory (MCP search entry)
  * - hooks.pre_llm_call / hooks.post_llm_call (episodic capture)
  * - ~/.config/hermes/.midbrain-key (per-client key)
- * - <project>/.hermes/config.yaml MCP scoping via MIDBRAIN_PROJECT_DIR
+ * - active config project scoping via Hermes' ${TERMINAL_CWD}
  *
  * Capture uses Hermes' shell-hooks system (fires in CLI + gateway), driven by
  * the stable ~/.midbrain/bin/hermes-hook shim so the allowlisted command
@@ -27,7 +27,11 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 
-const HOOK_TIMEOUT_SEC = 10;
+const HOOK_TIMEOUT_SEC = 30;
+const PROJECT_DIR_ENV = '${TERMINAL_CWD}';
+const RESTART_WARNING =
+  'If a Hermes gateway is already running, restart that gateway before memory capture takes effect.';
+const WINDOWS_UNSUPPORTED_RE = /[&^()%!]/;
 // Hermes lifecycle events -> midbrain capture roles.
 const HOOK_EVENTS = {
   pre_llm_call: 'user',
@@ -37,9 +41,20 @@ const LEGACY_HOOK_SCRIPTS = ['capture-user.mjs', 'capture-assistant.mjs'];
 
 let yamlModule;
 
-function hermesHome() { return process.env.HERMES_HOME || path.join(home(), '.hermes'); }
+function hermesHome() {
+  if (process.env.HERMES_HOME) return process.env.HERMES_HOME;
+  if (process.platform === 'win32') {
+    return process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, 'hermes')
+      : path.join(home(), 'AppData', 'Local', 'hermes');
+  }
+  return path.join(home(), '.hermes');
+}
 function configPath() { return path.join(hermesHome(), 'config.yaml'); }
-function stableHookPath() { return path.join(home(), '.midbrain', 'bin', 'hermes-hook'); }
+function stableHookPath() {
+  const filename = process.platform === 'win32' ? 'hermes-hook.cmd' : 'hermes-hook';
+  return path.join(home(), '.midbrain', 'bin', filename);
+}
 function cfgDir() { return path.join(home(), '.config', 'hermes'); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
 
@@ -65,8 +80,12 @@ async function readYamlDoc(filePath) {
   if (doc.errors && doc.errors.length > 0) {
     throw new Error(`Failed to parse ${filePath}: ${doc.errors[0].message}`);
   }
-  // Normalize a null/empty document to an empty map so .setIn works.
-  if (doc.contents === null) doc.contents = new YAML.YAMLMap();
+  const isYamlNull = doc.contents === null ||
+    (YAML.isScalar(doc.contents) && doc.contents.value === null);
+  if (isYamlNull) doc.contents = doc.createNode({});
+  if (!YAML.isMap(doc.contents)) {
+    throw new Error(`Failed to parse ${filePath}: expected a mapping at document root`);
+  }
   return doc;
 }
 
@@ -82,28 +101,55 @@ function shellQuote(value) {
 }
 
 function buildHookCommand(role) {
-  return `${shellQuote(stableHookPath())} hermes ${role}`;
+  return `${shellQuote(stableHookPath())} ${role}`;
 }
 
-function shimBody() {
+function windowsPathGuard(filePath, label) {
+  if (process.platform === 'win32' && WINDOWS_UNSUPPORTED_RE.test(filePath)) {
+    throw new Error(`${label} contains unsupported Windows command characters: ${filePath}`);
+  }
+}
+
+function validateShimPaths({ isDev = false } = {}) {
+  windowsPathGuard(stableHookPath(), 'Hermes hook shim path');
+  if (!isDev) return;
+  windowsPathGuard(process.execPath, 'Hermes development Node path');
+  windowsPathGuard(path.join(REPO_ROOT, 'index.js'), 'Hermes development index path');
+}
+
+function shimBody({ isDev = false } = {}) {
+  const indexPath = path.join(REPO_ROOT, 'index.js');
+  if (process.platform === 'win32') {
+    const command = isDev
+      ? `"${process.execPath}" "${indexPath}" hook hermes "%~1"`
+      : 'call npx.cmd -y midbrain-memory-mcp@latest hook hermes "%~1"';
+    return `@echo off\r\n${command}\r\nexit /b 0\r\n`;
+  }
+  const command = isDev
+    ? `${shellQuote(process.execPath)} ${shellQuote(indexPath)}`
+    : 'npx -y midbrain-memory-mcp@latest';
   return `#!/bin/sh
 set +e
-npx -y midbrain-memory-mcp@latest hook hermes "$@"
+${command} hook hermes "$@"
 exit 0
 `;
 }
 
-async function installStableHookShim() {
+async function installStableHookShim(opts = {}) {
+  validateShimPaths(opts);
   const shim = stableHookPath();
   await fs.mkdir(path.dirname(shim), { recursive: true });
-  await fs.writeFile(shim, shimBody(), 'utf8');
-  await fs.chmod(shim, 0o755);
+  await fs.writeFile(shim, shimBody(opts), 'utf8');
+  if (process.platform !== 'win32') await fs.chmod(shim, 0o755);
 }
 
 /** Build the mcp_servers.midbrain-memory entry (plain object). */
-function buildMcpEntry({ isDev = false, projectDir, extraEnv = {} } = {}) {
-  const env = { ...extraEnv, MIDBRAIN_CLIENT: 'hermes' };
-  if (projectDir) env.MIDBRAIN_PROJECT_DIR = projectDir;
+function buildMcpEntry({ isDev = false, extraEnv = {} } = {}) {
+  const env = {
+    ...extraEnv,
+    MIDBRAIN_CLIENT: 'hermes',
+    MIDBRAIN_PROJECT_DIR: PROJECT_DIR_ENV,
+  };
   if (isDev) {
     return { command: process.execPath, args: [path.join(REPO_ROOT, 'index.js')], env };
   }
@@ -137,8 +183,13 @@ function patchMcpEntry(doc, opts) {
   const existingJs = existing && typeof existing.toJSON === 'function' ? existing.toJSON() : existing;
   const exists = existingJs != null;
   const pinned = mcpEntryPinned(existingJs);
-  if (!pinned) {
-    const extraEnv = extractCustomEnv(existingJs, 'env');
+  const extraEnv = extractCustomEnv(existingJs, 'env');
+  if (pinned) {
+    doc.setIn(
+      ['mcp_servers', MCP_KEY, 'env'],
+      doc.createNode(buildMcpEntry({ ...opts, extraEnv }).env),
+    );
+  } else {
     doc.setIn(['mcp_servers', MCP_KEY], buildMcpEntry({ ...opts, extraEnv }));
   }
   return { exists, pinned };
@@ -149,7 +200,6 @@ function patchMcpEntry(doc, opts) {
  * entry per event, preserving any non-midbrain hooks the user configured.
  */
 async function patchHooks(doc) {
-  const YAML = await loadYaml();
   for (const [event, role] of Object.entries(HOOK_EVENTS)) {
     const currentNode = doc.getIn(['hooks', event]);
     const current = currentNode && typeof currentNode.toJSON === 'function'
@@ -163,7 +213,6 @@ async function patchHooks(doc) {
   }
   // Silence the interactive first-use consent prompt is NOT auto-set here;
   // hooks_auto_accept is a security-sensitive global toggle the user owns.
-  return YAML;
 }
 
 function formatLine(label, exists, pinned) {
@@ -196,34 +245,36 @@ export class Hermes extends BaseClient {
     const summary = [];
     const cfp = configPath();
 
+    validateShimPaths({ isDev });
     const doc = await readYamlDoc(cfp);
     const { exists, pinned } = patchMcpEntry(doc, { isDev });
     await patchHooks(doc);
 
-    await installStableHookShim();
+    await installStableHookShim({ isDev });
     await backup(cfp);
     await writeYamlDoc(cfp, doc);
 
-    summary.push(formatLine('~/.hermes/config.yaml', exists, pinned));
-    summary.push('~/.hermes/config.yaml: MidBrain capture hooks written (pre_llm_call, post_llm_call)');
-    summary.push('~/.midbrain/bin/hermes-hook: stable Hermes hook shim written');
-    summary.push('  -> Restart Hermes (new session / gateway restart) to load the MCP server');
+    summary.push(formatLine(cfp, exists, pinned));
+    summary.push(`${cfp}: MidBrain capture hooks written (pre_llm_call, post_llm_call)`);
+    summary.push(`${stableHookPath()}: stable Hermes hook shim written`);
+    summary.push(RESTART_WARNING);
     summary.push('  -> On first run, approve the MidBrain hooks (or set hooks_auto_accept: true / HERMES_ACCEPT_HOOKS=1 for non-TTY use)');
     return summary;
   }
 
-  async installProject(projectDir, opts = {}) {
+  async installProject(_projectDir, opts = {}) {
     const isDev = opts.isDev === true;
-    const configFile = path.join(projectDir, '.hermes', 'config.yaml');
-    const doc = await readYamlDoc(configFile);
-    const { exists, pinned } = patchMcpEntry(doc, { isDev, projectDir });
-    await backup(configFile);
-    await writeYamlDoc(configFile, doc);
-    return [formatLine(configFile, exists, pinned)];
+    const cfp = configPath();
+    validateShimPaths({ isDev });
+    const doc = await readYamlDoc(cfp);
+    const { exists, pinned } = patchMcpEntry(doc, { isDev });
+    await backup(cfp);
+    await writeYamlDoc(cfp, doc);
+    return [formatLine(cfp, exists, pinned), RESTART_WARNING];
   }
 
   projectConfigFiles(_projectDir) {
-    return ['.hermes/config.yaml'];
+    return [path.resolve(configPath())];
   }
 
   /**
@@ -233,18 +284,22 @@ export class Hermes extends BaseClient {
   async isFresh() {
     try {
       const doc = await readYamlDoc(configPath());
-      let hasMidbrainHook = false;
-      for (const [event, role] of Object.entries(HOOK_EVENTS)) {
+      const eventEntries = Object.fromEntries(Object.keys(HOOK_EVENTS).map((event) => {
         const node = doc.getIn(['hooks', event]);
-        const entries = node && typeof node.toJSON === 'function' ? node.toJSON() : node;
-        if (!Array.isArray(entries)) continue;
-        const commands = entries.map((e) => (e && typeof e.command === 'string' ? e.command : ''));
-        if (!commands.some((c) => isMidbrainHookCommand(c))) continue;
-        hasMidbrainHook = true;
-        if (commands.some((c) => LEGACY_HOOK_SCRIPTS.some((s) => c.includes(s)))) return false;
-        if (!commands.some((c) => c === buildHookCommand(role))) return false;
-      }
+        const value = node && typeof node.toJSON === 'function' ? node.toJSON() : node;
+        return [event, Array.isArray(value) ? value : []];
+      }));
+      const hasMidbrainHook = Object.values(eventEntries).some((entries) =>
+        entries.some((entry) => isMidbrainHookCommand(entry?.command)));
       if (!hasMidbrainHook) return true;
+
+      for (const [event, role] of Object.entries(HOOK_EVENTS)) {
+        const midbrain = eventEntries[event].filter((entry) =>
+          isMidbrainHookCommand(entry?.command));
+        if (midbrain.length !== 1) return false;
+        if (midbrain[0].command !== buildHookCommand(role)) return false;
+        if (midbrain[0].timeout !== HOOK_TIMEOUT_SEC) return false;
+      }
       return existsSync(stableHookPath());
     } catch { return true; }
   }
@@ -252,6 +307,7 @@ export class Hermes extends BaseClient {
   /** Repair stale hooks by rewriting them and reinstalling the shim. */
   async repairHooks() {
     const cfp = configPath();
+    validateShimPaths();
     const doc = await readYamlDoc(cfp);
     await patchHooks(doc);
     await installStableHookShim();

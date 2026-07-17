@@ -157,6 +157,34 @@ describe("BaseClient.resolveKey — project→global WARN", () => {
 
     expect(errSpy).not.toHaveBeenCalled();
   });
+
+  it("treats an unresolved TERMINAL_CWD env placeholder as unavailable scope", async () => {
+    process.env.MIDBRAIN_PROJECT_DIR = "${TERMINAL_CWD}";
+    process.env.MIDBRAIN_API_KEY = "fallback-key";
+
+    await expect(client.resolveKey()).resolves.toEqual({
+      key: "fallback-key",
+      source: "env:MIDBRAIN_API_KEY",
+    });
+
+    expect(mocks.readFile.mock.calls.flat().some(
+      (value) => String(value).includes("${TERMINAL_CWD}"),
+    )).toBe(false);
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringMatching(/TERMINAL_CWD.*unresolved/i));
+  });
+
+  it("keeps an explicit projectDir ahead of an unresolved env placeholder", async () => {
+    process.env.MIDBRAIN_PROJECT_DIR = "${TERMINAL_CWD}";
+    const keyPath = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+    readFileReturns({ [keyPath]: "project-key\n" });
+
+    await expect(client.resolveKey(PROJECT_DIR)).resolves.toEqual({
+      key: "project-key",
+      source: keyPath,
+    });
+    expect(errSpy).not.toHaveBeenCalled();
+  });
 });
 
 // ===================================================================

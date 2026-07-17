@@ -4,7 +4,7 @@
  * Hermes fires shell hooks with a JSON payload on stdin and reads an optional
  * JSON response on stdout (both CLI and gateway). We map:
  *   - pre_llm_call  -> capture the user prompt   (extra.user_message)
- *   - post_llm_call -> capture the assistant text (extra.response_text)
+ *   - post_llm_call -> capture the assistant text (extra.assistant_response)
  *
  * Failure policy: best-effort capture. A hook must never crash Hermes — every
  * path fails open and returns {} (or the injection payload) on stdout.
@@ -58,6 +58,7 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
     safeLog(deps.logger, `HERMES CAPTURE ERROR (user): ${errorMessage(err)}`);
     return undefined;
   }
+  logKeySource(deps, api);
 
   await postEpisodic(prompt, "user", deps, api);
 
@@ -78,8 +79,10 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
 
 /** Capture the assistant's final response as episodic memory. */
 export async function captureAssistant(input, deps = makeDefaultDeps()) {
-  const raw = payloadText(input, ["response_text", "response", "assistant_message", "text"]);
-  const text = scrubInjectedPkContext(raw);
+  const raw = payloadText(input, [
+    "assistant_response", "response_text", "response", "assistant_message", "text",
+  ]);
+  const text = isPkInjectionEnabled() ? scrubInjectedPkContext(raw) : raw;
   if (!text) return undefined;
 
   const projectDir = payloadCwd(input);
@@ -90,6 +93,7 @@ export async function captureAssistant(input, deps = makeDefaultDeps()) {
     safeLog(deps.logger, `HERMES CAPTURE ERROR (assistant): ${errorMessage(err)}`);
     return undefined;
   }
+  logKeySource(deps, api);
 
   await postEpisodic(text, "assistant", deps, api);
   return undefined;
@@ -119,13 +123,30 @@ export function runJsonHook(captureFn) {
     try {
       payload = await captureFn(JSON.parse(buf || "{}"), makeDefaultDeps());
     } catch { /* fail open */ }
-    if (payload !== undefined && payload !== null) {
-      process.stdout.write(JSON.stringify(payload));
-    } else {
-      process.stdout.write("{}");
-    }
-    process.exit(0);
+    await finishHook(payload);
   });
+}
+
+export async function finishHook(payload, deps = {}) {
+  const write = deps.write || ((text) => process.stdout.write(text));
+  const update = deps.update || runSelfUpdate;
+  const exit = deps.exit || ((code) => process.exit(code));
+  write(payload == null ? "{}" : JSON.stringify(payload));
+  try { await update(); } catch { /* never break the hook */ }
+  exit(0);
+}
+
+async function runSelfUpdate() {
+  try {
+    const { maybeSelfUpdate } = await import("../../install.mjs");
+    await maybeSelfUpdate();
+  } catch { /* never break the hook */ }
+}
+
+function logKeySource(deps, api) {
+  if (typeof api?.keySource === "string" && api.keySource) {
+    safeLog(deps.logger, `KEY SOURCE: ${api.keySource}`, "debug");
+  }
 }
 
 function safeLog(logger, message, level = "error") {

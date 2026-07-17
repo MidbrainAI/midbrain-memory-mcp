@@ -40,6 +40,7 @@ const PK_DEFAULT_MIN_SCORE = 0.5;
 const PK_DEFAULT_TIMEOUT_MS = 2000;
 
 const DEFAULT_SEARCH_LIMIT = 10;
+const PRODUCT_USER_AGENT = "midbrain-memory-mcp";
 
 export class MidbrainApi {
   #key;
@@ -159,6 +160,7 @@ export class MidbrainApi {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.#key}`,
+          "User-Agent": PRODUCT_USER_AGENT,
         },
         body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
       });

@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { parse as jsoncParse } from "jsonc-parser";
 import { parse as parseToml } from "smol-toml";
+import { parse as parseYaml } from "yaml";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "fs";
@@ -579,6 +580,44 @@ describe("memory_setup_project — config file integration", () => {
     expect(text).toContain("preserved");
     const content = fs.readFileSync(path.join(keyDir, ".midbrain-key"), "utf8").trim();
     expect(content).toBe("existing-key");
+  });
+
+  it("configures Hermes through its active config without a dead project file", async () => {
+    const hermesHome = path.join(fakeHome, "hermes-active");
+    process.env.HERMES_HOME = hermesHome;
+    fs.mkdirSync(hermesHome, { recursive: true });
+
+    const first = await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "hermes-project-key" },
+    });
+    const configPath = path.join(hermesHome, "config.yaml");
+    const firstRaw = fs.readFileSync(configPath, "utf8");
+    const config = parseYaml(firstRaw);
+
+    expect(config.mcp_servers["midbrain-memory"]).toEqual({
+      command: "npx",
+      args: ["-y", "midbrain-memory-mcp@latest"],
+      env: {
+        MIDBRAIN_CLIENT: "hermes",
+        MIDBRAIN_PROJECT_DIR: "${TERMINAL_CWD}",
+      },
+    });
+    expect(config.hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(tmpProjectDir, ".hermes", "config.yaml"))).toBe(false);
+    expect(first.content[0].text).toContain(
+      "If a Hermes gateway is already running, restart that gateway before memory capture takes effect.",
+    );
+
+    await client.callTool({
+      name: "memory_setup_project",
+      arguments: { project_dir: tmpProjectDir, api_key: "replacement-key" },
+    });
+    expect(fs.readFileSync(configPath, "utf8")).toBe(firstRaw);
+    expect(fs.readFileSync(
+      path.join(tmpProjectDir, ".midbrain", ".midbrain-key"),
+      "utf8",
+    ).trim()).toBe("hermes-project-key");
   });
 
   it("writes opencode.json when MIDBRAIN_CONFIG_DIR contains 'opencode'", async () => {

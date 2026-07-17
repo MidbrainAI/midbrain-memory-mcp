@@ -147,7 +147,7 @@ Hermes Agent:
 - Hermes has no bespoke hook file; capture rides Hermes' own shell-hooks system
   declared in `~/.hermes/config.yaml` under `hooks:`. Fires in CLI + gateway.
 - `pre_llm_call` captures the user prompt (`extra.user_message`); `post_llm_call`
-  captures the assistant response (`extra.response_text`). Both read the Hermes
+  captures the assistant response (`extra.assistant_response`). Both read the Hermes
   JSON payload from stdin and always write `{}` (or a `{ context }` injection
   payload when legacy PK is explicitly enabled) to stdout.
 - Installer-written hooks call the stable `~/.midbrain/bin/hermes-hook` shim,
@@ -161,6 +161,11 @@ Hermes Agent:
   key order on untouched nodes survive; unparseable config fails closed (no
   write), mirroring the Codex TOML adapter. `yaml` is lazily imported and marked
   `--external` in the OpenCode plugin esbuild bundle (like `smol-toml`).
+- Global and project setup both patch the active Hermes config. The MCP entry
+  uses Hermes' `${TERMINAL_CWD}` expansion for project key scoping; project
+  setup does not create an inactive `<project>/.hermes/config.yaml`.
+- Installed hooks pass only the capture role to the stable shim, use a 30-second
+  timeout, and require an already-running gateway to be restarted after setup.
 - Per-client key file: `~/.config/hermes/.midbrain-key` (falls through to the
   global key via the standard resolution chain). Detection keys on
   `~/.hermes/config.yaml` or `~/.hermes/`.

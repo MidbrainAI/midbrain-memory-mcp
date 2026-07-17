@@ -68,6 +68,7 @@ describe("MidbrainApi.storeEpisodic", () => {
     expect(url).toBe(MidbrainApi.EPISODIC);
     expect(opts.method).toBe("POST");
     expect(opts.headers.Authorization).toBe("Bearer test-key");
+    expect(opts.headers["User-Agent"]).toBe("midbrain-memory-mcp");
     expect(JSON.parse(opts.body)).toEqual({ text: "hello world", role: "user" });
   });
 
@@ -248,6 +249,9 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
     expect(hasCachedEntries(cacheScopeForKey("test-key"))).toBe(false);
     // fetch was called: once for the failed attempt, once for the new msg, once for the cached flush.
     expect(fetchSpy).toHaveBeenCalledTimes(3);
+    for (const [, options] of fetchSpy.mock.calls) {
+      expect(options.headers["User-Agent"]).toBe("midbrain-memory-mcp");
+    }
   });
 
   it("does not flush one API key's cached entries under another API key", async () => {
