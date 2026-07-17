@@ -69,9 +69,11 @@ export class BaseClient {
    *   4. MIDBRAIN_API_KEY env var
    *
    * @param {string} [projectDir] - Explicit project directory (overrides MIDBRAIN_PROJECT_DIR env).
-   * @returns {Promise<{key: string, source: string} | null>}
+   * @param {{includeScope?: boolean}} [opts] - Include the selected resolution
+   * scope for installer bookkeeping without bypassing this resolver.
+   * @returns {Promise<{key: string, source: string, scope?: string} | null>}
    */
-  async resolveKey(projectDir) {
+  async resolveKey(projectDir, { includeScope = false } = {}) {
     const explicitProjectDir = typeof projectDir === 'string' && projectDir.trim()
       ? projectDir
       : undefined;
@@ -85,19 +87,22 @@ export class BaseClient {
     }
     if (projDir) {
       const key = await this.#resolveProjectKey(projDir);
-      if (key) return key;
+      if (key) return includeScope ? { ...key, scope: 'project' } : key;
       console.error(`WARN: no project key found in "${projDir}", falling through to global key.`);
     }
 
     const own = await this.resolveClientKey();
-    if (own) return own;
+    if (own) return includeScope ? { ...own, scope: 'client' } : own;
 
     const global_ = await this.#resolveGlobalKey();
-    if (global_) return global_;
+    if (global_) return includeScope ? { ...global_, scope: 'global' } : global_;
 
     if (process.env[ENV_VAR]) {
       const key = process.env[ENV_VAR].trim();
-      if (key) return { key, source: `env:${ENV_VAR}` };
+      if (key) {
+        const result = { key, source: `env:${ENV_VAR}` };
+        return includeScope ? { ...result, scope: 'environment' } : result;
+      }
     }
 
     return null;

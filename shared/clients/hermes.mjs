@@ -26,6 +26,7 @@ import {
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
+import { isDeepStrictEqual } from 'util';
 
 const HOOK_TIMEOUT_SEC = 30;
 const PROJECT_DIR_ENV = '${TERMINAL_CWD}';
@@ -42,13 +43,15 @@ const LEGACY_HOOK_SCRIPTS = ['capture-user.mjs', 'capture-assistant.mjs'];
 let yamlModule;
 
 function hermesHome() {
-  if (process.env.HERMES_HOME) return process.env.HERMES_HOME;
+  const explicitHome = process.env.HERMES_HOME?.trim();
+  if (explicitHome) return path.resolve(explicitHome);
   if (process.platform === 'win32') {
-    return process.env.LOCALAPPDATA
-      ? path.join(process.env.LOCALAPPDATA, 'hermes')
-      : path.join(home(), 'AppData', 'Local', 'hermes');
+    const localAppData = process.env.LOCALAPPDATA?.trim();
+    return localAppData
+      ? path.resolve(localAppData, 'hermes')
+      : path.resolve(home(), 'AppData', 'Local', 'hermes');
   }
-  return path.join(home(), '.hermes');
+  return path.resolve(home(), '.hermes');
 }
 function configPath() { return path.join(hermesHome(), 'config.yaml'); }
 function stableHookPath() {
@@ -184,15 +187,16 @@ function patchMcpEntry(doc, opts) {
   const exists = existingJs != null;
   const pinned = mcpEntryPinned(existingJs);
   const extraEnv = extractCustomEnv(existingJs, 'env');
+  const desiredEnv = buildMcpEntry({ ...opts, extraEnv }).env;
+  const envChanged = !isDeepStrictEqual(existingJs?.env, desiredEnv);
   if (pinned) {
-    doc.setIn(
-      ['mcp_servers', MCP_KEY, 'env'],
-      doc.createNode(buildMcpEntry({ ...opts, extraEnv }).env),
-    );
+    if (envChanged) {
+      doc.setIn(['mcp_servers', MCP_KEY, 'env'], doc.createNode(desiredEnv));
+    }
   } else {
     doc.setIn(['mcp_servers', MCP_KEY], buildMcpEntry({ ...opts, extraEnv }));
   }
-  return { exists, pinned };
+  return { exists, pinned, envChanged };
 }
 
 /**
@@ -215,8 +219,13 @@ async function patchHooks(doc) {
   // hooks_auto_accept is a security-sensitive global toggle the user owns.
 }
 
-function formatLine(label, exists, pinned) {
-  if (pinned) return `${label}: midbrain-memory pinned version preserved (no change)`;
+function formatLine(label, exists, pinned, envChanged) {
+  if (pinned && envChanged) {
+    return `${label}: midbrain-memory pinned command preserved; environment updated`;
+  }
+  if (pinned) {
+    return `${label}: midbrain-memory pinned command and environment unchanged (no-op)`;
+  }
   return exists ? `${label}: midbrain-memory updated` : `${label}: midbrain-memory entry added`;
 }
 
@@ -247,14 +256,14 @@ export class Hermes extends BaseClient {
 
     validateShimPaths({ isDev });
     const doc = await readYamlDoc(cfp);
-    const { exists, pinned } = patchMcpEntry(doc, { isDev });
+    const { exists, pinned, envChanged } = patchMcpEntry(doc, { isDev });
     await patchHooks(doc);
 
     await installStableHookShim({ isDev });
     await backup(cfp);
     await writeYamlDoc(cfp, doc);
 
-    summary.push(formatLine(cfp, exists, pinned));
+    summary.push(formatLine(cfp, exists, pinned, envChanged));
     summary.push(`${cfp}: MidBrain capture hooks written (pre_llm_call, post_llm_call)`);
     summary.push(`${stableHookPath()}: stable Hermes hook shim written`);
     summary.push(RESTART_WARNING);
@@ -267,10 +276,10 @@ export class Hermes extends BaseClient {
     const cfp = configPath();
     validateShimPaths({ isDev });
     const doc = await readYamlDoc(cfp);
-    const { exists, pinned } = patchMcpEntry(doc, { isDev });
+    const { exists, pinned, envChanged } = patchMcpEntry(doc, { isDev });
     await backup(cfp);
     await writeYamlDoc(cfp, doc);
-    return [formatLine(cfp, exists, pinned), RESTART_WARNING];
+    return [formatLine(cfp, exists, pinned, envChanged), RESTART_WARNING];
   }
 
   projectConfigFiles(_projectDir) {
@@ -292,6 +301,11 @@ export class Hermes extends BaseClient {
       const hasMidbrainHook = Object.values(eventEntries).some((entries) =>
         entries.some((entry) => isMidbrainHookCommand(entry?.command)));
       if (!hasMidbrainHook) return true;
+      try {
+        validateShimPaths();
+      } catch {
+        return false;
+      }
 
       for (const [event, role] of Object.entries(HOOK_EVENTS)) {
         const midbrain = eventEntries[event].filter((entry) =>

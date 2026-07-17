@@ -5,7 +5,7 @@
  * The real `yaml` parser is used (mirrors client-codex.test.mjs using real TOML).
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "path";
 import os from "os";
 
@@ -41,6 +41,8 @@ const { Hermes } = await import("../shared/clients/hermes.mjs");
 const YAML = await import("yaml");
 
 const HOME = os.homedir();
+const ORIGINAL_HERMES_HOME = process.env.HERMES_HOME;
+const ORIGINAL_LOCALAPPDATA = process.env.LOCALAPPDATA;
 
 const PATHS = {
   hermesHome:   path.join(HOME, ".hermes"),
@@ -70,6 +72,14 @@ const RESTART_WARNING =
 describe("Hermes adapter identity", () => {
   const hermes = new Hermes();
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (ORIGINAL_HERMES_HOME === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = ORIGINAL_HERMES_HOME;
+    if (ORIGINAL_LOCALAPPDATA === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = ORIGINAL_LOCALAPPDATA;
+  });
+
   it("extends BaseClient", () => {
     expect(hermes).toBeInstanceOf(BaseClient);
   });
@@ -77,6 +87,32 @@ describe("Hermes adapter identity", () => {
   it("has stable id and display name", () => {
     expect(hermes.id).toBe("hermes");
     expect(hermes.displayName).toBe("Hermes Agent");
+  });
+
+  it("trims and normalizes an explicit Hermes home", () => {
+    process.env.HERMES_HOME = "  relative-hermes-home  ";
+    expect(hermes.projectConfigFiles("/unused")).toEqual([
+      path.resolve("relative-hermes-home", "config.yaml"),
+    ]);
+  });
+
+  it("falls back from a whitespace-only Hermes home", () => {
+    process.env.HERMES_HOME = "   ";
+    expect(hermes.projectConfigFiles("/unused")).toEqual([PATHS.hermesConfig]);
+  });
+
+  it("trims Windows LOCALAPPDATA and falls back when it is whitespace-only", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    process.env.HERMES_HOME = " ";
+    process.env.LOCALAPPDATA = "  relative-local-app-data  ";
+    expect(hermes.projectConfigFiles("/unused")).toEqual([
+      path.resolve("relative-local-app-data", "hermes", "config.yaml"),
+    ]);
+
+    process.env.LOCALAPPDATA = "   ";
+    expect(hermes.projectConfigFiles("/unused")).toEqual([
+      path.resolve(HOME, "AppData", "Local", "hermes", "config.yaml"),
+    ]);
   });
 });
 
@@ -139,6 +175,22 @@ describe("Hermes.writeKey", () => {
 describe("Hermes.installGlobal", () => {
   const hermes = new Hermes();
   beforeEach(resetMocks);
+
+  afterEach(() => {
+    if (ORIGINAL_HERMES_HOME === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = ORIGINAL_HERMES_HOME;
+  });
+
+  it("uses the normalized explicit config path for reads and writes", async () => {
+    process.env.HERMES_HOME = "  relative-hermes-home  ";
+    const config = path.resolve("relative-hermes-home", "config.yaml");
+    readFileReturns({ [config]: "model:\n  default: x\n" });
+
+    await hermes.installGlobal();
+
+    expect(mocks.readFile).toHaveBeenCalledWith(config, "utf8");
+    expect(mocks.writeFile.mock.calls.some(([filePath]) => filePath === config)).toBe(true);
+  });
 
   it("adds mcp_servers.midbrain-memory with hermes client env", async () => {
     await hermes.installGlobal();
@@ -247,7 +299,38 @@ describe("Hermes.installGlobal", () => {
       MIDBRAIN_CLIENT: "hermes",
       MIDBRAIN_PROJECT_DIR: TERMINAL_CWD,
     });
-    expect(summary.join("\n")).toContain("pinned version preserved");
+    expect(summary.join("\n")).toContain("pinned command preserved; environment updated");
+  });
+
+  it.each([
+    ["missing", ""],
+    ["null", "    env: null\n"],
+    ["scalar", "    env: invalid\n"],
+    ["sequence", "    env:\n      - unexpected-a\n      - unexpected-b\n"],
+  ])("repairs a pinned %s env without retaining invalid values", async (_label, envYaml) => {
+    readFileReturns({
+      [PATHS.hermesConfig]:
+        "mcp_servers:\n  midbrain-memory:\n    command: npx\n    args:\n      - -y\n      - midbrain-memory-mcp@0.3.1\n" + envYaml,
+    });
+
+    const summary = await hermes.installGlobal();
+    const entry = lastConfigWrite().mcp_servers["midbrain-memory"];
+    expect(entry.args).toContain("midbrain-memory-mcp@0.3.1");
+    expect(entry.env).toEqual({
+      MIDBRAIN_CLIENT: "hermes",
+      MIDBRAIN_PROJECT_DIR: TERMINAL_CWD,
+    });
+    expect(summary.join("\n")).toContain("pinned command preserved; environment updated");
+  });
+
+  it("reports an explicit no-op for a pinned entry with an exact valid env", async () => {
+    readFileReturns({
+      [PATHS.hermesConfig]:
+        "mcp_servers:\n  midbrain-memory:\n    command: npx\n    args:\n      - -y\n      - midbrain-memory-mcp@0.3.1\n    env:\n      HTTP_PROXY: http://proxy:8080\n      MIDBRAIN_CLIENT: hermes\n      MIDBRAIN_PROJECT_DIR: \"${TERMINAL_CWD}\"\n",
+    });
+
+    const summary = await hermes.installGlobal();
+    expect(summary.join("\n")).toContain("pinned command and environment unchanged (no-op)");
   });
 
   it("preserves custom env keys on the MCP entry", async () => {
@@ -366,6 +449,59 @@ describe("Hermes.isFresh / repairHooks", () => {
     cfg.hooks.pre_llm_call = [{ ...cfg.hooks.post_llm_call[0] }];
     readFileReturns({ [PATHS.hermesConfig]: YAML.stringify(cfg) });
     expect(await hermes.isFresh()).toBe(false);
+  });
+
+  it("treats canonical Windows hooks under a rejected shim path as stale", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const homeSpy = vi.spyOn(os, "homedir").mockReturnValue(path.join(HOME, "A&B"));
+    const savedHermesHome = process.env.HERMES_HOME;
+    try {
+      process.env.HERMES_HOME = path.join(HOME, "hermes-win-fixture");
+      const shim = path.join(os.homedir(), ".midbrain", "bin", "hermes-hook.cmd");
+      readFileReturns({
+        [path.join(process.env.HERMES_HOME, "config.yaml")]:
+          `hooks:\n  pre_llm_call:\n    - command: "'${shim}' user"\n      timeout: 30\n  post_llm_call:\n    - command: "'${shim}' assistant"\n      timeout: 30\n`,
+      });
+      existsFor(shim);
+      expect(await hermes.isFresh()).toBe(false);
+    } finally {
+      platformSpy.mockRestore();
+      homeSpy.mockRestore();
+      if (savedHermesHome === undefined) delete process.env.HERMES_HOME;
+      else process.env.HERMES_HOME = savedHermesHome;
+    }
+  });
+
+  it("keeps a no-hook Windows config fresh even when the shim path is rejected", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const homeSpy = vi.spyOn(os, "homedir").mockReturnValue(path.join(HOME, "A&B"));
+    const savedHermesHome = process.env.HERMES_HOME;
+    try {
+      process.env.HERMES_HOME = path.join(HOME, "hermes-win-fixture");
+      readFileReturns({
+        [path.join(process.env.HERMES_HOME, "config.yaml")]: "model:\n  default: x\n",
+      });
+      expect(await hermes.isFresh()).toBe(true);
+    } finally {
+      platformSpy.mockRestore();
+      homeSpy.mockRestore();
+      if (savedHermesHome === undefined) delete process.env.HERMES_HOME;
+      else process.env.HERMES_HOME = savedHermesHome;
+    }
+  });
+
+  it("rejects Windows repair before reading or mutating a config under a bad shim path", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const homeSpy = vi.spyOn(os, "homedir").mockReturnValue(path.join(HOME, "A&B"));
+    try {
+      await expect(hermes.repairHooks()).rejects.toThrow(/unsupported Windows command characters/);
+      expect(mocks.readFile).not.toHaveBeenCalled();
+      expect(mocks.writeFile).not.toHaveBeenCalled();
+      expect(mocks.mkdir).not.toHaveBeenCalled();
+    } finally {
+      platformSpy.mockRestore();
+      homeSpy.mockRestore();
+    }
   });
 
   it.each([undefined, "30", 10, 31])(

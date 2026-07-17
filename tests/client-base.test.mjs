@@ -149,6 +149,20 @@ describe("BaseClient.resolveKey — project→global WARN", () => {
     expect(errSpy).not.toHaveBeenCalled();
   });
 
+  it("reports the selected resolution scope only when requested", async () => {
+    process.env.MIDBRAIN_API_KEY = "env-key";
+
+    await expect(client.resolveKey(undefined, { includeScope: true })).resolves.toEqual({
+      key: "env-key",
+      source: "env:MIDBRAIN_API_KEY",
+      scope: "environment",
+    });
+    await expect(client.resolveKey()).resolves.toEqual({
+      key: "env-key",
+      source: "env:MIDBRAIN_API_KEY",
+    });
+  });
+
   it("does not emit WARN when project key is found", async () => {
     const keyPath = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
     readFileReturns({ [keyPath]: "project-key\n" });
