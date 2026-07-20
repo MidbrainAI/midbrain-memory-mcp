@@ -4,8 +4,8 @@
  *
  * ~/.config/opencode/plugins/ is a user directory; cleanup may delete only the
  * closed list of artifacts prior releases actually shipped (logger.mjs,
- * midbrain-api.mjs, clients/{base,utils,generic,opencode,claude,codex,
- * registry}.mjs) — never prefix or dirname guesses.
+ * midbrain-api.mjs, midbrain-common.mjs, clients/{base,utils,generic,opencode,
+ * claude,codex,registry}.mjs) — never prefix or dirname guesses.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
