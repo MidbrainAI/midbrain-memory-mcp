@@ -97,3 +97,64 @@ describe("opencode — closed-list plugin cleanup (AC-13)", () => {
     expect(await exists(legacyLogger)).toBe(false);
   });
 });
+
+describe("opencode — dev preservation (AC-14)", () => {
+  const pluginFile = () => path.join(pd, "midbrain-memory.ts");
+  const bundleFile = () => path.join(pd, "midbrain-shared.mjs");
+  const markerFile = () => path.join(pd, ".midbrain-repo-root");
+
+  it("B18: dev install writes a dev-flagged marker; canonical repair leaves dev bytes byte-identical", async () => {
+    await opencode.installGlobal({ isDev: true });
+    // simulate developer-modified checkout bytes in the installed copies
+    await fs.writeFile(pluginFile(), "// dev-modified plugin\n", "utf8");
+    await fs.writeFile(bundleFile(), "// dev-modified bundle\n", "utf8");
+
+    const marker = (await fs.readFile(markerFile(), "utf8")).trim();
+    expect(marker.endsWith("-dev")).toBe(true);
+
+    // a canonical instance never judges a dev install stale, and even a
+    // direct repair call preserves the dev bytes
+    expect(await opencode.isFresh()).toBe(true);
+    const lines = await opencode.repairPlugins();
+    expect(lines).toEqual([]);
+    expect(await fs.readFile(pluginFile(), "utf8")).toBe("// dev-modified plugin\n");
+    expect(await fs.readFile(bundleFile(), "utf8")).toBe("// dev-modified bundle\n");
+    expect((await fs.readFile(markerFile(), "utf8")).trim()).toBe(marker);
+  });
+
+  it("B18: a dev-marked install from an older version stays pinned", async () => {
+    await opencode.installGlobal({ isDev: true });
+    await fs.writeFile(markerFile(), "midbrain-memory-mcp@0.0.1-dev\n", "utf8");
+    await fs.writeFile(pluginFile(), "// old dev plugin\n", "utf8");
+
+    expect(await opencode.isFresh()).toBe(true);
+    await opencode.repairPlugins();
+    expect(await fs.readFile(pluginFile(), "utf8")).toBe("// old dev plugin\n");
+  });
+
+  it("B18: a dev instance (MIDBRAIN_DEV env) never auto-propagates over a canonical install", async () => {
+    await opencode.installGlobal(); // canonical install
+    await fs.writeFile(bundleFile(), "// drifted installed state\n", "utf8");
+    process.env.MIDBRAIN_DEV = "1"; // the running server was launched by a dev MCP entry
+
+    expect(await opencode.isFresh()).toBe(true); // dev instance: nothing to converge
+    const lines = await opencode.repairPlugins();
+    expect(lines).toEqual([]);
+    expect(await fs.readFile(bundleFile(), "utf8")).toBe("// drifted installed state\n");
+  });
+
+  it("B19: explicit non-dev install restores canonical bytes and removes the dev marker flag", async () => {
+    await opencode.installGlobal({ isDev: true });
+    await fs.writeFile(pluginFile(), "// dev-modified plugin\n", "utf8");
+    await fs.writeFile(bundleFile(), "// dev-modified bundle\n", "utf8");
+
+    await opencode.installGlobal(); // explicit canonical install
+
+    const { REPO_ROOT } = await import("../shared/clients/utils.mjs");
+    const canonicalPlugin = await fs.readFile(
+      path.join(REPO_ROOT, "plugins", "opencode", "midbrain-memory.ts"), "utf8");
+    expect(await fs.readFile(pluginFile(), "utf8")).toBe(canonicalPlugin);
+    const marker = (await fs.readFile(markerFile(), "utf8")).trim();
+    expect(marker.endsWith("-dev")).toBe(false);
+  });
+});

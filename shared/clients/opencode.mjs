@@ -44,6 +44,22 @@ const MARKER_FILE = '.midbrain-repo-root';
 // instance's location — freshness is version + content, not path identity.
 // Old `name@version:/path` markers mismatch once and migrate on first repair.
 const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}`;
+// Dev installs flag the marker (AC-14): automatic repair treats it as pinned
+// regardless of version, mirroring dev shim bodies. Explicit non-dev install
+// rewrites the canonical value, clearing the flag.
+const MARKER_VALUE_DEV = `${MARKER_VALUE}-dev`;
+
+/** True for any dev-flagged marker, any version — dev pins never expire. */
+function isDevMarkerValue(raw) {
+  if (typeof raw !== 'string') return false;
+  const value = raw.trim();
+  return value.startsWith(`${PKG_NAME}@`) && value.endsWith('-dev');
+}
+
+/** True when the running server itself was launched by a dev MCP entry. */
+function isDevInstance() {
+  return Boolean(process.env.MIDBRAIN_DEV);
+}
 
 // Closed list of legacy artifacts (AC-13): exactly what prior releases copied
 // into ~/.config/opencode/plugins/ (pre-bundle era: shared modules + a
@@ -216,8 +232,9 @@ export class OpenCode extends BaseClient {
     );
     summary.push(`  + Bundle copied: ~/.config/opencode/plugins/${BUNDLE_FILE}`);
 
-    // Write freshness marker for staleness detection
-    await writeFileIfChanged(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n');
+    // Write freshness marker for staleness detection; --dev flags it so
+    // automatic repair pins the checkout's plugin bytes (AC-14).
+    await writeFileIfChanged(path.join(pd, MARKER_FILE), (isDev ? MARKER_VALUE_DEV : MARKER_VALUE) + '\n');
 
     // Patch opencode config (.json or .jsonc)
     const configPath = resolveConfig(configDir());
@@ -295,11 +312,16 @@ export class OpenCode extends BaseClient {
    * Check if plugin files are fresh by comparing a version marker.
    * Returns true only when marker and copied file contents match. The marker
    * alone can lie if a previous repair was interrupted or manually reverted.
+   * Dev state is pinned in both directions (AC-14): a dev-flagged marker is
+   * never judged stale, and a dev instance never judges canonical state stale
+   * (it must not auto-propagate its checkout bytes).
    */
   async isFresh() {
     try {
+      if (isDevInstance()) return true;
       const markerPath = path.join(pluginsDir(), MARKER_FILE);
       const raw = await fs.readFile(markerPath, 'utf8');
+      if (isDevMarkerValue(raw)) return true;
       if (raw.trim() !== MARKER_VALUE) return false;
 
       const sourcePlugin = await fs.readFile(path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE), 'utf8');
@@ -316,10 +338,16 @@ export class OpenCode extends BaseClient {
    * Repair stale plugin files by re-copying the running package's content.
    * Copies are version content, not paths — safe from any canonical context.
    * Content-compared, so an interrupted-marker case rewrites only what
-   * actually differs.
+   * actually differs. Dev state is pinned (AC-14): a dev-flagged install is
+   * preserved byte-identical, and a dev instance never propagates its bytes —
+   * only an explicit `install` crosses the dev/canonical boundary.
    */
   async repairPlugins() {
+    if (isDevInstance()) return [];
     const pd = pluginsDir();
+    try {
+      if (isDevMarkerValue(await fs.readFile(path.join(pd, MARKER_FILE), 'utf8'))) return [];
+    } catch { /* marker missing or unreadable -> proceed with canonical repair */ }
     await fs.mkdir(pd, { recursive: true });
     await cleanStalePlugins(pd);
 

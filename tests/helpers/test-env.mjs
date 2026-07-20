@@ -33,6 +33,7 @@ const MANAGED_ENV_KEYS = [
   'MIDBRAIN_CONFIG_DIR',
   'MIDBRAIN_API_KEY',
   'MIDBRAIN_ENABLE_PK_INJECTION',
+  'MIDBRAIN_DEV',
   'CI',
 ];
 
@@ -79,6 +80,7 @@ export async function makeTestEnv(opts = {}) {
     MIDBRAIN_CONFIG_DIR: undefined,
     MIDBRAIN_API_KEY: undefined,
     MIDBRAIN_ENABLE_PK_INJECTION: undefined,
+    MIDBRAIN_DEV: undefined,
     CI: undefined,
     ...extraEnv,
   };
