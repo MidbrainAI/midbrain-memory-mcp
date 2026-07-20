@@ -79,6 +79,23 @@ export async function writeFileIfChanged(filePath, content) {
   return true;
 }
 
+/**
+ * Content-compared JSON write in writeJson's exact format (PRD-034 S2, D4).
+ * Optionally backs the file up first, but only when actually changing it.
+ *
+ * @returns {Promise<boolean>} true when the file was written.
+ */
+export async function writeJsonIfChanged(filePath, data, { backupFirst = false } = {}) {
+  const content = JSON.stringify(data, null, 2) + '\n';
+  try {
+    if ((await fs.readFile(filePath, 'utf8')) === content) return false;
+  } catch { /* missing/unreadable -> write */ }
+  if (backupFirst) await backup(filePath);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content, 'utf8');
+  return true;
+}
+
 /** Write a key file with chmod 600 (creates parent dirs). */
 export async function writeSecure(filePath, key) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });

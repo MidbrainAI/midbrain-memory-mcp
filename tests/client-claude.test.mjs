@@ -275,19 +275,33 @@ describe("Claude.installGlobal", () => {
     expect(midbrainPerms).toHaveLength(6);
   });
 
-  it("hooks contain capture script paths", async () => {
+  it("hooks call the stable claude-hook shim, never checkout script paths", async () => {
     await cc.installGlobal();
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeSettings);
     const written = JSON.parse(writeCall[1]);
+    const shim = path.join(HOME, ".midbrain", "bin", "claude-hook");
     const userHook = written.hooks.UserPromptSubmit[0].hooks[0];
     const stopHook = written.hooks.Stop[0].hooks[0];
-    expect(userHook.command).toContain("capture-user.mjs");
-    expect(stopHook.command).toContain("capture-assistant.mjs");
+    expect(userHook.command).toBe(`'${shim}' user`);
+    expect(stopHook.command).toBe(`'${shim}' assistant`);
+    expect(userHook.command).not.toContain(REPO_ROOT);
+    expect(stopHook.command).not.toContain(REPO_ROOT);
     expect(userHook.type).toBe("command");
-    expect(userHook.timeout).toBe(10);
+    expect(userHook.timeout).toBe(30);
+    expect(stopHook.timeout).toBe(30);
     expect(userHook.async).not.toBe(true);
     expect(stopHook.async).toBe(true);
+  });
+
+  it("installGlobal writes the canonical claude-hook shim 0755", async () => {
+    await cc.installGlobal();
+
+    const shim = path.join(HOME, ".midbrain", "bin", "claude-hook");
+    const shimWrite = fs.writeFile.mock.calls.find(([p]) => p === shim);
+    expect(shimWrite).toBeDefined();
+    expect(shimWrite[1]).toContain("npx -y midbrain-memory-mcp@latest hook claude");
+    expect(fs.chmod).toHaveBeenCalledWith(shim, 0o755);
   });
 });
 

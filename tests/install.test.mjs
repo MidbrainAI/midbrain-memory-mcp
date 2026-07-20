@@ -618,7 +618,7 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
       [PATHS.nanoclawSkill]: "stale skill\n",
     });
 
-    await checkForUpdate();
+    await checkForUpdate({ context: { kind: "durable", path: "/durable/install" } });
 
     const copiedSkill = fs.copyFile.mock.calls.some(([, dst]) => dst === PATHS.nanoclawSkill);
     expect(copiedSkill).toBe(true);
@@ -638,7 +638,7 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
       }),
     });
 
-    await checkForUpdate();
+    await checkForUpdate({ context: { kind: "durable", path: "/durable/install" } });
 
     const hooksWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexHooks);
     const shimWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexShim);
@@ -662,7 +662,7 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
       }),
     });
 
-    await checkForUpdate();
+    await checkForUpdate({ context: { kind: "durable", path: "/durable/install" } });
 
     const hooksWrites = fs.writeFile.mock.calls.filter(([p]) => p === PATHS.codexHooks);
     expect(hooksWrites).toHaveLength(0);
