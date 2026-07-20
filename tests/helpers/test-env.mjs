@@ -2,9 +2,11 @@
  * Sandboxed environment fixture for installer/repair/adapter tests (PRD-034 S4).
  *
  * makeTestEnv() builds a throwaway HOME (plus XDG dirs, HERMES_HOME, npm cache,
- * TMPDIR and log dir) and points every path-resolving env var at it, so client
- * adapters and the installer physically cannot reach the real user profile.
- * Restores the exact prior environment on restore().
+ * TMPDIR and log dir) and points every path-resolving env var at it, so
+ * sandboxed code resolves every client path inside the sandbox. This is
+ * redirection, not a jail: the real-home tripwire (globalSetup) detects any
+ * drift that would escape it. Restores the exact prior environment on
+ * restore().
  *
  * CI is explicitly unset by default (settable via opts.env) so behavior-matrix
  * tests do not self-skip when the suite runs on a real CI runner.
