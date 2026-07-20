@@ -127,17 +127,26 @@ export function isDevShimContent(content) {
 
 /**
  * True when a hook command references the client's stable shim as a complete
- * path token (exact ownership, AC-12). Quotes are stripped, the command is
- * tokenized on whitespace, and a token owns the shim only when it equals the
- * resolved stableShimPath or its basename is exactly `<client>-hook` /
- * `<client>-hook.cmd` under a `.midbrain/bin` directory (`~`, `$HOME`, and
- * drive-letter forms included). Near-names like `claude-hook-wrapper` never
- * match — those are user hooks.
+ * path token (exact ownership, AC-12). Tokenization is quote-aware — a
+ * quoted path is one token even when it contains spaces — and a token owns
+ * the shim only when it equals the resolved stableShimPath or its basename
+ * is exactly `<client>-hook` / `<client>-hook.cmd` under a `.midbrain/bin`
+ * directory (`~`, `$HOME`, and drive-letter forms included). Near-names like
+ * `claude-hook-wrapper` never match — those are user hooks.
  */
 export function commandReferencesShim(command, client) {
   if (typeof command !== 'string') return false;
   const resolved = stableShimPath(client);
-  const tokens = command.replace(/['"]/g, ' ').split(/\s+/).filter(Boolean);
+  // Quote-aware tokenization: a quoted path stays ONE token even when it
+  // contains spaces — our own canonical command single-quotes the shim path,
+  // and Windows homes routinely contain spaces. Splitting on bare whitespace
+  // would shatter such paths and make the client's own hook unrecognizable.
+  const tokens = [];
+  const tokenRe = /'([^']*)'|"([^"]*)"|(\S+)/g;
+  let part;
+  while ((part = tokenRe.exec(command)) !== null) {
+    tokens.push(part[1] ?? part[2] ?? part[3]);
+  }
   return tokens.some((token) => {
     if (token === resolved) return true;
     const normalized = token.replace(/\\/g, '/');

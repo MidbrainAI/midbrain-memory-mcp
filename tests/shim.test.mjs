@@ -20,6 +20,7 @@ import {
   isDevShimContent,
   installShim,
   shimStatus,
+  commandReferencesShim,
 } from "../shared/clients/shim.mjs";
 import { writeFileIfChanged } from "../shared/clients/utils.mjs";
 
@@ -311,6 +312,37 @@ describe("shimStatus (AC-11)", () => {
     } finally {
       await env.restore();
     }
+  });
+});
+
+describe("commandReferencesShim — quote-aware tokens (AC-12, spaced homes)", () => {
+  it("recognizes the canonical quoted command when home contains spaces; still rejects near-names", async () => {
+    const env = await makeTestEnv();
+    try {
+      const spacedHome = path.join(env.root, "home with spaces");
+      await fs.mkdir(path.join(spacedHome, ".midbrain", "bin"), { recursive: true });
+      process.env.HOME = spacedHome;
+      process.env.USERPROFILE = spacedHome;
+
+      const resolved = stableShimPath("claude");
+      expect(resolved).toContain(" ");
+      // the exact command our own installer writes on such a home
+      expect(commandReferencesShim(`'${resolved}' user`, "claude")).toBe(true);
+      expect(commandReferencesShim(`"${resolved}" user`, "claude")).toBe(true);
+
+      const wrapper = path.join(spacedHome, ".midbrain", "bin", "claude-hook-wrapper");
+      expect(commandReferencesShim(`'${wrapper}' user`, "claude")).toBe(false);
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it("keeps matching unquoted, tilde, $HOME, and win32 forms; rejects foreign dirs", () => {
+    expect(commandReferencesShim("~/.midbrain/bin/claude-hook user", "claude")).toBe(true);
+    expect(commandReferencesShim("$HOME/.midbrain/bin/claude-hook user", "claude")).toBe(true);
+    expect(commandReferencesShim('"C:\\Users\\First Last\\.midbrain\\bin\\claude-hook.cmd" user', "claude")).toBe(true);
+    expect(commandReferencesShim("/usr/local/bin/claude-hook user", "claude")).toBe(false);
+    expect(commandReferencesShim("~/.midbrain/bin/claude-hook-wrapper user", "claude")).toBe(false);
   });
 });
 

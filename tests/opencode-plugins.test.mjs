@@ -61,6 +61,8 @@ describe("opencode — closed-list plugin cleanup (AC-13)", () => {
   it("removes exactly the closed list of confirmed legacy artifacts", async () => {
     const legacyLogger = await seedFile("logger.mjs", "// legacy midbrain artifact\n");
     const legacyApi = await seedFile("midbrain-api.mjs", "// legacy midbrain artifact\n");
+    // shipped by v0.1.0–v0.3.2 installers
+    const legacyCommon = await seedFile("midbrain-common.mjs", "// legacy midbrain artifact\n");
     for (const file of LEGACY_CLIENTS_FILES) {
       await seedFile(path.join("clients", file), "// legacy midbrain artifact\n");
     }
@@ -69,6 +71,7 @@ describe("opencode — closed-list plugin cleanup (AC-13)", () => {
 
     expect(await exists(legacyLogger)).toBe(false);
     expect(await exists(legacyApi)).toBe(false);
+    expect(await exists(legacyCommon)).toBe(false);
     expect(await exists(path.join(pd, "clients"))).toBe(false); // emptied -> removed
   });
 

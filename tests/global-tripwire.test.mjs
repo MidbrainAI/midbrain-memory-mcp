@@ -28,6 +28,7 @@ describe("tripwireSurfaces (AC-15)", () => {
     expect(surfaces).toContain(path.join(plugins, "clients"));
     expect(surfaces).toContain(path.join(plugins, "logger.mjs"));
     expect(surfaces).toContain(path.join(plugins, "midbrain-api.mjs"));
+    expect(surfaces).toContain(path.join(plugins, "midbrain-common.mjs"));
   });
 
   it("covers the NanoClaw installed-skill destinations for every candidate root", () => {

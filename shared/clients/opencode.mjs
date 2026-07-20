@@ -62,10 +62,11 @@ function isDevInstance() {
 }
 
 // Closed list of legacy artifacts (AC-13): exactly what prior releases copied
-// into ~/.config/opencode/plugins/ (pre-bundle era: shared modules + a
-// clients/ tree) and nothing else. The plugins dir is user territory — never
-// delete by prefix or dirname guesses.
-const LEGACY_PLUGIN_FILES = ['logger.mjs', 'midbrain-api.mjs'];
+// into ~/.config/opencode/plugins/ (pre-bundle era: shared modules — incl.
+// midbrain-common.mjs shipped v0.1.0–v0.3.2 — plus a clients/ tree) and
+// nothing else. The plugins dir is user territory — never delete by prefix
+// or dirname guesses.
+const LEGACY_PLUGIN_FILES = ['logger.mjs', 'midbrain-api.mjs', 'midbrain-common.mjs'];
 const LEGACY_CLIENTS_DIR = 'clients';
 const LEGACY_CLIENTS_FILES = [
   'base.mjs', 'utils.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'codex.mjs', 'registry.mjs',

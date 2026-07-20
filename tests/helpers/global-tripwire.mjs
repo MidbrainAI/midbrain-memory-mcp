@@ -47,6 +47,7 @@ export function tripwireSurfaces(home = os.homedir()) {
     path.join(opencodeDir, 'plugins', 'clients'),
     path.join(opencodeDir, 'plugins', 'logger.mjs'),
     path.join(opencodeDir, 'plugins', 'midbrain-api.mjs'),
+    path.join(opencodeDir, 'plugins', 'midbrain-common.mjs'),
     path.join(home, '.midbrain', 'bin', 'claude-hook'),
     path.join(home, '.midbrain', 'bin', 'claude-hook.cmd'),
     path.join(home, '.midbrain', 'bin', 'codex-hook'),
