@@ -129,10 +129,14 @@ export function isDevShimContent(content) {
  * Split a command string into shell words the way sh would (AC-12). Adjacent
  * quoted/unquoted fragments concatenate into ONE word — this is what makes
  * the POSIX `'\''` idiom (shellQuote's own output for paths containing
- * apostrophes) round-trip back to the original path. Backslash escapes the
- * next character outside quotes; inside double quotes it escapes only
- * `"` `\` `$` and backtick (so win32 `C:\Users\...` survives); inside single
- * quotes nothing escapes. Unterminated quotes are taken to end-of-string.
+ * apostrophes) round-trip back to the original path. Backslash handling is
+ * deliberately conservative: outside quotes it escapes only quotes,
+ * backslash, and whitespace — before any other character it is a literal,
+ * because these commands include UNQUOTED win32 paths (`C:\Users\...`) that
+ * legacy installers ≤0.4.6 wrote and that must keep tokenizing to matchable
+ * path words. Inside double quotes backslash escapes only `"` `\` `$` and
+ * backtick; inside single quotes nothing escapes. Unterminated quotes are
+ * taken to end-of-string.
  */
 export function tokenizeShellWords(command) {
   const words = [];
@@ -154,7 +158,10 @@ export function tokenizeShellWords(command) {
     }
     if (ch === "'") { state = 'single'; hasFragment = true; continue; }
     if (ch === '"') { state = 'double'; hasFragment = true; continue; }
-    if (ch === '\\' && i + 1 < command.length) { current += command[++i]; continue; }
+    if (ch === '\\' && ('\'"\\'.includes(command[i + 1]) || /\s/.test(command[i + 1] ?? ''))) {
+      current += command[++i];
+      continue;
+    }
     if (/\s/.test(ch)) {
       if (current.length || hasFragment) words.push(current);
       current = '';

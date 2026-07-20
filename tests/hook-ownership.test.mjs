@@ -153,10 +153,13 @@ describe.each(JSON_CLIENTS)("$id — exact hook ownership (AC-12)", ({ id, make,
   });
 
   it("real legacy forms (checkout + npx cache) are still claimed and migrated", async () => {
+    const winLegacyDir = legacyDir.replace(/\//g, "\\");
     const data = await readData();
     data.hooks[userEvent] = [
       { hooks: [{ type: "command", command: `node /old-checkout/${legacyDir}/capture-user.mjs`, timeout: 10 }] },
       { hooks: [{ type: "command", command: `node /Users/u/.npm/_npx/0fd4a1b2/node_modules/midbrain-memory-mcp/${legacyDir}/capture-user.mjs`, timeout: 10 }] },
+      // the exact unquoted-backslash shape ≤0.4.6 wrote on win32
+      { hooks: [{ type: "command", command: `C:\\Program Files\\nodejs\\node.exe C:\\Users\\u\\dev\\midbrain-memory-mcp\\${winLegacyDir}\\capture-user.mjs`, timeout: 10 }] },
     ];
     await writeData(data);
 
@@ -277,7 +280,11 @@ describe("hermes — exact hook ownership (AC-12)", () => {
 
   it("real legacy forms are still claimed and migrated", async () => {
     const cfg = await readConfig();
-    cfg.hooks.pre_llm_call = [{ command: "node /old/plugins/hermes/capture-user.mjs" }];
+    cfg.hooks.pre_llm_call = [
+      { command: "node /old/plugins/hermes/capture-user.mjs" },
+      // the exact unquoted-backslash shape ≤0.4.6 wrote on win32
+      { command: "C:\\Program Files\\nodejs\\node.exe C:\\old\\plugins\\hermes\\capture-user.mjs" },
+    ];
     await writeConfig(cfg);
 
     expect(await hermes.isFresh()).toBe(false);

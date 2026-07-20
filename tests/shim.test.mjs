@@ -342,6 +342,7 @@ describe("commandReferencesShim — quote-aware tokens (AC-12, spaced homes)", (
     expect(commandReferencesShim("~/.midbrain/bin/claude-hook user", "claude")).toBe(true);
     expect(commandReferencesShim("$HOME/.midbrain/bin/claude-hook user", "claude")).toBe(true);
     expect(commandReferencesShim('"C:\\Users\\First Last\\.midbrain\\bin\\claude-hook.cmd" user', "claude")).toBe(true);
+    expect(commandReferencesShim("C:\\Users\\me\\.midbrain\\bin\\claude-hook.cmd user", "claude")).toBe(true);
     expect(commandReferencesShim("/usr/local/bin/claude-hook user", "claude")).toBe(false);
     expect(commandReferencesShim("~/.midbrain/bin/claude-hook-wrapper user", "claude")).toBe(false);
   });
@@ -365,6 +366,15 @@ describe("tokenizeShellWords — real shell-word splitting (AC-12, hostile homes
   it("preserves win32 backslash paths inside double quotes", () => {
     expect(tokenizeShellWords('"C:\\Users\\First Last\\.midbrain\\bin\\claude-hook.cmd" user'))
       .toEqual(["C:\\Users\\First Last\\.midbrain\\bin\\claude-hook.cmd", "user"]);
+  });
+
+  it("preserves UNQUOTED win32 backslash paths (legacy ≤0.4.6 hook commands)", () => {
+    // Backslash before an ordinary character is a path separator, not an
+    // escape — only quotes, backslash, and whitespace are escapable.
+    expect(tokenizeShellWords("C:\\Users\\me\\dev\\x\\plugins\\claude-code\\capture-user.mjs"))
+      .toEqual(["C:\\Users\\me\\dev\\x\\plugins\\claude-code\\capture-user.mjs"]);
+    expect(tokenizeShellWords("C:\\Program Files\\nodejs\\node.exe run"))
+      .toEqual(["C:\\Program", "Files\\nodejs\\node.exe", "run"]);
   });
 
   it("is graceful on unterminated quotes and empty input", () => {
