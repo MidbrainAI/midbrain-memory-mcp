@@ -79,6 +79,14 @@ function runShim(role, input) {
   });
 }
 
+function unexpectedStderrLines(result) {
+  return (result.stderr || "").split("\n").filter((l) =>
+    /WARN|falling through|Error|EACCES/i.test(l) &&
+    // The one whitelisted line (PRD-034 AC-9): the documented project->global
+    // key-fallthrough warning from BaseClient.resolveKey.
+    !/no project key found .* falling through to global key/.test(l));
+}
+
 describe.skipIf(IS_WIN)("AC-9 — claude-hook shim end-to-end (sandboxed)", () => {
   it("user role: captures the prompt via episodic POST; stdout empty; exit 0", async () => {
     const shimBody = await fs.readFile(stableShimPath("claude"), "utf8");
@@ -88,9 +96,7 @@ describe.skipIf(IS_WIN)("AC-9 — claude-hook shim end-to-end (sandboxed)", () =
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
-    const badLines = (result.stderr || "").split("\n").filter((l) =>
-      /WARN|falling through|Error|EACCES/i.test(l));
-    expect(badLines).toEqual([]);
+    expect(unexpectedStderrLines(result)).toEqual([]);
 
     const episodic = (await readFetchLog()).filter((r) => r.url.includes("/memories/episodic"));
     expect(episodic).toHaveLength(1);
@@ -107,6 +113,7 @@ describe.skipIf(IS_WIN)("AC-9 — claude-hook shim end-to-end (sandboxed)", () =
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
+    expect(unexpectedStderrLines(result)).toEqual([]);
 
     const episodic = (await readFetchLog()).filter((r) => r.url.includes("/memories/episodic"));
     expect(episodic).toHaveLength(1);
@@ -120,6 +127,8 @@ describe.skipIf(IS_WIN)("AC-9 — claude-hook shim end-to-end (sandboxed)", () =
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
+    // "NO KEY" goes to the log file, not stderr; stderr must stay clean here too
+    expect(unexpectedStderrLines(result)).toEqual([]);
     expect(await readFetchLog()).toEqual([]); // no capture without a key
   });
 });

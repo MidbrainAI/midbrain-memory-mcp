@@ -143,6 +143,35 @@ describe("B1 / AC-1 — volatile launch contexts skip all repair", () => {
     );
   });
 
+  it.each([
+    ["worktree", { ".git": "gitdir: /elsewhere/.git/worktrees/x\n" }, true],
+    ["tmp", {}, true],
+    ["npx-cache", { "_npx/beef99/node_modules/midbrain-memory-mcp/package.json": "{}" }, false],
+  ])(
+    "default seam: real classification of a real %s fixture drives the gate",
+    async (kind, structure, expectSkipped) => {
+      // No context injected: runSelfRepair classifies repoRoot itself.
+      // Fixtures live under the sandbox TMPDIR (the classifier's ambient
+      // os.tmpdir()), so order rules are exercised for real: a .git FILE
+      // wins over tmp; an _npx segment wins over tmp; a plain dir is tmp.
+      let fixtureRoot = path.join(env.tmp, "fixture-root");
+      for (const [rel, content] of Object.entries(structure)) {
+        const full = path.join(fixtureRoot, rel);
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, content, "utf8");
+      }
+      await fs.mkdir(fixtureRoot, { recursive: true });
+      if (kind === "npx-cache") {
+        fixtureRoot = path.join(fixtureRoot, "_npx", "beef99", "node_modules", "midbrain-memory-mcp");
+      }
+
+      const result = await runSelfRepair({ repoRoot: fixtureRoot });
+
+      expect(result.skipped).toBe(expectSkipped);
+      expect(result.kind).toBe(kind);
+    }
+  );
+
   it("checkForUpdate wiring: volatile context skips repair and never fetches", async () => {
     await seedStaleEverything(env);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: false });

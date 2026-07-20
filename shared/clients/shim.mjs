@@ -162,6 +162,11 @@ export async function installShim(client, { isDev = false, mode = 'install' } = 
 
   const body = buildShimBody(client, { isDev });
   const written = await writeFileIfChanged(shimPath, body);
-  if (written && process.platform !== 'win32') await fs.chmod(shimPath, 0o755);
+  // chmod even when content was unchanged: restores a stripped exec bit
+  // without touching mtime (chmod updates ctime only), so the no-churn
+  // guarantee holds while the shim stays executable.
+  if (process.platform !== 'win32') {
+    await fs.chmod(shimPath, 0o755).catch(() => {});
+  }
   return { written, path: shimPath };
 }

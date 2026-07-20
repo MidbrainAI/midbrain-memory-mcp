@@ -211,11 +211,14 @@ async function ensureHooksFresh() {
  * @param {object} [opts]
  * @param {{kind: string, path: string}} [opts.context] - Injectable
  *   classification for tests; defaults to classifying this instance.
+ * @param {string} [opts.repoRoot] - Root to classify when no context is
+ *   given (default: this package's own root). Lets tests drive the real
+ *   classification seam with real fixture directories.
  * @returns {Promise<{skipped: boolean, kind: string}>}
  */
-export async function runSelfRepair({ context } = {}) {
+export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
   try {
-    const ctx = context ?? classifyInstallContext(REPO_ROOT);
+    const ctx = context ?? classifyInstallContext(repoRoot);
     if (shouldSkipSelfRepair(ctx)) {
       console.error(
         `[midbrain] self-repair skipped: running from ${ctx.kind} (${ctx.path}); ` +

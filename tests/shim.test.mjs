@@ -154,6 +154,26 @@ describe("installShim (sandboxed)", () => {
     }
   });
 
+  it("restores a stripped exec bit even when content is unchanged (no mtime churn)", async () => {
+    const env = await makeTestEnv();
+    try {
+      await installShim("claude", { mode: "install" });
+      const shimFile = stableShimPath("claude");
+      await fs.chmod(shimFile, 0o644); // exec bit stripped out-of-band
+      await new Promise((r) => setTimeout(r, 10));
+      const statBefore = await fs.stat(shimFile);
+
+      const result = await installShim("claude", { mode: "repair" });
+
+      expect(result.written).toBe(false); // content identical
+      const statAfter = await fs.stat(shimFile);
+      expect(statAfter.mode & 0o777).toBe(0o755); // exec restored
+      expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs); // chmod is mtime-safe
+    } finally {
+      await env.restore();
+    }
+  });
+
   it("repair mode preserves a dev-marked shim byte-for-byte (B4)", async () => {
     const env = await makeTestEnv();
     try {
