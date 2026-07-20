@@ -62,6 +62,23 @@ export async function backup(filePath) {
   }
 }
 
+/**
+ * Write content only when it differs from what is on disk (PRD-034 S2, D4).
+ * Skipped writes leave mtime untouched, which keeps Hermes' hook-approval
+ * layer (and any other mtime-sensitive consumer) undisturbed.
+ *
+ * @returns {Promise<boolean>} true when the file was written.
+ */
+export async function writeFileIfChanged(filePath, content) {
+  try {
+    const current = await fs.readFile(filePath, 'utf8');
+    if (current === content) return false;
+  } catch { /* missing/unreadable -> write */ }
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content, 'utf8');
+  return true;
+}
+
 /** Write a key file with chmod 600 (creates parent dirs). */
 export async function writeSecure(filePath, key) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
