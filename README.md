@@ -287,14 +287,26 @@ instance's own path. Writes are content-compared: an already-canonical
 config is left completely untouched (no mtime churn, so Hermes hook
 approvals survive).
 
+Repair is **cross-client by design**: starting MidBrain from any one client
+converges every detected client's midbrain-owned state to the same canonical
+values. It changes only positively owned MidBrain state — hook commands are
+matched by the exact stable-shim path or positively identified legacy forms,
+so your own hooks (even near-names like `claude-hook-wrapper` or your own
+`capture-user.mjs`) and every other user-owned file are never touched.
+Shim freshness checks the actual file, not mere existence: the body must be
+canonical (or dev-marked) and executable, and repair restores both without
+mtime churn.
+
 Repair is also **context-gated**: a server launched from a temp directory,
 a git worktree, or CI skips repair entirely and prints one stderr line
 (`[midbrain] self-repair skipped: running from <kind> (<path>); ...`). This
 prevents throwaway checkouts from ever writing themselves into your
 permanent client configs. npx-cache launches are the canonical install mode
-and still self-repair. Entries and shims written by `install --dev` carry a
-`MIDBRAIN_DEV` marker and are never reverted by automatic repair; run a
-plain `install` to restore canonical.
+and still self-repair — deliberately, the `_npx` classification outranks the
+tmp and CI rules, because a relocated npm cache or a CI job running the
+published package is still a canonical launch. Entries, shims, and OpenCode
+plugin copies written by `install --dev` carry dev markers and are never
+reverted by automatic repair; run a plain `install` to restore canonical.
 
 Repair happens silently on startup (fire-and-forget, never blocks). If
 something goes wrong, the server continues normally. Repair failures are
@@ -722,8 +734,10 @@ node install.mjs --project /abs/path/to/project --dev  # per-project
 ```
 
 This writes absolute paths into configs instead of `npx @latest`, marks each
-MCP entry with `MIDBRAIN_DEV: "1"`, and writes dev-marked hook shim bodies.
-Automatic self-repair recognizes the markers and never reverts a dev install;
+MCP entry with `MIDBRAIN_DEV: "1"`, writes dev-marked hook shim bodies, and
+dev-flags the OpenCode plugin marker (your checkout's plugin bytes stay
+pinned). Automatic self-repair recognizes the markers and never reverts a
+dev install;
 starting a server from a temp clone, worktree, or CI never overwrites them
 either (self-repair is skipped there entirely). To return to the canonical
 auto-updating setup, run a plain install:

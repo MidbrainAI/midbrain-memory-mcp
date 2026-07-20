@@ -245,10 +245,22 @@ for rule injection unless a future PR explicitly changes that contract.
 - Automatic self-repair is context-gated (`shared/install-context.mjs`):
   servers launched from temp dirs, git worktrees, or CI skip repair with one
   stderr line. Repair writes canonical targets only (stable shims,
-  `npx @latest`) and content-compares every write (no mtime churn).
-- `--dev` marks MCP entries with `MIDBRAIN_DEV: "1"` and writes dev-marked
-  shim bodies; automatic repair never reverts them. Explicit `install`
-  (no flag) restores canonical and drops the marker.
+  `npx @latest`) and content-compares every write (no mtime churn). The
+  `_npx` classification deliberately outranks tmp/CI: an npx-cache launch is
+  the canonical install mode and still repairs.
+- Self-repair is cross-client by design: one startup may converge every
+  detected client, but changes only positively owned MidBrain state. Hook
+  ownership is exact (token-matched shim path or positively identified
+  legacy forms via `plugins/<dir>/capture-*.mjs` / the package name) — never
+  substring or near-name matches. Shim freshness requires the exact
+  canonical body (or dev marker) plus executable mode, not mere existence.
+- OpenCode plugin cleanup deletes only the closed legacy-artifact list
+  (`logger.mjs`, `midbrain-api.mjs`, the seven known `clients/` files);
+  everything else under `~/.config/opencode/plugins/` is user-owned.
+- `--dev` marks MCP entries with `MIDBRAIN_DEV: "1"`, writes dev-marked
+  shim bodies, and dev-flags the OpenCode plugin marker; automatic repair
+  never reverts any of them (dev instances also never auto-propagate).
+  Explicit `install` (no flag) restores canonical and drops the markers.
 - `setupProject()` writes project key/config files and returns structured
   summary lines.
 - Project setup must preserve existing config files and merge idempotently.
@@ -302,6 +314,15 @@ Vitest tests live in `tests/`.
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.
+
+Installer/repair/adapter integration tests run against a throwaway home via
+`tests/helpers/test-env.mjs` (`makeTestEnv()`); the vitest globalSetup
+tripwire hashes the enumerated real-home surfaces before the suite and fails
+the run on any drift afterward — it detects escapes, it does not prevent
+them. Workers are ambient-env independent: the config injects poison
+`HERMES_HOME`/`NANOCLAW_HOME` and `tests/helpers/scrub-env.mjs` deletes the
+whole client-path env set before each test file (`tests/env-isolation.test.mjs`
+guards the mechanism).
 
 ## Git And Release Safety
 
