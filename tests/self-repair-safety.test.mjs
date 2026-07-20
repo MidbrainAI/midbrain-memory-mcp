@@ -11,7 +11,7 @@ import path from "path";
 import { makeTestEnv, diffSnapshots } from "./helpers/test-env.mjs";
 import { runSelfRepair, checkForUpdate } from "../install.mjs";
 import { REPO_ROOT } from "../shared/clients/utils.mjs";
-import { buildShimBody } from "../shared/clients/shim.mjs";
+import { buildShimBody, installShim } from "../shared/clients/shim.mjs";
 
 const DURABLE = { context: { kind: "durable", path: "/durable/install" } };
 const NPX_CTX = {
@@ -570,5 +570,94 @@ describe("B9/B12 — per-client fail-open", () => {
     } finally {
       await fs.chmod(env.paths.claudeSettings, 0o644);
     }
+  });
+});
+
+// ===================================================================
+// B20 / AC-15 — one startup converges every client; user-owned and
+// dev-marked state pinned; second pass is zero-write
+// ===================================================================
+
+describe("B20 / AC-15 — cross-client convergence in one startup", () => {
+  async function walkFiles(dir, out = []) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return out;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walkFiles(full, out);
+      else if (entry.isFile()) out.push(full);
+    }
+    return out;
+  }
+
+  it("repairs stale midbrain state across all detected clients, preserving user and dev state", async () => {
+    await seedStaleEverything(env);
+
+    // user-owned state in every client surface (claude custom hooks +
+    // permissions come from staleClaudeSettings itself)
+    const codexHooks = JSON.parse(await fs.readFile(env.paths.codexHooks, "utf8"));
+    codexHooks.hooks.UserPromptSubmit.unshift({ hooks: [{ type: "command", command: "/bin/echo codex-user-hook" }] });
+    await fs.writeFile(env.paths.codexHooks, JSON.stringify(codexHooks, null, 2) + "\n");
+    await fs.writeFile(env.paths.hermesConfig,
+      "model: user-picked\n" + (await fs.readFile(env.paths.hermesConfig, "utf8")) +
+      "  session_start:\n    - command: my-hermes-user-hook\n");
+    const opencodeUserFile = path.join(env.paths.opencodePlugins, "clients", "user-owned.txt");
+    await fs.mkdir(path.dirname(opencodeUserFile), { recursive: true });
+    await fs.writeFile(opencodeUserFile, "user content\n");
+
+    // dev-marked state: a developer's claude shim from an earlier `install --dev`
+    await installShim("claude", { mode: "install", isDev: true });
+    const devShimBody = await fs.readFile(env.paths.claudeShim, "utf8");
+
+    await runSelfRepair(DURABLE);
+
+    // 1. canonical convergence: no volatile path survives anywhere in the home
+    for (const file of await walkFiles(env.home)) {
+      const content = await fs.readFile(file, "utf8");
+      expect(content, `volatile path leaked into ${file}`).not.toMatch(/_npx|\/private\/tmp\/|\/old\/plugins\//);
+    }
+
+    // 2. per-client canonical state
+    const claude = JSON.parse(await fs.readFile(env.paths.claudeSettings, "utf8"));
+    const claudeCanonical = canonicalClaudeSettings(env.home);
+    expect(claude.hooks.UserPromptSubmit).toContainEqual(claudeCanonical.hooks.UserPromptSubmit[0]);
+    expect(claude.hooks.Stop).toContainEqual(claudeCanonical.hooks.Stop[0]);
+    const codexAfter = JSON.parse(await fs.readFile(env.paths.codexHooks, "utf8"));
+    for (const [event, role] of [["UserPromptSubmit", "user"], ["PostToolUse", "tool"], ["Stop", "assistant"]]) {
+      const commands = codexAfter.hooks[event].flatMap((g) => g.hooks.map((h) => h.command));
+      expect(commands.filter((c) => c === `'${env.paths.codexShim}' ${role}`)).toHaveLength(1);
+    }
+    const hermesAfter = await fs.readFile(env.paths.hermesConfig, "utf8");
+    expect(hermesAfter).toContain(`'${env.paths.hermesShim}' user`);
+    expect(hermesAfter).toContain(`'${env.paths.hermesShim}' assistant`);
+    expect(await fs.readFile(path.join(env.paths.opencodePlugins, ".midbrain-repo-root"), "utf8"))
+      .not.toContain(":/");
+    expect(await fs.readFile(path.join(env.paths.opencodePlugins, "midbrain-shared.mjs"), "utf8"))
+      .toBe(await fs.readFile(path.join(REPO_ROOT, "dist", "midbrain-shared.mjs"), "utf8"));
+    expect(await fs.readFile(env.paths.nanoclawSkill, "utf8"))
+      .toBe(await fs.readFile(path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md"), "utf8"));
+
+    // 3. user-owned state preserved everywhere
+    const claudeCommands = Object.values(claude.hooks).flat().flatMap((g) => g.hooks.map((h) => h.command));
+    expect(claudeCommands).toContain("custom-user-hook --keep");
+    expect(claudeCommands).toContain("my-custom-notifier");
+    expect(claude.permissions.allow).toContain("custom.perm");
+    const codexCommands = codexAfter.hooks.UserPromptSubmit.flatMap((g) => g.hooks.map((h) => h.command));
+    expect(codexCommands).toContain("/bin/echo codex-user-hook");
+    expect(hermesAfter).toContain("model: user-picked");
+    expect(hermesAfter).toContain("my-hermes-user-hook");
+    expect(await fs.readFile(opencodeUserFile, "utf8")).toBe("user content\n");
+
+    // 4. dev-marked state preserved byte-identical
+    expect(await fs.readFile(env.paths.claudeShim, "utf8")).toBe(devShimBody);
+
+    // 5. steady state: a second startup performs zero writes, zero mtime churn
+    const before = await env.snapshot();
+    await runSelfRepair(DURABLE);
+    expect(diffSnapshots(before, await env.snapshot())).toEqual([]);
   });
 });
