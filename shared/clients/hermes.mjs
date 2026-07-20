@@ -23,7 +23,7 @@ import {
   home, backup, writeSecure, extractCustomEnv, PINNED_RE, writeFileIfChanged,
 } from './utils.mjs';
 import {
-  shellQuote, stableShimPath, installShim,
+  shellQuote, stableShimPath, installShim, shimStatus,
   validateShimPaths as validateClientShimPaths,
 } from './shim.mjs';
 
@@ -285,7 +285,7 @@ export class Hermes extends BaseClient {
         if (midbrain[0].command !== buildHookCommand(role)) return false;
         if (midbrain[0].timeout !== HOOK_TIMEOUT_SEC) return false;
       }
-      return existsSync(stableHookPath());
+      return (await shimStatus('hermes')).fresh;
     } catch { return true; }
   }
 

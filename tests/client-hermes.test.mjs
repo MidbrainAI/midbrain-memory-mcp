@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "path";
 import os from "os";
 
-import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -35,9 +35,11 @@ vi.mock("fs", async (importOriginal) => {
 const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
+const statFor = makeStatFor(mocks);
 
 const { BaseClient } = await import("../shared/clients/base.mjs");
 const { Hermes } = await import("../shared/clients/hermes.mjs");
+const { buildShimBody } = await import("../shared/clients/shim.mjs");
 const YAML = await import("yaml");
 
 const HOME = os.homedir();
@@ -413,12 +415,27 @@ describe("Hermes.isFresh / repairHooks", () => {
     expect(await hermes.isFresh()).toBe(true);
   });
 
-  it("fresh when hooks reference the current shim and the shim exists", async () => {
+  it("fresh when hooks reference the current shim and the shim is canonical + executable", async () => {
     await hermes.installGlobal();
     const raw = lastConfigRaw();
-    readFileReturns({ [PATHS.hermesConfig]: raw });
-    existsFor(PATHS.hermesShim);
+    readFileReturns({
+      [PATHS.hermesConfig]: raw,
+      // AC-11: freshness reads the shim body + mode, not mere existence
+      [PATHS.hermesShim]: buildShimBody("hermes"),
+    });
+    statFor(PATHS.hermesShim);
     expect(await hermes.isFresh()).toBe(true);
+  });
+
+  it("stale when the shim body is foreign even though the file exists (B14)", async () => {
+    await hermes.installGlobal();
+    const raw = lastConfigRaw();
+    readFileReturns({
+      [PATHS.hermesConfig]: raw,
+      [PATHS.hermesShim]: `#!/bin/sh\n'/private/tmp/gone/index.js' hook hermes "$@"\n`,
+    });
+    statFor(PATHS.hermesShim);
+    expect(await hermes.isFresh()).toBe(false);
   });
 
   it("stale when a legacy capture-user.mjs command is present", async () => {

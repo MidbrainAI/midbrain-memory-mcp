@@ -14,7 +14,7 @@ import {
   KEY_FILENAME, MCP_KEY, PKG_NAME, REPO_ROOT,
   home, readJson, writeJson, writeJsonIfChanged, backup, classifyEntry, formatMigrationLine,
 } from './utils.mjs';
-import { shellQuote, stableShimPath, installShim } from './shim.mjs';
+import { shellQuote, stableShimPath, installShim, shimStatus } from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -204,7 +204,8 @@ export class Claude extends BaseClient {
 
   /**
    * Fresh when midbrain hooks reference the current stable claude-hook shim
-   * (and the shim exists). Never compares against REPO_ROOT: the running
+   * and the shim itself is canonical (exact body or dev-marked) and
+   * executable (AC-11). Never compares against REPO_ROOT: the running
    * instance's location must not define what user config should contain.
    * Legacy direct-script commands trigger a migration repair.
    */
@@ -224,7 +225,7 @@ export class Claude extends BaseClient {
         if (midbrain[0].timeout !== HOOK_TIMEOUT_SEC) return false;
         if (role === 'assistant' && midbrain[0].async !== true) return false;
       }
-      return existsSync(stableShimPath('claude'));
+      return (await shimStatus('claude')).fresh;
     } catch { return true; } // if we can't read, don't repair
   }
 

@@ -19,8 +19,11 @@ import {
   buildShimBody,
   isDevShimContent,
   installShim,
+  shimStatus,
 } from "../shared/clients/shim.mjs";
 import { writeFileIfChanged } from "../shared/clients/utils.mjs";
+
+const IS_WIN = process.platform === "win32";
 
 // --- Exact bodies shipped at e0abf99 (do not reformat) ---
 
@@ -213,6 +216,98 @@ describe("installShim (sandboxed)", () => {
       const result = await installShim("claude", { mode: "install" });
       expect(result.written).toBe(true);
       expect(await fs.readFile(stableShimPath("claude"), "utf8")).toBe(buildShimBody("claude"));
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it.skipIf(IS_WIN)("repair mode restores exec on a preserved dev shim (B15, mtime-safe)", async () => {
+    const env = await makeTestEnv();
+    try {
+      await installShim("claude", { mode: "install", isDev: true });
+      const shimFile = stableShimPath("claude");
+      const devBody = await fs.readFile(shimFile, "utf8");
+      await fs.chmod(shimFile, 0o644); // exec stripped out-of-band
+      await new Promise((r) => setTimeout(r, 10));
+      const statBefore = await fs.stat(shimFile);
+
+      const result = await installShim("claude", { mode: "repair" });
+
+      expect(result.preservedDev).toBe(true);
+      expect(await fs.readFile(shimFile, "utf8")).toBe(devBody); // bytes untouched
+      const statAfter = await fs.stat(shimFile);
+      expect(statAfter.mode & 0o777).toBe(0o755); // exec restored
+      expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs);
+    } finally {
+      await env.restore();
+    }
+  });
+});
+
+describe("shimStatus (AC-11)", () => {
+  it("missing shim is stale", async () => {
+    const env = await makeTestEnv();
+    try {
+      expect(await shimStatus("claude")).toEqual({ fresh: false, isDev: false });
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it("canonical executable shim is fresh", async () => {
+    const env = await makeTestEnv();
+    try {
+      await installShim("claude", { mode: "install" });
+      expect(await shimStatus("claude")).toEqual({ fresh: true, isDev: false });
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it.skipIf(IS_WIN)("canonical body without exec mode is stale (B15)", async () => {
+    const env = await makeTestEnv();
+    try {
+      await installShim("claude", { mode: "install" });
+      await fs.chmod(stableShimPath("claude"), 0o644);
+      expect(await shimStatus("claude")).toEqual({ fresh: false, isDev: false });
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it("unmarked foreign body is stale even when executable (B14)", async () => {
+    const env = await makeTestEnv();
+    try {
+      const shimFile = stableShimPath("claude");
+      await fs.mkdir(path.dirname(shimFile), { recursive: true });
+      await fs.writeFile(
+        shimFile,
+        `#!/bin/sh\nset +e\n'/private/tmp/gone/node' '/private/tmp/gone/index.js' hook claude "$@"\nexit 0\n`,
+        "utf8",
+      );
+      await fs.chmod(shimFile, 0o755);
+      expect(await shimStatus("claude")).toEqual({ fresh: false, isDev: false });
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it("dev-marked executable shim is fresh and dev", async () => {
+    const env = await makeTestEnv();
+    try {
+      await installShim("claude", { mode: "install", isDev: true });
+      expect(await shimStatus("claude")).toEqual({ fresh: true, isDev: true });
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it.skipIf(IS_WIN)("dev-marked shim without exec mode is stale but still dev (B15)", async () => {
+    const env = await makeTestEnv();
+    try {
+      await installShim("claude", { mode: "install", isDev: true });
+      await fs.chmod(stableShimPath("claude"), 0o644);
+      expect(await shimStatus("claude")).toEqual({ fresh: false, isDev: true });
     } finally {
       await env.restore();
     }

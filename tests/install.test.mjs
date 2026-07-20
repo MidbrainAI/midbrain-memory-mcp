@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "path";
 import os from "os";
 
-import { enoent, makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { enoent, makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -65,6 +65,7 @@ const existsSync = mocks.existsSync;
 const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
+const statFor = makeStatFor(mocks);
 
 const {
   main, setupProject, projectSetup, runInstallerCli, printHelp, checkForUpdate,
@@ -81,6 +82,7 @@ function bumpVersion(v, delta) {
 const NEWER_VERSION = bumpVersion(PKG_VERSION, 1);
 const { buildRulesBlock } = await import("../shared/agent-rules.mjs");
 const { REPO_ROOT } = await import("../shared/clients/utils.mjs");
+const { buildShimBody } = await import("../shared/clients/shim.mjs");
 
 describe("isNewerVersion", () => {
   it.each([
@@ -660,7 +662,10 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
           Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
         },
       }),
+      // AC-11: freshness now validates the shim body + exec mode too
+      [PATHS.codexShim]: buildShimBody("codex"),
     });
+    statFor(PATHS.codexShim);
 
     await checkForUpdate({ context: { kind: "durable", path: "/durable/install" } });
 

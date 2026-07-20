@@ -14,7 +14,7 @@ import {
   home, readJson, writeJsonIfChanged, backup, writeSecure,
   classifyEntry, formatMigrationLine,
 } from './utils.mjs';
-import { shellQuote, stableShimPath, installShim } from './shim.mjs';
+import { shellQuote, stableShimPath, installShim, shimStatus } from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -217,7 +217,7 @@ export class Codex extends BaseClient {
         if (!commands.some((command) => command === buildHookCommand(hookName))) return false;
       }
       if (!hasMidbrainHook) return true;
-      return existsSync(stableHookPath());
+      return (await shimStatus('codex')).fresh;
     } catch { return true; }
   }
 

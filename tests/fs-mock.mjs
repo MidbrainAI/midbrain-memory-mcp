@@ -87,3 +87,15 @@ export function makeReadFileReturns(mocks) {
     });
   };
 }
+
+/** Returns a statFor() function: listed paths stat as executable (0755) files. */
+export function makeStatFor(mocks) {
+  return function statFor(...paths) {
+    mocks.stat.mockImplementation(async (filePath) => {
+      if (paths.includes(filePath)) {
+        return { mode: 0o100755, isFile: () => true, isDirectory: () => false };
+      }
+      throw enoent(filePath);
+    });
+  };
+}

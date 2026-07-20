@@ -125,6 +125,47 @@ export function isDevShimContent(content) {
     .some((line) => line === DEV_MARKER_POSIX || line === DEV_MARKER_WIN);
 }
 
+/** chmod 0755 (POSIX only, best-effort). mtime-safe: chmod touches ctime only. */
+async function restoreExecBit(shimPath) {
+  if (process.platform !== 'win32') {
+    await fs.chmod(shimPath, 0o755).catch(() => {});
+  }
+}
+
+/**
+ * Inspect an installed shim without writing (AC-11, B14/B15).
+ *
+ * Fresh requires BOTH: content is the exact canonical body (or any dev-marked
+ * body — dev bytes are the developer's, never judged stale) AND the file is
+ * executable (POSIX; mode is not meaningful on win32). Missing or unreadable
+ * shims are stale. Existence alone is never freshness.
+ *
+ * @param {string} client
+ * @returns {Promise<{fresh: boolean, isDev: boolean}>}
+ */
+export async function shimStatus(client) {
+  const shimPath = stableShimPath(client);
+  let content;
+  try {
+    content = await fs.readFile(shimPath, 'utf8');
+  } catch {
+    return { fresh: false, isDev: false };
+  }
+  const isDev = isDevShimContent(content);
+  if (!isDev && content !== buildShimBody(client, { isDev: false })) {
+    return { fresh: false, isDev };
+  }
+  if (process.platform !== 'win32') {
+    try {
+      const { mode } = await fs.stat(shimPath);
+      if ((mode & 0o111) === 0) return { fresh: false, isDev };
+    } catch {
+      return { fresh: false, isDev };
+    }
+  }
+  return { fresh: true, isDev };
+}
+
 /** Validate every path a shim body would embed (throws on win32 metachars). */
 export function validateShimPaths(client, { isDev = false, platform = process.platform } = {}) {
   windowsPathGuard(stableShimPath(client, platform), `${client} hook shim path`, platform);
@@ -155,6 +196,8 @@ export async function installShim(client, { isDev = false, mode = 'install' } = 
     try {
       const current = await fs.readFile(shimPath, 'utf8');
       if (isDevShimContent(current)) {
+        // Dev bytes are preserved, but the shim must still be runnable.
+        await restoreExecBit(shimPath);
         return { written: false, preservedDev: true, path: shimPath };
       }
     } catch { /* missing or unreadable -> write canonical below */ }
@@ -165,8 +208,6 @@ export async function installShim(client, { isDev = false, mode = 'install' } = 
   // chmod even when content was unchanged: restores a stripped exec bit
   // without touching mtime (chmod updates ctime only), so the no-churn
   // guarantee holds while the shim stays executable.
-  if (process.platform !== 'win32') {
-    await fs.chmod(shimPath, 0o755).catch(() => {});
-  }
+  await restoreExecBit(shimPath);
   return { written, path: shimPath };
 }

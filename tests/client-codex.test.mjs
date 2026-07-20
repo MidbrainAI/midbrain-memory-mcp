@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import path from "path";
 import os from "os";
 
-import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -36,9 +36,11 @@ const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.
 const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
+const statFor = makeStatFor(mocks);
 
 const { BaseClient } = await import("../shared/clients/base.mjs");
 const { Codex } = await import("../shared/clients/codex.mjs");
+const { buildShimBody } = await import("../shared/clients/shim.mjs");
 const TOML = await import("smol-toml");
 
 const HOME = os.homedir();
@@ -443,9 +445,29 @@ describe("Codex hook freshness and repair", () => {
           Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
         },
       }),
+      // AC-11: freshness reads the shim body + mode, not mere existence
+      [PATHS.codexShim]: buildShimBody("codex"),
     });
+    statFor(PATHS.codexShim);
 
     await expect(codex.isFresh()).resolves.toBe(true);
+  });
+
+  it("isFresh returns false when the shim body is stale even though the file exists (B14)", async () => {
+    existsFor(PATHS.codexHooks, PATHS.codexShim);
+    readFileReturns({
+      [PATHS.codexHooks]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
+          PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
+          Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
+        },
+      }),
+      [PATHS.codexShim]: `#!/bin/sh\n'/private/tmp/gone/index.js' hook codex "$@"\n`,
+    });
+    statFor(PATHS.codexShim);
+
+    await expect(codex.isFresh()).resolves.toBe(false);
   });
 
   it("repairHooks rewrites legacy commands to the stable shim and installs the shim", async () => {
