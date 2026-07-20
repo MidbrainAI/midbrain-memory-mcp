@@ -14,7 +14,7 @@ import {
   home, readJson, writeJsonIfChanged, backup, writeSecure,
   classifyEntry, formatMigrationLine,
 } from './utils.mjs';
-import { shellQuote, stableShimPath, installShim, shimStatus } from './shim.mjs';
+import { shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim } from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -111,14 +111,24 @@ function normalizedHookCommand(command) {
   return command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// Historic legacy commands always carried this package path segment (any
+// checkout or npx-cache location) or the package name — a user's own
+// `capture-*.mjs` elsewhere is never ours (AC-12).
+const LEGACY_HOOK_DIR = 'plugins/codex/';
+
+function isLegacyHookCommand(command) {
+  if (typeof command !== 'string') return false;
+  const normalized = command.replace(/\\/g, '/');
+  return LEGACY_HOOK_SCRIPTS.some((script) =>
+    normalized.includes(LEGACY_HOOK_DIR + script) ||
+    (normalized.includes(PKG_NAME) && normalized.includes(script)));
+}
+
 function isMidbrainHook(hook) {
   const command = typeof hook?.command === 'string' ? hook.command : '';
   const normalized = normalizedHookCommand(command);
-  return normalized.includes(stableHookPath()) ||
-    normalized.includes('/.midbrain/bin/codex-hook') ||
-    normalized.includes('~/.midbrain/bin/codex-hook') ||
-    normalized.includes('$HOME/.midbrain/bin/codex-hook') ||
-    LEGACY_HOOK_SCRIPTS.some((script) => command.includes(script)) ||
+  return commandReferencesShim(command, 'codex') ||
+    isLegacyHookCommand(command) ||
     (normalized.includes(PKG_NAME) && /\bhook\s+codex\b/.test(normalized));
 }
 
@@ -213,7 +223,7 @@ export class Codex extends BaseClient {
           .map((hook) => typeof hook?.command === 'string' ? hook.command : '');
         if (!commands.some((command) => isMidbrainHook({ command }))) continue;
         hasMidbrainHook = true;
-        if (commands.some((command) => LEGACY_HOOK_SCRIPTS.some((script) => command.includes(script)))) return false;
+        if (commands.some((command) => isLegacyHookCommand(command))) return false;
         if (!commands.some((command) => command === buildHookCommand(hookName))) return false;
       }
       if (!hasMidbrainHook) return true;

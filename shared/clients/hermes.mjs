@@ -23,7 +23,7 @@ import {
   home, backup, writeSecure, extractCustomEnv, PINNED_RE, writeFileIfChanged,
 } from './utils.mjs';
 import {
-  shellQuote, stableShimPath, installShim, shimStatus,
+  shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
   validateShimPaths as validateClientShimPaths,
 } from './shim.mjs';
 
@@ -141,12 +141,24 @@ function mcpEntryPinned(entry) {
 }
 
 /** Detect whether a hooks command string belongs to midbrain. */
+// Historic legacy commands always carried this package path segment (any
+// checkout or npx-cache location) or the package name — a user's own
+// `capture-*.mjs` elsewhere is never ours (AC-12).
+const LEGACY_HOOK_DIR = 'plugins/hermes/';
+
+function isLegacyHookCommand(command) {
+  if (typeof command !== 'string') return false;
+  const normalized = command.replace(/\\/g, '/');
+  return LEGACY_HOOK_SCRIPTS.some((script) =>
+    normalized.includes(LEGACY_HOOK_DIR + script) ||
+    (normalized.includes(PKG_NAME) && normalized.includes(script)));
+}
+
 function isMidbrainHookCommand(command) {
   if (typeof command !== 'string') return false;
   const normalized = command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
-  return normalized.includes(stableHookPath()) ||
-    normalized.includes('/.midbrain/bin/hermes-hook') ||
-    LEGACY_HOOK_SCRIPTS.some((script) => command.includes(script)) ||
+  return commandReferencesShim(command, 'hermes') ||
+    isLegacyHookCommand(command) ||
     (normalized.includes(PKG_NAME) && /\bhook\s+hermes\b/.test(normalized));
 }
 

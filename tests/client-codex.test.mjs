@@ -334,7 +334,7 @@ describe("Codex.installGlobal", () => {
         hooks: {
           UserPromptSubmit: [
             { hooks: [{ type: "command", command: "/bin/echo foreign" }] },
-            { hooks: [{ type: "command", command: "old capture-user.mjs" }] },
+            { hooks: [{ type: "command", command: "node /old/plugins/codex/capture-user.mjs" }] },
             { hooks: [{ type: "command", command: `'${PATHS.codexShim}' user` }] },
             { hooks: [{ type: "command", command: "~/.midbrain/bin/codex-hook user" }] },
             { hooks: [{ type: "command", command: "$HOME/.midbrain/bin/codex-hook user" }] },
@@ -475,9 +475,9 @@ describe("Codex hook freshness and repair", () => {
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
-          UserPromptSubmit: [{ hooks: [{ command: "old capture-user.mjs" }] }],
-          PostToolUse: [{ hooks: [{ command: "old capture-tool.mjs" }] }],
-          Stop: [{ hooks: [{ command: "old capture-assistant.mjs" }] }],
+          UserPromptSubmit: [{ hooks: [{ command: "node /old/plugins/codex/capture-user.mjs" }] }],
+          PostToolUse: [{ hooks: [{ command: "node /old/plugins/codex/capture-tool.mjs" }] }],
+          Stop: [{ hooks: [{ command: "node /old/plugins/codex/capture-assistant.mjs" }] }],
         },
       }),
     });
@@ -498,17 +498,17 @@ describe("Codex hook freshness and repair", () => {
       hooks: {
         UserPromptSubmit: [
           { hooks: [{ command: "/bin/echo foreign" }] },
-          { hooks: [{ command: "old capture-user.mjs" }] },
+          { hooks: [{ command: "node /old/plugins/codex/capture-user.mjs" }] },
           { hooks: [{ command: `'${PATHS.codexShim}' user` }] },
           { hooks: [{ command: "~/.midbrain/bin/codex-hook user" }] },
           { hooks: [{ command: "npx -y midbrain-memory-mcp@latest 'hook' 'codex' user" }] },
         ],
         PostToolUse: [
-          { hooks: [{ command: "old capture-tool.mjs" }] },
+          { hooks: [{ command: "node /old/plugins/codex/capture-tool.mjs" }] },
           { hooks: [{ command: "$HOME/.midbrain/bin/codex-hook tool" }] },
         ],
         Stop: [
-          { hooks: [{ command: "old capture-assistant.mjs" }] },
+          { hooks: [{ command: "node /old/plugins/codex/capture-assistant.mjs" }] },
           { hooks: [{ command: `${process.execPath} /repo/midbrain-memory-mcp/index.js hook codex assistant` }] },
         ],
       },

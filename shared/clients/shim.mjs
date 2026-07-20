@@ -125,6 +125,27 @@ export function isDevShimContent(content) {
     .some((line) => line === DEV_MARKER_POSIX || line === DEV_MARKER_WIN);
 }
 
+/**
+ * True when a hook command references the client's stable shim as a complete
+ * path token (exact ownership, AC-12). Quotes are stripped, the command is
+ * tokenized on whitespace, and a token owns the shim only when it equals the
+ * resolved stableShimPath or its basename is exactly `<client>-hook` /
+ * `<client>-hook.cmd` under a `.midbrain/bin` directory (`~`, `$HOME`, and
+ * drive-letter forms included). Near-names like `claude-hook-wrapper` never
+ * match — those are user hooks.
+ */
+export function commandReferencesShim(command, client) {
+  if (typeof command !== 'string') return false;
+  const resolved = stableShimPath(client);
+  const tokens = command.replace(/['"]/g, ' ').split(/\s+/).filter(Boolean);
+  return tokens.some((token) => {
+    if (token === resolved) return true;
+    const normalized = token.replace(/\\/g, '/');
+    const match = normalized.match(/^(?:~|\$HOME)?(?:[A-Za-z]:)?(?:\/[^/]*)*\/\.midbrain\/bin\/([^/]+)$/);
+    return !!match && (match[1] === `${client}-hook` || match[1] === `${client}-hook.cmd`);
+  });
+}
+
 /** chmod 0755 (POSIX only, best-effort). mtime-safe: chmod touches ctime only. */
 async function restoreExecBit(shimPath) {
   if (process.platform !== 'win32') {

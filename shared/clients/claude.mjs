@@ -14,7 +14,7 @@ import {
   KEY_FILENAME, MCP_KEY, PKG_NAME, REPO_ROOT,
   home, readJson, writeJson, writeJsonIfChanged, backup, classifyEntry, formatMigrationLine,
 } from './utils.mjs';
-import { shellQuote, stableShimPath, installShim, shimStatus } from './shim.mjs';
+import { shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim } from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -83,15 +83,26 @@ function midbrainHookEntry(role) {
   return entry;
 }
 
+// Historic buildHooks() always wrote scripts under this package dir, so a
+// positively identified legacy command carries the full path segment (any
+// checkout or npx-cache location) or the package name — a user's own
+// `capture-user.mjs` elsewhere is never ours (AC-12).
+const LEGACY_HOOK_DIR = 'plugins/claude-code/';
+
+function isLegacyHookCommand(command) {
+  if (typeof command !== 'string') return false;
+  const normalized = command.replace(/\\/g, '/');
+  return LEGACY_HOOK_SCRIPTS.some((script) =>
+    normalized.includes(LEGACY_HOOK_DIR + script) ||
+    (normalized.includes(PKG_NAME) && normalized.includes(script)));
+}
+
 /** Detect whether a hook object belongs to midbrain (shim, legacy, or npx form). */
 function isMidbrainHook(hook) {
   const command = typeof hook?.command === 'string' ? hook.command : '';
   const normalized = command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
-  return normalized.includes(stableShimPath('claude')) ||
-    normalized.includes('/.midbrain/bin/claude-hook') ||
-    normalized.includes('~/.midbrain/bin/claude-hook') ||
-    normalized.includes('$HOME/.midbrain/bin/claude-hook') ||
-    LEGACY_HOOK_SCRIPTS.some((script) => command.includes(script)) ||
+  return commandReferencesShim(command, 'claude') ||
+    isLegacyHookCommand(command) ||
     (normalized.includes(PKG_NAME) && /\bhook\s+claude\b/.test(normalized));
 }
 
@@ -217,8 +228,7 @@ export class Claude extends BaseClient {
       for (const [event, role] of Object.entries(HOOK_EVENTS)) {
         const groups = Array.isArray(data.hooks?.[event]) ? data.hooks[event] : [];
         const hooks = groups.flatMap((group) => group.hooks || []);
-        if (hooks.some((h) => typeof h?.command === 'string' &&
-          LEGACY_HOOK_SCRIPTS.some((script) => h.command.includes(script)))) return false;
+        if (hooks.some((h) => isLegacyHookCommand(h?.command))) return false;
         const midbrain = hooks.filter((h) => isMidbrainHook(h));
         if (midbrain.length !== 1) return false;
         if (midbrain[0].command !== buildHookCommand(role)) return false;

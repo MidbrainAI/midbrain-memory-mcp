@@ -633,9 +633,10 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
-          UserPromptSubmit: [{ hooks: [{ command: "old capture-user.mjs" }] }],
-          PostToolUse: [{ hooks: [{ command: "old capture-tool.mjs" }] }],
-          Stop: [{ hooks: [{ command: "old capture-assistant.mjs" }] }],
+          // realistic legacy forms: full package plugins path (AC-12 positive identity)
+          UserPromptSubmit: [{ hooks: [{ command: "node /old/plugins/codex/capture-user.mjs" }] }],
+          PostToolUse: [{ hooks: [{ command: "node /old/plugins/codex/capture-tool.mjs" }] }],
+          Stop: [{ hooks: [{ command: "node /old/plugins/codex/capture-assistant.mjs" }] }],
         },
       }),
     });
