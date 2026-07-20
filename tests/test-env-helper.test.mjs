@@ -12,7 +12,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 
-import { makeTestEnv, snapshotTree, diffSnapshots } from "./helpers/test-env.mjs";
+import { makeTestEnv, diffSnapshots } from "./helpers/test-env.mjs";
 import { tripwireSurfaces, collectHashes, diffHashes, ABSENT } from "./helpers/global-tripwire.mjs";
 
 describe("makeTestEnv isolation", () => {
