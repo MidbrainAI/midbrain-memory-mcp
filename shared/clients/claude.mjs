@@ -11,10 +11,13 @@
 
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
-  KEY_FILENAME, MCP_KEY, PKG_NAME, REPO_ROOT,
+  KEY_FILENAME, MCP_KEY, REPO_ROOT,
   home, readJson, writeJson, writeJsonIfChanged, backup, classifyEntry, formatMigrationLine,
 } from './utils.mjs';
-import { shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim } from './shim.mjs';
+import {
+  shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
+  commandHasTrailingSegments, commandHasMidbrainPackageRef,
+} from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -84,26 +87,31 @@ function midbrainHookEntry(role) {
 }
 
 // Historic buildHooks() always wrote scripts under this package dir, so a
-// positively identified legacy command carries the full path segment (any
-// checkout or npx-cache location) or the package name — a user's own
-// `capture-user.mjs` elsewhere is never ours (AC-12).
-const LEGACY_HOOK_DIR = 'plugins/claude-code/';
+// positively identified legacy command ends in the exact path segments
+// plugins/claude-code/<script> (any checkout or npx-cache location) or pairs
+// an exact package reference with the exact script filename. Segment
+// equality, never substring (AC-12): a user's own `capture-user.mjs` — or a
+// `myplugins/claude-code/` path — is never ours.
+const LEGACY_HOOK_DIR = 'claude-code';
 
 function isLegacyHookCommand(command) {
   if (typeof command !== 'string') return false;
-  const normalized = command.replace(/\\/g, '/');
   return LEGACY_HOOK_SCRIPTS.some((script) =>
-    normalized.includes(LEGACY_HOOK_DIR + script) ||
-    (normalized.includes(PKG_NAME) && normalized.includes(script)));
+    commandHasTrailingSegments(command, ['plugins', LEGACY_HOOK_DIR, script]) ||
+    (commandHasMidbrainPackageRef(command) && commandHasTrailingSegments(command, [script])));
 }
 
 /** Detect whether a hook object belongs to midbrain (shim, legacy, or npx form). */
 function isMidbrainHook(hook) {
   const command = typeof hook?.command === 'string' ? hook.command : '';
+  // Exact-equality fast path: entries this adapter wrote are recognized even
+  // without parsing — explicit-install idempotency never depends on the
+  // tokenizer keeping up with shellQuote.
+  if (Object.values(HOOK_EVENTS).some((role) => command === buildHookCommand(role))) return true;
   const normalized = command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
   return commandReferencesShim(command, 'claude') ||
     isLegacyHookCommand(command) ||
-    (normalized.includes(PKG_NAME) && /\bhook\s+claude\b/.test(normalized));
+    (commandHasMidbrainPackageRef(command) && /\bhook\s+claude\b/.test(normalized));
 }
 
 /** Drop midbrain hooks from groups, keeping every user-defined hook. */

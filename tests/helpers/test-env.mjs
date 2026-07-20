@@ -51,13 +51,15 @@ const UPDATE_CACHE_FILENAME = '.midbrain-update-check.json';
  *   set (e.g. { CI: '1' }).
  * @param {boolean} [opts.freshUpdateCache=true] - Pre-seed a fresh update-check
  *   throttle cache in the sandbox TMPDIR so checkForUpdate() never fetches npm.
+ * @param {string} [opts.homeName='home'] - Basename of the sandbox home dir;
+ *   hostile-home tests pass names with spaces or apostrophes (O'Brien).
  * @returns {Promise<TestEnv>}
  */
 export async function makeTestEnv(opts = {}) {
-  const { clients = [], env: extraEnv = {}, freshUpdateCache = true } = opts;
+  const { clients = [], env: extraEnv = {}, freshUpdateCache = true, homeName = 'home' } = opts;
 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'midbrain-prd034-env-'));
-  const home = path.join(root, 'home');
+  const home = path.join(root, homeName);
   const tmp = path.join(root, 'tmp');
   await fs.mkdir(home, { recursive: true });
   await fs.mkdir(tmp, { recursive: true });

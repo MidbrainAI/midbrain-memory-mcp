@@ -19,11 +19,12 @@
 
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
-  KEY_FILENAME, MCP_KEY, PKG_NAME, REPO_ROOT,
+  KEY_FILENAME, MCP_KEY, REPO_ROOT,
   home, backup, writeSecure, extractCustomEnv, PINNED_RE, writeFileIfChanged,
 } from './utils.mjs';
 import {
   shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
+  commandHasTrailingSegments, commandHasMidbrainPackageRef,
   validateShimPaths as validateClientShimPaths,
 } from './shim.mjs';
 
@@ -141,25 +142,30 @@ function mcpEntryPinned(entry) {
 }
 
 /** Detect whether a hooks command string belongs to midbrain. */
-// Historic legacy commands always carried this package path segment (any
-// checkout or npx-cache location) or the package name — a user's own
-// `capture-*.mjs` elsewhere is never ours (AC-12).
-const LEGACY_HOOK_DIR = 'plugins/hermes/';
+// Historic legacy commands always ended in the exact path segments
+// plugins/hermes/<script> (any checkout or npx-cache location) or paired an
+// exact package reference with the exact script filename. Segment equality,
+// never substring (AC-12): a user's own `capture-*.mjs` — or a
+// `myplugins/hermes/` path — is never ours.
+const LEGACY_HOOK_DIR = 'hermes';
 
 function isLegacyHookCommand(command) {
   if (typeof command !== 'string') return false;
-  const normalized = command.replace(/\\/g, '/');
   return LEGACY_HOOK_SCRIPTS.some((script) =>
-    normalized.includes(LEGACY_HOOK_DIR + script) ||
-    (normalized.includes(PKG_NAME) && normalized.includes(script)));
+    commandHasTrailingSegments(command, ['plugins', LEGACY_HOOK_DIR, script]) ||
+    (commandHasMidbrainPackageRef(command) && commandHasTrailingSegments(command, [script])));
 }
 
 function isMidbrainHookCommand(command) {
   if (typeof command !== 'string') return false;
+  // Exact-equality fast path: entries this adapter wrote are recognized even
+  // without parsing — explicit-install idempotency never depends on the
+  // tokenizer keeping up with shellQuote.
+  if (Object.values(HOOK_EVENTS).some((role) => command === buildHookCommand(role))) return true;
   const normalized = command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
   return commandReferencesShim(command, 'hermes') ||
     isLegacyHookCommand(command) ||
-    (normalized.includes(PKG_NAME) && /\bhook\s+hermes\b/.test(normalized));
+    (commandHasMidbrainPackageRef(command) && /\bhook\s+hermes\b/.test(normalized));
 }
 
 /**

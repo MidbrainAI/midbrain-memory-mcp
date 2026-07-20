@@ -21,6 +21,7 @@ import {
   installShim,
   shimStatus,
   commandReferencesShim,
+  tokenizeShellWords,
 } from "../shared/clients/shim.mjs";
 import { writeFileIfChanged } from "../shared/clients/utils.mjs";
 
@@ -344,6 +345,57 @@ describe("commandReferencesShim — quote-aware tokens (AC-12, spaced homes)", (
     expect(commandReferencesShim("/usr/local/bin/claude-hook user", "claude")).toBe(false);
     expect(commandReferencesShim("~/.midbrain/bin/claude-hook-wrapper user", "claude")).toBe(false);
   });
+});
+
+describe("tokenizeShellWords — real shell-word splitting (AC-12, hostile homes)", () => {
+  it("concatenates adjacent fragments: the POSIX '\\'' idiom round-trips shellQuote", () => {
+    const p = "/tmp/O'Brien home/.midbrain/bin/claude-hook";
+    expect(tokenizeShellWords(`${shellQuote(p)} user`)).toEqual([p, "user"]);
+  });
+
+  it("joins mixed adjacent quoted and bare fragments into one word", () => {
+    expect(tokenizeShellWords(`"a b"'c'd e`)).toEqual(["a bcd", "e"]);
+  });
+
+  it("backslash escapes whitespace and quotes outside quotes", () => {
+    expect(tokenizeShellWords("foo\\ bar baz")).toEqual(["foo bar", "baz"]);
+    expect(tokenizeShellWords("foo\\'s bar")).toEqual(["foo's", "bar"]);
+  });
+
+  it("preserves win32 backslash paths inside double quotes", () => {
+    expect(tokenizeShellWords('"C:\\Users\\First Last\\.midbrain\\bin\\claude-hook.cmd" user'))
+      .toEqual(["C:\\Users\\First Last\\.midbrain\\bin\\claude-hook.cmd", "user"]);
+  });
+
+  it("is graceful on unterminated quotes and empty input", () => {
+    expect(tokenizeShellWords("'abc")).toEqual(["abc"]);
+    expect(tokenizeShellWords("")).toEqual([]);
+    expect(tokenizeShellWords("   ")).toEqual([]);
+  });
+
+  it("an empty quoted argument is a real (empty) word", () => {
+    expect(tokenizeShellWords("cmd '' x")).toEqual(["cmd", "", "x"]);
+  });
+});
+
+describe("commandReferencesShim — apostrophe homes (AC-12, B16)", () => {
+  it.each([["o'brien"], ["O'Brien home"]])(
+    "recognizes the canonical command under home %j; still rejects near-names",
+    async (homeName) => {
+      const env = await makeTestEnv({ homeName });
+      try {
+        const resolved = stableShimPath("claude");
+        expect(resolved).toContain("'");
+        // the exact command our own installer writes on such a home
+        expect(commandReferencesShim(`${shellQuote(resolved)} user`, "claude")).toBe(true);
+
+        const wrapper = path.join(env.home, ".midbrain", "bin", "claude-hook-wrapper");
+        expect(commandReferencesShim(`${shellQuote(wrapper)} user`, "claude")).toBe(false);
+      } finally {
+        await env.restore();
+      }
+    },
+  );
 });
 
 describe("writeFileIfChanged", () => {

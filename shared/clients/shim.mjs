@@ -17,7 +17,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { REPO_ROOT, home, writeFileIfChanged } from './utils.mjs';
+import { PKG_NAME, REPO_ROOT, home, writeFileIfChanged } from './utils.mjs';
 
 export const DEV_MARKER_POSIX = '# midbrain-dev';
 export const DEV_MARKER_WIN = '@rem midbrain-dev';
@@ -126,28 +126,97 @@ export function isDevShimContent(content) {
 }
 
 /**
+ * Split a command string into shell words the way sh would (AC-12). Adjacent
+ * quoted/unquoted fragments concatenate into ONE word — this is what makes
+ * the POSIX `'\''` idiom (shellQuote's own output for paths containing
+ * apostrophes) round-trip back to the original path. Backslash escapes the
+ * next character outside quotes; inside double quotes it escapes only
+ * `"` `\` `$` and backtick (so win32 `C:\Users\...` survives); inside single
+ * quotes nothing escapes. Unterminated quotes are taken to end-of-string.
+ */
+export function tokenizeShellWords(command) {
+  const words = [];
+  let current = '';
+  let hasFragment = false;
+  let state = 'plain';
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (state === 'single') {
+      if (ch === "'") state = 'plain';
+      else current += ch;
+      continue;
+    }
+    if (state === 'double') {
+      if (ch === '"') state = 'plain';
+      else if (ch === '\\' && '"\\$`'.includes(command[i + 1])) current += command[++i];
+      else current += ch;
+      continue;
+    }
+    if (ch === "'") { state = 'single'; hasFragment = true; continue; }
+    if (ch === '"') { state = 'double'; hasFragment = true; continue; }
+    if (ch === '\\' && i + 1 < command.length) { current += command[++i]; continue; }
+    if (/\s/.test(ch)) {
+      if (current.length || hasFragment) words.push(current);
+      current = '';
+      hasFragment = false;
+      continue;
+    }
+    current += ch;
+  }
+  if (current.length || hasFragment) words.push(current);
+  return words;
+}
+
+/** Path segments of a token, backslashes normalized (empty segments dropped). */
+function pathSegments(token) {
+  return String(token).replace(/\\/g, '/').split('/').filter(Boolean);
+}
+
+/**
+ * True when some shell word of `command` is a path whose TRAILING segments
+ * are exactly `segments` (AC-12). Segment equality, never substring — a
+ * `myplugins/claude-code/capture-user.mjs` path does not end with the
+ * segments ['plugins', 'claude-code', 'capture-user.mjs'].
+ */
+export function commandHasTrailingSegments(command, segments) {
+  if (typeof command !== 'string') return false;
+  return tokenizeShellWords(command).some((token) => {
+    const segs = pathSegments(token);
+    if (segs.length < segments.length) return false;
+    const tail = segs.slice(segs.length - segments.length);
+    return segments.every((want, i) => tail[i] === want);
+  });
+}
+
+/**
+ * True when `command` positively references this package (AC-12): an exact
+ * `midbrain-memory-mcp` word, a versioned `midbrain-memory-mcp@...` word
+ * (npx forms), or a path containing `midbrain-memory-mcp` as an exact
+ * segment (checkout, node_modules, npx-cache locations). Never a substring —
+ * `midbrain-memory-mcp-wrapper` is somebody else's binary.
+ */
+export function commandHasMidbrainPackageRef(command) {
+  if (typeof command !== 'string') return false;
+  return tokenizeShellWords(command).some((token) =>
+    token === PKG_NAME ||
+    token.startsWith(`${PKG_NAME}@`) ||
+    pathSegments(token).includes(PKG_NAME));
+}
+
+/**
  * True when a hook command references the client's stable shim as a complete
- * path token (exact ownership, AC-12). Tokenization is quote-aware — a
- * quoted path is one token even when it contains spaces — and a token owns
- * the shim only when it equals the resolved stableShimPath or its basename
- * is exactly `<client>-hook` / `<client>-hook.cmd` under a `.midbrain/bin`
- * directory (`~`, `$HOME`, and drive-letter forms included). Near-names like
+ * path word (exact ownership, AC-12). Tokenization is real shell-word
+ * splitting (see tokenizeShellWords) — quoted spaces and the `'\''`
+ * apostrophe idiom both resolve to one word — and a word owns the shim only
+ * when it equals the resolved stableShimPath or its basename is exactly
+ * `<client>-hook` / `<client>-hook.cmd` under a `.midbrain/bin` directory
+ * (`~`, `$HOME`, and drive-letter forms included). Near-names like
  * `claude-hook-wrapper` never match — those are user hooks.
  */
 export function commandReferencesShim(command, client) {
   if (typeof command !== 'string') return false;
   const resolved = stableShimPath(client);
-  // Quote-aware tokenization: a quoted path stays ONE token even when it
-  // contains spaces — our own canonical command single-quotes the shim path,
-  // and Windows homes routinely contain spaces. Splitting on bare whitespace
-  // would shatter such paths and make the client's own hook unrecognizable.
-  const tokens = [];
-  const tokenRe = /'([^']*)'|"([^"]*)"|(\S+)/g;
-  let part;
-  while ((part = tokenRe.exec(command)) !== null) {
-    tokens.push(part[1] ?? part[2] ?? part[3]);
-  }
-  return tokens.some((token) => {
+  return tokenizeShellWords(command).some((token) => {
     if (token === resolved) return true;
     const normalized = token.replace(/\\/g, '/');
     const match = normalized.match(/^(?:~|\$HOME)?(?:[A-Za-z]:)?(?:\/[^/]*)*\/\.midbrain\/bin\/([^/]+)$/);

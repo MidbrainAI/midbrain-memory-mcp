@@ -10,11 +10,14 @@
 
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
-  KEY_FILENAME, MCP_KEY, PKG_NAME, REPO_ROOT,
+  KEY_FILENAME, MCP_KEY, REPO_ROOT,
   home, readJson, writeJsonIfChanged, backup, writeSecure,
   classifyEntry, formatMigrationLine,
 } from './utils.mjs';
-import { shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim } from './shim.mjs';
+import {
+  shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
+  commandHasTrailingSegments, commandHasMidbrainPackageRef,
+} from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -111,25 +114,30 @@ function normalizedHookCommand(command) {
   return command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-// Historic legacy commands always carried this package path segment (any
-// checkout or npx-cache location) or the package name — a user's own
-// `capture-*.mjs` elsewhere is never ours (AC-12).
-const LEGACY_HOOK_DIR = 'plugins/codex/';
+// Historic legacy commands always ended in the exact path segments
+// plugins/codex/<script> (any checkout or npx-cache location) or paired an
+// exact package reference with the exact script filename. Segment equality,
+// never substring (AC-12): a user's own `capture-*.mjs` — or a
+// `myplugins/codex/` path — is never ours.
+const LEGACY_HOOK_DIR = 'codex';
 
 function isLegacyHookCommand(command) {
   if (typeof command !== 'string') return false;
-  const normalized = command.replace(/\\/g, '/');
   return LEGACY_HOOK_SCRIPTS.some((script) =>
-    normalized.includes(LEGACY_HOOK_DIR + script) ||
-    (normalized.includes(PKG_NAME) && normalized.includes(script)));
+    commandHasTrailingSegments(command, ['plugins', LEGACY_HOOK_DIR, script]) ||
+    (commandHasMidbrainPackageRef(command) && commandHasTrailingSegments(command, [script])));
 }
 
 function isMidbrainHook(hook) {
   const command = typeof hook?.command === 'string' ? hook.command : '';
+  // Exact-equality fast path: entries this adapter wrote are recognized even
+  // without parsing — explicit-install idempotency never depends on the
+  // tokenizer keeping up with shellQuote.
+  if (Object.values(HOOK_EVENTS).some((scriptName) => command === buildHookCommand(scriptName))) return true;
   const normalized = normalizedHookCommand(command);
   return commandReferencesShim(command, 'codex') ||
     isLegacyHookCommand(command) ||
-    (normalized.includes(PKG_NAME) && /\bhook\s+codex\b/.test(normalized));
+    (commandHasMidbrainPackageRef(command) && /\bhook\s+codex\b/.test(normalized));
 }
 
 function withoutMidbrainGroups(groups) {

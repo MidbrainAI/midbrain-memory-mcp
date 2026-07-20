@@ -103,6 +103,55 @@ describe.each(JSON_CLIENTS)("$id — exact hook ownership (AC-12)", ({ id, make,
     expect(eventCommands(after, userEvent)).toContain(own);
   });
 
+  it("B16: a user's hook under a myplugins/<dir> path is never claimed (no substring prefixes)", async () => {
+    const own = `node /home/alice/my${legacyDir}/capture-user.mjs`;
+    const data = await readData();
+    data.hooks[userEvent].unshift({ hooks: [{ type: "command", command: own }] });
+    await writeData(data);
+
+    expect(await client.isFresh()).toBe(true); // not ours: config stays fresh
+
+    await client.repairHooks();
+
+    const after = await readData();
+    const commands = eventCommands(after, userEvent);
+    expect(commands).toContain(own);
+    expect(after.hooks[userEvent][0].hooks[0].command).toBe(own); // ordering kept
+    expect(commands.filter((c) => c === shimCommand(id, "user"))).toHaveLength(1);
+  });
+
+  it("B16: a near-name package binary (midbrain-memory-mcp-wrapper) is never claimed", async () => {
+    const own = `/usr/local/bin/midbrain-memory-mcp-wrapper hook ${id} user`;
+    const data = await readData();
+    data.hooks[userEvent].unshift({ hooks: [{ type: "command", command: own }] });
+    await writeData(data);
+
+    expect(await client.isFresh()).toBe(true);
+
+    await client.repairHooks();
+
+    const after = await readData();
+    const commands = eventCommands(after, userEvent);
+    expect(commands).toContain(own);
+    expect(after.hooks[userEvent][0].hooks[0].command).toBe(own); // ordering kept
+    expect(commands.filter((c) => c === shimCommand(id, "user"))).toHaveLength(1);
+  });
+
+  it("a genuine package-checkout index.js form is still claimed (exact path segment)", async () => {
+    const data = await readData();
+    data.hooks[userEvent].unshift({
+      hooks: [{ type: "command", command: `node /work/midbrain-memory-mcp/index.js hook ${id} user` }],
+    });
+    await writeData(data);
+
+    await client.repairHooks();
+
+    const after = await readData();
+    const commands = eventCommands(after, userEvent);
+    expect(commands.join("\n")).not.toContain("index.js");
+    expect(commands.filter((c) => c === shimCommand(id, "user"))).toHaveLength(1);
+  });
+
   it("real legacy forms (checkout + npx cache) are still claimed and migrated", async () => {
     const data = await readData();
     data.hooks[userEvent] = [
@@ -192,6 +241,38 @@ describe("hermes — exact hook ownership (AC-12)", () => {
 
     const after = await readConfig();
     expect(after.hooks.pre_llm_call.map((h) => h.command)).toContain(own);
+  });
+
+  it("B16: a user's hook under a myplugins/hermes path is never claimed (no substring prefixes)", async () => {
+    const own = "node /home/alice/myplugins/hermes/capture-user.mjs";
+    const cfg = await readConfig();
+    cfg.hooks.pre_llm_call.unshift({ command: own, timeout: 5 });
+    await writeConfig(cfg);
+
+    expect(await hermes.isFresh()).toBe(true);
+
+    await hermes.repairHooks();
+
+    const after = await readConfig();
+    const commands = after.hooks.pre_llm_call.map((h) => h.command);
+    expect(commands[0]).toBe(own); // survives, ordering kept
+    expect(commands.filter((c) => c === shimCommand("hermes", "user"))).toHaveLength(1);
+  });
+
+  it("B16: a near-name package binary (midbrain-memory-mcp-wrapper) is never claimed", async () => {
+    const own = "/usr/local/bin/midbrain-memory-mcp-wrapper hook hermes user";
+    const cfg = await readConfig();
+    cfg.hooks.pre_llm_call.unshift({ command: own, timeout: 5 });
+    await writeConfig(cfg);
+
+    expect(await hermes.isFresh()).toBe(true);
+
+    await hermes.repairHooks();
+
+    const after = await readConfig();
+    const commands = after.hooks.pre_llm_call.map((h) => h.command);
+    expect(commands[0]).toBe(own);
+    expect(commands.filter((c) => c === shimCommand("hermes", "user"))).toHaveLength(1);
   });
 
   it("real legacy forms are still claimed and migrated", async () => {
