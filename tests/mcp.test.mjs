@@ -20,6 +20,10 @@ import path from "path";
 
 import { createServer } from "../index.js";
 
+// Windows cannot represent POSIX 0o600 file modes; skip exact-mode assertions
+// there (the key file is still written; only the permission bits differ).
+const IS_WIN = process.platform === "win32";
+
 const __filename = fileURLToPath(import.meta.url);
 const SERVER_PATH = path.resolve(path.dirname(__filename), "..", "index.js");
 
@@ -230,18 +234,25 @@ describe("memory_setup_project — Codex project config", () => {
   let fakeHome;
   let projectDir;
   let savedHome;
+  let savedUserProfile;
 
   beforeEach(() => {
     savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-home-"));
     projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-project-")));
     fs.mkdirSync(path.join(fakeHome, ".codex"), { recursive: true });
     process.env.HOME = fakeHome;
+    // os.homedir() honors USERPROFILE on Windows, HOME on POSIX; set both so
+    // the fake home isolates client detection/config writes cross-platform.
+    process.env.USERPROFILE = fakeHome;
   });
 
   afterEach(() => {
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
     try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
     try { fs.rmSync(projectDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
@@ -509,6 +520,7 @@ describe("memory_setup_project — config file integration", () => {
   let tmpProjectDir;
   let savedConfigDir;
   let savedHome;
+  let savedUserProfile;
   let savedHermesHome;
   let fakeHome;
 
@@ -517,10 +529,12 @@ describe("memory_setup_project — config file integration", () => {
     savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
 
     // Isolate HOME so tests never touch the real ~/.claude.json or ~/.config/opencode.
-    // index.js reads os.homedir() inside setupProject, which on POSIX honors $HOME.
+    // os.homedir() honors $HOME on POSIX and %USERPROFILE% on Windows, so set both.
     savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fake-home-"));
     process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
 
     // The Hermes adapter honors $HERMES_HOME ahead of ~/.hermes; unset it so a
     // developer running the suite from inside a Hermes session (HERMES_HOME set)
@@ -540,6 +554,9 @@ describe("memory_setup_project — config file integration", () => {
 
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
+
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
 
     if (savedHermesHome === undefined) delete process.env.HERMES_HOME;
     else process.env.HERMES_HOME = savedHermesHome;
@@ -562,7 +579,7 @@ describe("memory_setup_project — config file integration", () => {
     const content = fs.readFileSync(keyPath, "utf8").trim();
     expect(content).toBe("proj-test-key");
     const stat = fs.statSync(keyPath);
-    expect(stat.mode & 0o777).toBe(0o600);
+    if (!IS_WIN) expect(stat.mode & 0o777).toBe(0o600);
   });
 
   it("preserves existing key file", async () => {
@@ -1084,14 +1101,17 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
   let tmpProjectDir;
   let savedConfigDir;
   let savedHome;
+  let savedUserProfile;
   let fakeHome;
 
   beforeEach(() => {
     tmpProjectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-migrate-")));
     savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
     savedHome = process.env.HOME;
+    savedUserProfile = process.env.USERPROFILE;
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fake-home-migrate-"));
     process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
     fs.mkdirSync(path.join(fakeHome, ".config", "opencode"), { recursive: true });
     fs.writeFileSync(path.join(fakeHome, ".claude.json"), JSON.stringify({ projects: {} }, null, 2), "utf8");
   });
@@ -1101,6 +1121,8 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
     else process.env.MIDBRAIN_CONFIG_DIR = savedConfigDir;
     if (savedHome === undefined) delete process.env.HOME;
     else process.env.HOME = savedHome;
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedUserProfile;
     try { fs.rmSync(tmpProjectDir, { recursive: true, force: true }); } catch { /* ignore */ }
     try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
   });
@@ -1579,10 +1601,13 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
           env: {
             ...process.env,
             HOME: homeTmpdir,
+            // The child's os.homedir() reads USERPROFILE on Windows; without
+            // this it would detect and patch the REAL ~/.claude.json.
+            USERPROFILE: homeTmpdir,
             MIDBRAIN_CONFIG_DIR: configTmpdir,
           },
           encoding: "utf8",
-          timeout: 10000,
+          timeout: 30000,
         }
       );
 
@@ -1593,8 +1618,8 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
       const keyFile = path.join(projectTmpdir, ".midbrain", ".midbrain-key");
       expect(fs.existsSync(keyFile)).toBe(true);
       const stat = fs.statSync(keyFile);
-      // chmod 600 = owner rw only; lower 9 bits must equal 0o600
-      expect(stat.mode & 0o777).toBe(0o600);
+      // chmod 600 = owner rw only; lower 9 bits must equal 0o600 (POSIX only)
+      if (!IS_WIN) expect(stat.mode & 0o777).toBe(0o600);
 
       // <project>/.mcp.json written with @latest (PRD-010 preserved through dispatch)
       const mcpJson = path.join(projectTmpdir, ".mcp.json");
@@ -1683,6 +1708,7 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
   let projectTmpdir;
   let homeTmpdir;
   let origHome;
+  let origUserProfile;
   let origConfigDir;
   let origMidbrainProjectDir;
 
@@ -1691,9 +1717,11 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
     homeTmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "mbm-prd011-mcp-home-"));
 
     origHome = process.env.HOME;
+    origUserProfile = process.env.USERPROFILE;
     origConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
     origMidbrainProjectDir = process.env.MIDBRAIN_PROJECT_DIR;
     process.env.HOME = homeTmpdir;
+    process.env.USERPROFILE = homeTmpdir;
     delete process.env.MIDBRAIN_CONFIG_DIR;
     delete process.env.MIDBRAIN_PROJECT_DIR;
 
@@ -1720,6 +1748,8 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
     await server.close();
     if (origHome === undefined) delete process.env.HOME;
     else process.env.HOME = origHome;
+    if (origUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = origUserProfile;
     if (origConfigDir === undefined) delete process.env.MIDBRAIN_CONFIG_DIR;
     else process.env.MIDBRAIN_CONFIG_DIR = origConfigDir;
     if (origMidbrainProjectDir !== undefined)
@@ -1742,7 +1772,7 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
     // Key file written at <project>/.midbrain/.midbrain-key, chmod 600
     const keyFile = path.join(projectTmpdir, ".midbrain", ".midbrain-key");
     expect(fs.existsSync(keyFile)).toBe(true);
-    expect(fs.statSync(keyFile).mode & 0o777).toBe(0o600);
+    if (!IS_WIN) expect(fs.statSync(keyFile).mode & 0o777).toBe(0o600);
 
     // <project>/.mcp.json written with @latest (PRD-010 behavior preserved)
     const mcpJson = path.join(projectTmpdir, ".mcp.json");

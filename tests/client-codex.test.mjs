@@ -44,6 +44,7 @@ const { buildShimBody } = await import("../shared/clients/shim.mjs");
 const TOML = await import("smol-toml");
 
 const HOME = os.homedir();
+const IS_WIN = process.platform === "win32";
 
 const PATHS = {
   codexDir:    path.join(HOME, ".codex"),
@@ -228,7 +229,8 @@ describe("Codex.installGlobal", () => {
     expect(shimWrite[1]).toContain('"$@"');
     expect(shimWrite[1]).not.toContain("MIDBRAIN_API_KEY");
     expect(shimWrite[1]).not.toContain(".midbrain-key");
-    expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
+    // chmod applies exec bits on POSIX only; win32 skips it.
+    if (!IS_WIN) expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
   });
 
   it("keeps hook command stable across Node path changes", async () => {
@@ -488,7 +490,7 @@ describe("Codex hook freshness and repair", () => {
     expect(hooks.UserPromptSubmit[0].hooks[0].command).toBe(`'${PATHS.codexShim}' user`);
     expect(hooks.PostToolUse[0].hooks[0].command).toBe(`'${PATHS.codexShim}' tool`);
     expect(hooks.Stop[0].hooks[0].command).toBe(`'${PATHS.codexShim}' assistant`);
-    expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
+    if (!IS_WIN) expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
     expect(lines.join("\n")).toContain("stable Codex hook shim");
   });
 

@@ -118,25 +118,31 @@ describe("snapshotTree / diffSnapshots churn detection", () => {
 
 describe("tripwire internals (sandbox only)", () => {
   it("covers every PRD-listed real surface", () => {
-    const surfaces = tripwireSurfaces("/fake-home");
-    const rel = surfaces.map((p) => p.replace("/fake-home", "~"));
+    // Use an absolute, platform-native fake home so path.join produces the
+    // real separator style; then compare separator-agnostically (forward
+    // slashes) so this assertion holds on both POSIX and Windows.
+    const fakeHome = path.resolve(path.sep, "fake-home");
+    const toPosix = (p) => p.split(path.sep).join("/");
+    const rel = tripwireSurfaces(fakeHome).map((p) =>
+      toPosix(p).replace(toPosix(fakeHome), "~"),
+    );
     for (const required of [
       "~/.claude.json",
-      path.join("~", ".claude", "settings.json"),
-      path.join("~", ".codex", "config.toml"),
-      path.join("~", ".codex", "hooks.json"),
-      path.join("~", ".config", "opencode", "opencode.json"),
-      path.join("~", ".config", "opencode", "opencode.jsonc"),
-      path.join("~", ".midbrain", "bin", "claude-hook"),
-      path.join("~", ".midbrain", "bin", "codex-hook"),
-      path.join("~", ".midbrain", "bin", "hermes-hook"),
-      path.join("~", ".config", "midbrain", ".midbrain-key"),
+      "~/.claude/settings.json",
+      "~/.codex/config.toml",
+      "~/.codex/hooks.json",
+      "~/.config/opencode/opencode.json",
+      "~/.config/opencode/opencode.jsonc",
+      "~/.midbrain/bin/claude-hook",
+      "~/.midbrain/bin/codex-hook",
+      "~/.midbrain/bin/hermes-hook",
+      "~/.config/midbrain/.midbrain-key",
     ]) {
       expect(rel).toContain(required);
     }
     // Hermes config resolves via HERMES_HOME when set; sandbox sets it, so
     // assert the seam separately below rather than a literal here.
-    expect(surfaces.some((p) => p.endsWith(path.join("config.yaml")))).toBe(true);
+    expect(rel.some((p) => p.endsWith("config.yaml"))).toBe(true);
   });
 
   it("hashes files, marks missing ones ABSENT, and flags create/modify/delete as drift", async () => {

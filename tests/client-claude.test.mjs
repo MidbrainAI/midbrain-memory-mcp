@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import fsSync from "node:fs";
 import path from "path";
 import os from "os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
@@ -42,8 +42,11 @@ const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
 const { Claude } = await import("../shared/clients/claude.mjs");
+const { shimFilename, buildShimBody } = await import("../shared/clients/shim.mjs");
 
 const HOME = os.homedir();
+const IS_WIN = process.platform === "win32";
+const CLAUDE_SHIM = path.join(HOME, ".midbrain", "bin", shimFilename("claude"));
 const MCP_KEY = "midbrain-memory";
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -280,7 +283,7 @@ describe("Claude.installGlobal", () => {
 
     const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeSettings);
     const written = JSON.parse(writeCall[1]);
-    const shim = path.join(HOME, ".midbrain", "bin", "claude-hook");
+    const shim = CLAUDE_SHIM;
     const userHook = written.hooks.UserPromptSubmit[0].hooks[0];
     const stopHook = written.hooks.Stop[0].hooks[0];
     expect(userHook.command).toBe(`'${shim}' user`);
@@ -297,11 +300,15 @@ describe("Claude.installGlobal", () => {
   it("installGlobal writes the canonical claude-hook shim 0755", async () => {
     await cc.installGlobal();
 
-    const shim = path.join(HOME, ".midbrain", "bin", "claude-hook");
+    const shim = CLAUDE_SHIM;
     const shimWrite = fs.writeFile.mock.calls.find(([p]) => p === shim);
     expect(shimWrite).toBeDefined();
-    expect(shimWrite[1]).toContain("npx -y midbrain-memory-mcp@latest hook claude");
-    expect(fs.chmod).toHaveBeenCalledWith(shim, 0o755);
+    // Byte-parity with the source builder: the win32 .cmd body calls npx.cmd,
+    // the POSIX body calls npx directly.
+    expect(shimWrite[1]).toBe(buildShimBody("claude"));
+    expect(shimWrite[1]).toContain("hook claude");
+    // Exec bit only applies on POSIX; win32 .cmd shims are not chmod'd.
+    if (!IS_WIN) expect(fs.chmod).toHaveBeenCalledWith(shim, 0o755);
   });
 });
 
@@ -351,12 +358,15 @@ describe("Claude capture-user hook wrapper", () => {
   function runHook(input, { mode = "empty", home = tempHomeWithKey(), extraEnv = {} } = {}) {
     const loaded = preload(mode);
     const result = spawnSync(process.execPath, [
-      "--import", loaded.file,
+      // --import requires a file:// URL on Windows (absolute C:\ paths are
+      // rejected by the ESM loader); pathToFileURL is a no-op-safe on POSIX.
+      "--import", pathToFileURL(loaded.file).href,
       path.join(REPO_ROOT, "plugins", "claude-code", "capture-user.mjs"),
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
-      env: { ...process.env, HOME: home, [PK_ENV]: undefined, ...extraEnv },
+      // os.homedir() reads USERPROFILE on Windows, HOME on POSIX; set both.
+      env: { ...process.env, HOME: home, USERPROFILE: home, [PK_ENV]: undefined, ...extraEnv },
     });
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });
     return result;
@@ -452,12 +462,12 @@ describe("Claude capture-assistant hook wrapper", () => {
     const block = formatPkContext([{ id: 33, title: "Claude Echo", content: "do not store" }]);
 
     const result = spawnSync(process.execPath, [
-      "--import", loaded.file,
+      "--import", pathToFileURL(loaded.file).href,
       path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
     ], {
       input: JSON.stringify({ last_assistant_message: `${block}\n\nVisible response`, cwd: "/repo" }),
       encoding: "utf8",
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, HOME: home, USERPROFILE: home },
     });
 
     expect(result.status).toBe(0);

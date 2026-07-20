@@ -25,7 +25,11 @@ const MANAGED_ENV_KEYS = [
   'XDG_CONFIG_HOME',
   'XDG_CACHE_HOME',
   'XDG_STATE_HOME',
+  // os.tmpdir() reads TMPDIR on POSIX but TEMP/TMP on Windows; manage all
+  // three so the sandbox tmp redirect holds cross-platform.
   'TMPDIR',
+  'TEMP',
+  'TMP',
   'HERMES_HOME',
   'NANOCLAW_HOME',
   'npm_config_cache',
@@ -75,6 +79,8 @@ export async function makeTestEnv(opts = {}) {
     XDG_CACHE_HOME: undefined,
     XDG_STATE_HOME: undefined,
     TMPDIR: tmp,
+    TEMP: tmp,
+    TMP: tmp,
     HERMES_HOME: path.join(home, '.hermes'),
     NANOCLAW_HOME: undefined,
     npm_config_cache: path.join(home, '.npm'),
@@ -146,7 +152,9 @@ export function sandboxPaths(home) {
     nanoclawRoot: path.join(home, 'nanoclaw-v2'),
     nanoclawSkill: path.join(home, 'nanoclaw-v2', '.claude', 'skills', 'add-midbrain', 'SKILL.md'),
     midbrainBin: path.join(home, '.midbrain', 'bin'),
-    claudeShim: path.join(home, '.midbrain', 'bin', 'claude-hook'),
+    // claude/hermes shims gain a .cmd suffix on win32; codex stays a sh script
+    // on every platform (mirrors shim.mjs shimFilename()).
+    claudeShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'claude-hook.cmd' : 'claude-hook'),
     codexShim: path.join(home, '.midbrain', 'bin', 'codex-hook'),
     hermesShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'hermes-hook.cmd' : 'hermes-hook'),
     globalKey: path.join(home, '.config', 'midbrain', '.midbrain-key'),

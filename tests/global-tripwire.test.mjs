@@ -44,8 +44,10 @@ describe("tripwireSurfaces (AC-15)", () => {
     const saved = process.env.NANOCLAW_HOME;
     process.env.NANOCLAW_HOME = "/opt/ncw";
     try {
+      // tripwireSurfaces resolves NANOCLAW_HOME with path.resolve (adds a drive
+      // letter on Windows); match that here rather than path.join.
       expect(tripwireSurfaces(HOME)).toContain(
-        path.join("/opt/ncw", ".claude", "skills", "add-midbrain", "SKILL.md"),
+        path.join(path.resolve("/opt/ncw"), ".claude", "skills", "add-midbrain", "SKILL.md"),
       );
     } finally {
       if (saved === undefined) delete process.env.NANOCLAW_HOME;

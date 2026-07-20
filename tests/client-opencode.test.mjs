@@ -455,22 +455,29 @@ describe("OpenCode.installProject", () => {
 describe("resolveOpencodeConfig", () => {
   beforeEach(resetMocks);
 
+  // Build paths with path.join so the separator matches what the adapter uses
+  // (backslashes on Windows) — both the existsFor mock key and the expected
+  // return value stay platform-consistent.
+  const DIR = path.join(path.sep, "dir");
+  const JSONC = path.join(DIR, "opencode.jsonc");
+  const JSON_ = path.join(DIR, "opencode.json");
+
   it("returns opencode.jsonc when it exists (preferred)", () => {
-    existsFor("/dir/opencode.jsonc");
-    expect(resolveOpencodeConfig("/dir")).toBe("/dir/opencode.jsonc");
+    existsFor(JSONC);
+    expect(resolveOpencodeConfig(DIR)).toBe(JSONC);
   });
 
   it("returns opencode.json when only .json exists", () => {
-    existsFor("/dir/opencode.json");
-    expect(resolveOpencodeConfig("/dir")).toBe("/dir/opencode.json");
+    existsFor(JSON_);
+    expect(resolveOpencodeConfig(DIR)).toBe(JSON_);
   });
 
   it("prefers .jsonc over .json when both exist", () => {
-    existsFor("/dir/opencode.jsonc", "/dir/opencode.json");
-    expect(resolveOpencodeConfig("/dir")).toBe("/dir/opencode.jsonc");
+    existsFor(JSONC, JSON_);
+    expect(resolveOpencodeConfig(DIR)).toBe(JSONC);
   });
 
   it("defaults to opencode.json when neither exists", () => {
-    expect(resolveOpencodeConfig("/dir")).toBe("/dir/opencode.json");
+    expect(resolveOpencodeConfig(DIR)).toBe(JSON_);
   });
 });

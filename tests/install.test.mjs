@@ -131,7 +131,10 @@ const PATHS = {
 };
 const NANOCLAW_SKILL_SRC = path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md");
 
-const PROJECT_DIR = "/home/testuser/myproject";
+// Pre-resolve so it matches path.resolve(rawPath) inside setupProject on every
+// platform (on Windows "/home/..." resolves to "<drive>:\home\..."). All mock
+// keys and assertions build off this resolved value.
+const PROJECT_DIR = path.resolve("/home/testuser/myproject");
 
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);
@@ -643,12 +646,20 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
 
     await checkForUpdate({ context: { kind: "durable", path: "/durable/install" } });
 
-    const hooksWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexHooks);
+    const hooksWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexShim ? false : p === PATHS.codexHooks);
     const shimWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexShim);
     expect(hooksWrite).toBeDefined();
-    expect(hooksWrite[1]).toContain(PATHS.codexShim);
+    // Parse the written JSON before asserting on the shim path: a raw substring
+    // check fails on Windows because JSON.stringify doubles the backslashes in
+    // the drive-letter path.
+    const writtenHooks = JSON.parse(hooksWrite[1]);
+    const allCommands = Object.values(writtenHooks.hooks)
+      .flat()
+      .flatMap((g) => g.hooks.map((h) => h.command));
+    expect(allCommands.some((c) => c.includes(PATHS.codexShim))).toBe(true);
     expect(shimWrite).toBeDefined();
-    expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
+    // chmod applies exec bits on POSIX only.
+    if (process.platform !== "win32") expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
     expect(logSpy).not.toHaveBeenCalled();
     expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("Codex hooks repaired");
   });

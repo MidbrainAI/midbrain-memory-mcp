@@ -11,7 +11,9 @@ import path from "path";
 import { makeTestEnv, diffSnapshots } from "./helpers/test-env.mjs";
 import { runSelfRepair, checkForUpdate } from "../install.mjs";
 import { REPO_ROOT } from "../shared/clients/utils.mjs";
-import { buildShimBody, installShim } from "../shared/clients/shim.mjs";
+import { buildShimBody, installShim, stableShimPath, shellQuote } from "../shared/clients/shim.mjs";
+
+const IS_WIN = process.platform === "win32";
 
 const DURABLE = { context: { kind: "durable", path: "/durable/install" } };
 const NPX_CTX = {
@@ -51,15 +53,18 @@ function staleClaudeSettings() {
   };
 }
 
-function canonicalClaudeSettings(home) {
-  const shim = path.join(home, ".midbrain", "bin", "claude-hook");
+function canonicalClaudeSettings() {
+  // Derive the exact command from the source of truth (platform-correct shim
+  // filename + shellQuote) rather than reconstructing it, so the expected
+  // value matches what claude.mjs actually writes on any OS.
+  const cmd = (role) => `${shellQuote(stableShimPath("claude"))} ${role}`;
   return {
     hooks: {
       UserPromptSubmit: [
-        { hooks: [{ type: "command", command: `'${shim}' user`, timeout: 30 }] },
+        { hooks: [{ type: "command", command: cmd("user"), timeout: 30 }] },
       ],
       Stop: [
-        { hooks: [{ type: "command", command: `'${shim}' assistant`, timeout: 30, async: true }] },
+        { hooks: [{ type: "command", command: cmd("assistant"), timeout: 30, async: true }] },
       ],
     },
   };
@@ -200,7 +205,7 @@ describe("B2/B5/AC-7 — claude hooks repaired to canonical shim", () => {
       expect(result.skipped).toBe(false);
 
       const settings = JSON.parse(await fs.readFile(env.paths.claudeSettings, "utf8"));
-      const expected = canonicalClaudeSettings(env.home);
+      const expected = canonicalClaudeSettings();
 
       // exactly one midbrain group per event, canonical shape
       const upsGroups = settings.hooks.UserPromptSubmit;
@@ -227,7 +232,7 @@ describe("B2/B5/AC-7 — claude hooks repaired to canonical shim", () => {
       // shim installed, canonical, executable
       const shimPath = env.paths.claudeShim;
       expect(await fs.readFile(shimPath, "utf8")).toBe(buildShimBody("claude"));
-      expect((await fs.stat(shimPath)).mode & 0o777).toBe(0o755);
+      if (!IS_WIN) expect((await fs.stat(shimPath)).mode & 0o777).toBe(0o755);
 
       expect(stderrText()).toContain("Claude Code hooks repaired");
     }
@@ -623,7 +628,7 @@ describe("B20 / AC-15 — cross-client convergence in one startup", () => {
 
     // 2. per-client canonical state
     const claude = JSON.parse(await fs.readFile(env.paths.claudeSettings, "utf8"));
-    const claudeCanonical = canonicalClaudeSettings(env.home);
+    const claudeCanonical = canonicalClaudeSettings();
     expect(claude.hooks.UserPromptSubmit).toContainEqual(claudeCanonical.hooks.UserPromptSubmit[0]);
     expect(claude.hooks.Stop).toContainEqual(claudeCanonical.hooks.Stop[0]);
     const codexAfter = JSON.parse(await fs.readFile(env.paths.codexHooks, "utf8"));
@@ -632,8 +637,17 @@ describe("B20 / AC-15 — cross-client convergence in one startup", () => {
       expect(commands.filter((c) => c === `'${env.paths.codexShim}' ${role}`)).toHaveLength(1);
     }
     const hermesAfter = await fs.readFile(env.paths.hermesConfig, "utf8");
-    expect(hermesAfter).toContain(`'${env.paths.hermesShim}' user`);
-    expect(hermesAfter).toContain(`'${env.paths.hermesShim}' assistant`);
+    // Parse the YAML and assert on the decoded command values: a raw substring
+    // check would fail on Windows, where the yaml serializer double-quotes and
+    // backslash-escapes the drive-letter shim path.
+    const { parse: parseYaml } = await import("yaml");
+    const hermesDoc = parseYaml(hermesAfter);
+    const hermesCmds = [
+      ...(hermesDoc.hooks?.pre_llm_call ?? []),
+      ...(hermesDoc.hooks?.post_llm_call ?? []),
+    ].map((h) => h.command);
+    expect(hermesCmds).toContain(`'${env.paths.hermesShim}' user`);
+    expect(hermesCmds).toContain(`'${env.paths.hermesShim}' assistant`);
     expect(await fs.readFile(path.join(env.paths.opencodePlugins, ".midbrain-repo-root"), "utf8"))
       .not.toContain(":/");
     expect(await fs.readFile(path.join(env.paths.opencodePlugins, "midbrain-shared.mjs"), "utf8"))

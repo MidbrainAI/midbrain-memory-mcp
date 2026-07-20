@@ -16,6 +16,7 @@ import {
   shellQuote,
   windowsPathGuard,
   stableShimPath,
+  shimFilename,
   buildShimBody,
   isDevShimContent,
   installShim,
@@ -131,8 +132,9 @@ describe("stableShimPath", () => {
   it("resolves under the (sandboxed) home .midbrain/bin", async () => {
     const env = await makeTestEnv();
     try {
-      expect(stableShimPath("claude")).toBe(path.join(env.home, ".midbrain", "bin", "claude-hook"));
-      expect(stableShimPath("codex")).toBe(path.join(env.home, ".midbrain", "bin", "codex-hook"));
+      // Platform-derived filename: claude/hermes gain a .cmd suffix on win32.
+      expect(stableShimPath("claude")).toBe(path.join(env.home, ".midbrain", "bin", shimFilename("claude")));
+      expect(stableShimPath("codex")).toBe(path.join(env.home, ".midbrain", "bin", shimFilename("codex")));
     } finally {
       await env.restore();
     }
@@ -147,7 +149,9 @@ describe("installShim (sandboxed)", () => {
       expect(first.written).toBe(true);
       const shimFile = stableShimPath("claude");
       const stat1 = await fs.stat(shimFile);
-      expect(stat1.mode & 0o777).toBe(0o755);
+      // Exec bits are meaningless on win32 (no chmod semantics); assert the
+      // canonical 0o755 only where the OS actually models it.
+      if (!IS_WIN) expect(stat1.mode & 0o777).toBe(0o755);
 
       await new Promise((r) => setTimeout(r, 10));
       const second = await installShim("claude", { mode: "install" });
@@ -172,7 +176,7 @@ describe("installShim (sandboxed)", () => {
 
       expect(result.written).toBe(false); // content identical
       const statAfter = await fs.stat(shimFile);
-      expect(statAfter.mode & 0o777).toBe(0o755); // exec restored
+      if (!IS_WIN) expect(statAfter.mode & 0o777).toBe(0o755); // exec restored (POSIX)
       expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs); // chmod is mtime-safe
     } finally {
       await env.restore();
