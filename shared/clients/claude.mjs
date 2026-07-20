@@ -43,7 +43,7 @@ const PERM_KEYS = [
 /** Builds the MCP entry for this client. */
 function buildEntry({ isDev = false, projectDir } = {}) {
   if (isDev) {
-    const env = { MIDBRAIN_CLIENT: 'claude' };
+    const env = { MIDBRAIN_CLIENT: 'claude', MIDBRAIN_DEV: '1' };
     if (projectDir) env.MIDBRAIN_PROJECT_DIR = projectDir;
     return {
       type: 'stdio',

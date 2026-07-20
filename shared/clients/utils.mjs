@@ -17,7 +17,11 @@ import { readKeyFile } from './base.mjs';
 export const KEY_FILENAME = ".midbrain-key";
 export const MIDBRAIN_DIR = '.midbrain';
 export const MCP_KEY = 'midbrain-memory';
-export const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR', 'MIDBRAIN_CLIENT']);
+// MIDBRAIN_DEV is the dev-install marker (PRD-034 S3): reserved so
+// extractCustomEnv never carries it into rebuilt entries — an explicit
+// non-dev install therefore drops the marker and restores canonical.
+export const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR', 'MIDBRAIN_CLIENT', 'MIDBRAIN_DEV']);
+export const DEV_ENV_MARKER = 'MIDBRAIN_DEV';
 export const PINNED_RE = /midbrain-memory-mcp@\d+\.\d+\.\d+/;
 
 const __filename = fileURLToPath(import.meta.url);

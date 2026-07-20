@@ -73,6 +73,7 @@ function buildEntry({ isDev = false, projectDir, extraEnv = {} } = {}) {
   const env = { ...extraEnv, MIDBRAIN_CLIENT: 'codex' };
   if (projectDir) env.MIDBRAIN_PROJECT_DIR = projectDir;
   if (isDev) {
+    env.MIDBRAIN_DEV = '1';
     return { command: process.execPath, args: [path.join(REPO_ROOT, 'index.js')], env };
   }
   return { command: 'npx', args: ['-y', 'midbrain-memory-mcp@latest'], env };

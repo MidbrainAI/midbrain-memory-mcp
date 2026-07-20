@@ -588,6 +588,14 @@ async function main(opts = {}) {
 
   printSummary(keyLines, clientSummaries);
 
+  if (isDev) {
+    const { REPO_ROOT } = await import('./shared/clients/utils.mjs');
+    console.log('DEV INSTALL: the files listed above point at this checkout and carry the MIDBRAIN_DEV marker.');
+    console.log(`  Checkout: ${REPO_ROOT}`);
+    console.log('  Automatic self-repair will preserve them; explicit install wins.');
+    console.log('  Revert to the canonical npx install with: npx midbrain-memory-mcp install');
+  }
+
   if (!skipRules) {
     await writeRulesForMainMode(nonInteractive);
   }

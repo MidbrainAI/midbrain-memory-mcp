@@ -126,6 +126,7 @@ function buildMcpEntry({ isDev = false, extraEnv = {} } = {}) {
     MIDBRAIN_PROJECT_DIR: PROJECT_DIR_ENV,
   };
   if (isDev) {
+    env.MIDBRAIN_DEV = '1';
     return { command: process.execPath, args: [path.join(REPO_ROOT, 'index.js')], env };
   }
   return { command: 'npx', args: ['-y', 'midbrain-memory-mcp@latest'], env };

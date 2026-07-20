@@ -128,7 +128,7 @@ async function patchJsonFile(filePath, modifications) {
 /** Builds the MCP entry for this client. */
 function buildEntry({ isDev = false, projectDir } = {}) {
   if (isDev) {
-    const environment = { MIDBRAIN_CLIENT: 'opencode' };
+    const environment = { MIDBRAIN_CLIENT: 'opencode', MIDBRAIN_DEV: '1' };
     if (projectDir) environment.MIDBRAIN_PROJECT_DIR = projectDir;
     return {
       type: 'local',

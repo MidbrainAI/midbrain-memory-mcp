@@ -359,6 +359,158 @@ describe("AC-5 full — converged 5-client sandbox has zero churn on repair", ()
 });
 
 // ===================================================================
+// S3 — dev marker + mutual pinning (B4/B6/B7, AC-4)
+// ===================================================================
+
+describe("S3 — dev install marks entries; repair and install respect the marker", () => {
+  async function runInstaller(opts) {
+    const { main } = await import("../install.mjs");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await main({ nonInteractive: true, skipRules: true, ...opts });
+      return logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    } finally {
+      logSpy.mockRestore();
+    }
+  }
+
+  beforeEach(() => {
+    process.env.MIDBRAIN_API_KEY = "test-key-dev-marker";
+  });
+
+  it("B6: install --dev writes MIDBRAIN_DEV markers, dev shim bodies, and a banner", async () => {
+    const stdout = await runInstaller({ isDev: true });
+
+    const claudeJson = JSON.parse(await fs.readFile(env.paths.claudeJson, "utf8"));
+    const claudeEntry = claudeJson.mcpServers["midbrain-memory"];
+    expect(claudeEntry.env.MIDBRAIN_DEV).toBe("1");
+    expect(claudeEntry.command).toBe(process.execPath);
+    expect(claudeEntry.args[0]).toContain(REPO_ROOT);
+
+    const codexToml = await fs.readFile(env.paths.codexConfig, "utf8");
+    expect(codexToml).toContain("MIDBRAIN_DEV");
+
+    const opencodeJson = JSON.parse(await fs.readFile(env.paths.opencodeConfig, "utf8"));
+    expect(opencodeJson.mcp["midbrain-memory"].environment.MIDBRAIN_DEV).toBe("1");
+
+    const hermesYaml = await fs.readFile(env.paths.hermesConfig, "utf8");
+    expect(hermesYaml).toContain("MIDBRAIN_DEV");
+
+    const { isDevShimContent } = await import("../shared/clients/shim.mjs");
+    for (const shim of [env.paths.claudeShim, env.paths.codexShim, env.paths.hermesShim]) {
+      expect(isDevShimContent(await fs.readFile(shim, "utf8")), shim).toBe(true);
+    }
+
+    expect(stdout).toContain("DEV INSTALL");
+    expect(stdout).toContain("npx midbrain-memory-mcp install");
+  });
+
+  it("B4/AC-4: a canonical instance's repair pass leaves dev state byte-identical", async () => {
+    await runInstaller({ isDev: true });
+
+    await new Promise((r) => setTimeout(r, 10));
+    const before = await env.snapshot();
+    await runSelfRepair(NPX_CTX); // canonical npx instance starting up
+    expect(diffSnapshots(before, await env.snapshot())).toEqual([]);
+  });
+
+  it("B4 + stale hooks: repair fixes hook entries but preserves the dev shim body", async () => {
+    await runInstaller({ isDev: true });
+    const devShimBody = await fs.readFile(env.paths.claudeShim, "utf8");
+
+    // Someone hand-broke the hook entries; the dev shim must survive repair.
+    const settings = JSON.parse(await fs.readFile(env.paths.claudeSettings, "utf8"));
+    settings.hooks.UserPromptSubmit = [
+      { hooks: [{ type: "command", command: "node /old/plugins/claude-code/capture-user.mjs", timeout: 10 }] },
+    ];
+    await fs.writeFile(env.paths.claudeSettings, JSON.stringify(settings, null, 2) + "\n");
+
+    await runSelfRepair(DURABLE);
+
+    const repaired = JSON.parse(await fs.readFile(env.paths.claudeSettings, "utf8"));
+    const cmd = repaired.hooks.UserPromptSubmit.at(-1).hooks[0].command;
+    expect(cmd).toContain("claude-hook");
+    expect(cmd).not.toContain("capture-user.mjs");
+    expect(await fs.readFile(env.paths.claudeShim, "utf8")).toBe(devShimBody);
+  });
+
+  it("B7: explicit install (no flag) drops markers and restores canonical everywhere", async () => {
+    await runInstaller({ isDev: true });
+    await runInstaller({});
+
+    const claudeJson = JSON.parse(await fs.readFile(env.paths.claudeJson, "utf8"));
+    const claudeEntry = claudeJson.mcpServers["midbrain-memory"];
+    expect(claudeEntry.env.MIDBRAIN_DEV).toBeUndefined();
+    expect(claudeEntry.command).toBe("npx");
+    expect(claudeEntry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+
+    const codexToml = await fs.readFile(env.paths.codexConfig, "utf8");
+    expect(codexToml).not.toContain("MIDBRAIN_DEV");
+    const opencodeJson = JSON.parse(await fs.readFile(env.paths.opencodeConfig, "utf8"));
+    expect(opencodeJson.mcp["midbrain-memory"].environment.MIDBRAIN_DEV).toBeUndefined();
+    const hermesYaml = await fs.readFile(env.paths.hermesConfig, "utf8");
+    expect(hermesYaml).not.toContain("MIDBRAIN_DEV");
+
+    const { isDevShimContent } = await import("../shared/clients/shim.mjs");
+    for (const shim of [env.paths.claudeShim, env.paths.codexShim, env.paths.hermesShim]) {
+      expect(isDevShimContent(await fs.readFile(shim, "utf8")), shim).toBe(false);
+    }
+  });
+
+  it("pinned entry + dev marker: pinning survives the dev round-trip", async () => {
+    const pinned = {
+      mcpServers: {
+        "midbrain-memory": {
+          type: "stdio",
+          command: "npx",
+          args: ["-y", "midbrain-memory-mcp@0.4.5"],
+          env: { MIDBRAIN_CLIENT: "claude", KEEP_ME: "yes" },
+        },
+      },
+    };
+    await fs.writeFile(env.paths.claudeJson, JSON.stringify(pinned, null, 2) + "\n");
+
+    await runInstaller({ isDev: true });
+    let entry = JSON.parse(await fs.readFile(env.paths.claudeJson, "utf8")).mcpServers["midbrain-memory"];
+    // pinned entries are preserved wholesale (classifyEntry contract)
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@0.4.5"]);
+    expect(entry.env.KEEP_ME).toBe("yes");
+
+    await runInstaller({});
+    entry = JSON.parse(await fs.readFile(env.paths.claudeJson, "utf8")).mcpServers["midbrain-memory"];
+    expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@0.4.5"]);
+    expect(entry.env.KEEP_ME).toBe("yes");
+  });
+});
+
+// ===================================================================
+// B8/AC-6 — explicit install still covers all four config clients
+// ===================================================================
+
+describe("B8/AC-6 — explicit install repairs all four detected clients", () => {
+  it("installs opencode + claude + codex + hermes in one run", async () => {
+    process.env.MIDBRAIN_API_KEY = "test-key-b8";
+    const { main } = await import("../install.mjs");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await main({ nonInteractive: true, skipRules: true });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const claudeJson = JSON.parse(await fs.readFile(env.paths.claudeJson, "utf8"));
+    expect(claudeJson.mcpServers["midbrain-memory"].command).toBe("npx");
+    expect((await fs.readFile(env.paths.codexConfig, "utf8"))).toContain("midbrain-memory");
+    expect(JSON.parse(await fs.readFile(env.paths.opencodeConfig, "utf8")).mcp["midbrain-memory"]).toBeDefined();
+    expect((await fs.readFile(env.paths.hermesConfig, "utf8"))).toContain("midbrain-memory");
+    // hooks/shims written for the hook-based clients
+    for (const shim of [env.paths.claudeShim, env.paths.codexShim, env.paths.hermesShim]) {
+      await expect(fs.access(shim)).resolves.toBeUndefined();
+    }
+  });
+});
+
+// ===================================================================
 // B9 — corrupt config: skip that client, keep going, never crash
 // ===================================================================
 
