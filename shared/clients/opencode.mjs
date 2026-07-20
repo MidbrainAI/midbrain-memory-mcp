@@ -44,7 +44,16 @@ const MARKER_FILE = '.midbrain-repo-root';
 // instance's location — freshness is version + content, not path identity.
 // Old `name@version:/path` markers mismatch once and migrate on first repair.
 const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}`;
-const EXPECTED_PLUGIN_FILES = new Set([PLUGIN_FILE, BUNDLE_FILE, MARKER_FILE]);
+
+// Closed list of legacy artifacts (AC-13): exactly what prior releases copied
+// into ~/.config/opencode/plugins/ (pre-bundle era: shared modules + a
+// clients/ tree) and nothing else. The plugins dir is user territory — never
+// delete by prefix or dirname guesses.
+const LEGACY_PLUGIN_FILES = ['logger.mjs', 'midbrain-api.mjs'];
+const LEGACY_CLIENTS_DIR = 'clients';
+const LEGACY_CLIENTS_FILES = [
+  'base.mjs', 'utils.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'codex.mjs', 'registry.mjs',
+];
 
 /**
  * Content-compared copy: write dest only when bytes differ. Falls back to a
@@ -62,18 +71,29 @@ async function copyFileIfChanged(src, dest) {
   return writeFileIfChanged(dest, content);
 }
 
-/** Remove stale midbrain plugin files that aren't part of the current release. */
-async function cleanStalePlugins(pd) {
+/** Delete one file, fail-open (missing, mocked-out fs, or permissions). */
+async function rmQuiet(target) {
   try {
-    const entries = await fs.readdir(pd);
-    for (const entry of entries) {
-      if (entry.startsWith('midbrain-') || entry.startsWith('.midbrain-') || entry === 'clients') {
-        if (!EXPECTED_PLUGIN_FILES.has(entry)) {
-          await fs.rm(path.join(pd, entry), { recursive: true, force: true });
-        }
-      }
-    }
-  } catch { /* ignore — dir may not exist yet */ }
+    await fs.rm(target, { force: true });
+  } catch { /* fail open: cleanup must never break install/repair */ }
+}
+
+/**
+ * Remove confirmed legacy midbrain artifacts — closed list only (AC-13).
+ * The legacy clients/ dir is removed only when emptied by that list: rmdir
+ * refuses a non-empty dir, so user-owned files keep the dir alive.
+ */
+async function cleanStalePlugins(pd) {
+  for (const name of LEGACY_PLUGIN_FILES) {
+    await rmQuiet(path.join(pd, name));
+  }
+  const clientsDir = path.join(pd, LEGACY_CLIENTS_DIR);
+  for (const name of LEGACY_CLIENTS_FILES) {
+    await rmQuiet(path.join(clientsDir, name));
+  }
+  try {
+    await fs.rmdir(clientsDir);
+  } catch { /* absent, non-empty (user files), or mocked fs — keep it */ }
 }
 
 // ---------------------------------------------------------------------------
