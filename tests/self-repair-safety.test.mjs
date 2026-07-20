@@ -266,6 +266,99 @@ describe("B11 — missing shim is reinstalled without touching settings", () => 
 });
 
 // ===================================================================
+// S2d — OpenCode marker is version-only; AC-3 across every surface
+// ===================================================================
+
+describe("S2d/AC-3 — no repaired surface carries volatile or checkout paths", () => {
+  it("opencode marker becomes version-only after repair", async () => {
+    await seedStaleEverything(env);
+    await runSelfRepair(NPX_CTX);
+
+    const marker = await fs.readFile(path.join(env.paths.opencodePlugins, ".midbrain-repo-root"), "utf8");
+    const { PKG_NAME, PKG_VERSION } = await import("../shared/clients/utils.mjs");
+    expect(marker.trim()).toBe(`${PKG_NAME}@${PKG_VERSION}`);
+    expect(marker).not.toContain(REPO_ROOT);
+    expect(marker).not.toContain(":/");
+  });
+
+  it("full-converge grep: every midbrain-written surface is free of tmp/_npx/checkout paths", async () => {
+    await seedStaleEverything(env);
+    await runSelfRepair(DURABLE);
+
+    const surfaces = [
+      env.paths.claudeSettings,
+      env.paths.claudeShim,
+      env.paths.codexHooks,
+      env.paths.codexShim,
+      env.paths.hermesConfig,
+      env.paths.hermesShim,
+      path.join(env.paths.opencodePlugins, ".midbrain-repo-root"),
+      env.paths.nanoclawSkill,
+    ];
+    for (const surface of surfaces) {
+      const content = await fs.readFile(surface, "utf8");
+      const midbrainLines = content.split("\n").filter((l) =>
+        l.includes("midbrain") || l.includes("-hook"));
+      for (const line of midbrainLines) {
+        // user-authored stale lines were removed by repair; midbrain-owned
+        // lines must never contain volatile or checkout locations
+        expect(line, `${surface}: ${line}`).not.toContain("_npx");
+        expect(line, `${surface}: ${line}`).not.toContain("/private/tmp");
+        expect(line, `${surface}: ${line}`).not.toContain(REPO_ROOT);
+      }
+    }
+  });
+});
+
+// ===================================================================
+// B11 for codex/hermes — shim reinstalled without config churn
+// ===================================================================
+
+describe("B11 — codex/hermes missing shim reinstalled without config churn", () => {
+  it("codex: shim reinstalled, hooks.json mtime unchanged", async () => {
+    await seedStaleEverything(env);
+    await runSelfRepair(DURABLE); // converge
+    await fs.rm(env.paths.codexShim);
+
+    await new Promise((r) => setTimeout(r, 10));
+    const hooksStat = await fs.stat(env.paths.codexHooks);
+    await runSelfRepair(DURABLE);
+
+    expect(await fs.readFile(env.paths.codexShim, "utf8")).toBe(buildShimBody("codex"));
+    expect((await fs.stat(env.paths.codexHooks)).mtimeMs).toBe(hooksStat.mtimeMs);
+  });
+
+  it("hermes: shim reinstalled, config.yaml mtime unchanged", async () => {
+    await seedStaleEverything(env);
+    await runSelfRepair(DURABLE); // converge
+    await fs.rm(env.paths.hermesShim);
+
+    await new Promise((r) => setTimeout(r, 10));
+    const configStat = await fs.stat(env.paths.hermesConfig);
+    await runSelfRepair(DURABLE);
+
+    expect(await fs.readFile(env.paths.hermesShim, "utf8")).toBe(buildShimBody("hermes"));
+    expect((await fs.stat(env.paths.hermesConfig)).mtimeMs).toBe(configStat.mtimeMs);
+  });
+});
+
+// ===================================================================
+// AC-5 (full) — converge everything, then a repair pass changes nothing
+// ===================================================================
+
+describe("AC-5 full — converged 5-client sandbox has zero churn on repair", () => {
+  it("no file content or mtime changes anywhere in the sandbox", async () => {
+    await seedStaleEverything(env);
+    await runSelfRepair(DURABLE); // converge all clients
+
+    await new Promise((r) => setTimeout(r, 10));
+    const before = await env.snapshot();
+    await runSelfRepair(NPX_CTX);
+    expect(diffSnapshots(before, await env.snapshot())).toEqual([]);
+  });
+});
+
+// ===================================================================
 // B9 — corrupt config: skip that client, keep going, never crash
 // ===================================================================
 

@@ -20,8 +20,12 @@
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
   KEY_FILENAME, MCP_KEY, PKG_NAME, REPO_ROOT,
-  home, backup, writeSecure, extractCustomEnv, PINNED_RE,
+  home, backup, writeSecure, extractCustomEnv, PINNED_RE, writeFileIfChanged,
 } from './utils.mjs';
+import {
+  shellQuote, stableShimPath, installShim,
+  validateShimPaths as validateClientShimPaths,
+} from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -32,7 +36,6 @@ const HOOK_TIMEOUT_SEC = 30;
 const PROJECT_DIR_ENV = '${TERMINAL_CWD}';
 const RESTART_WARNING =
   'If a Hermes gateway is already running, restart that gateway before memory capture takes effect.';
-const WINDOWS_UNSUPPORTED_RE = /[&^()%!]/;
 // Hermes lifecycle events -> midbrain capture roles.
 const HOOK_EVENTS = {
   pre_llm_call: 'user',
@@ -54,10 +57,7 @@ function hermesHome() {
   return path.resolve(home(), '.hermes');
 }
 function configPath() { return path.join(hermesHome(), 'config.yaml'); }
-function stableHookPath() {
-  const filename = process.platform === 'win32' ? 'hermes-hook.cmd' : 'hermes-hook';
-  return path.join(home(), '.midbrain', 'bin', filename);
-}
+function stableHookPath() { return stableShimPath('hermes'); }
 function cfgDir() { return path.join(home(), '.config', 'hermes'); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
 
@@ -92,58 +92,30 @@ async function readYamlDoc(filePath) {
   return doc;
 }
 
-async function writeYamlDoc(filePath, doc) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  // lineWidth: 0 disables line folding so long hook command strings stay on
-  // one line (valid either way, but cleaner and easier to diff/audit).
-  await fs.writeFile(filePath, doc.toString({ lineWidth: 0 }), 'utf8');
-}
-
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
+/**
+ * Content-compared YAML document write; backs up only when actually changing.
+ * lineWidth: 0 disables line folding so long hook command strings stay on
+ * one line (valid either way, but cleaner and easier to diff/audit).
+ */
+async function writeYamlDocIfChanged(filePath, doc, { backupFirst = false } = {}) {
+  const content = doc.toString({ lineWidth: 0 });
+  const changed = await (async () => {
+    try {
+      return (await fs.readFile(filePath, 'utf8')) !== content;
+    } catch { return true; }
+  })();
+  if (!changed) return false;
+  if (backupFirst) await backup(filePath);
+  await writeFileIfChanged(filePath, content);
+  return true;
 }
 
 function buildHookCommand(role) {
   return `${shellQuote(stableHookPath())} ${role}`;
 }
 
-function windowsPathGuard(filePath, label) {
-  if (process.platform === 'win32' && WINDOWS_UNSUPPORTED_RE.test(filePath)) {
-    throw new Error(`${label} contains unsupported Windows command characters: ${filePath}`);
-  }
-}
-
-function validateShimPaths({ isDev = false } = {}) {
-  windowsPathGuard(stableHookPath(), 'Hermes hook shim path');
-  if (!isDev) return;
-  windowsPathGuard(process.execPath, 'Hermes development Node path');
-  windowsPathGuard(path.join(REPO_ROOT, 'index.js'), 'Hermes development index path');
-}
-
-function shimBody({ isDev = false } = {}) {
-  const indexPath = path.join(REPO_ROOT, 'index.js');
-  if (process.platform === 'win32') {
-    const command = isDev
-      ? `"${process.execPath}" "${indexPath}" hook hermes "%~1"`
-      : 'call npx.cmd -y midbrain-memory-mcp@latest hook hermes "%~1"';
-    return `@echo off\r\n${command}\r\nexit /b 0\r\n`;
-  }
-  const command = isDev
-    ? `${shellQuote(process.execPath)} ${shellQuote(indexPath)}`
-    : 'npx -y midbrain-memory-mcp@latest';
-  return `#!/bin/sh
-set +e
-${command} hook hermes "$@"
-exit 0
-`;
-}
-
-async function installStableHookShim(opts = {}) {
-  validateShimPaths(opts);
-  const shim = stableHookPath();
-  await fs.mkdir(path.dirname(shim), { recursive: true });
-  await fs.writeFile(shim, shimBody(opts), 'utf8');
-  if (process.platform !== 'win32') await fs.chmod(shim, 0o755);
+function validateShimPaths(opts = {}) {
+  validateClientShimPaths('hermes', opts);
 }
 
 /** Build the mcp_servers.midbrain-memory entry (plain object). */
@@ -259,9 +231,8 @@ export class Hermes extends BaseClient {
     const { exists, pinned, envChanged } = patchMcpEntry(doc, { isDev });
     await patchHooks(doc);
 
-    await installStableHookShim({ isDev });
-    await backup(cfp);
-    await writeYamlDoc(cfp, doc);
+    await installShim('hermes', { mode: 'install', isDev });
+    await writeYamlDocIfChanged(cfp, doc, { backupFirst: true });
 
     summary.push(formatLine(cfp, exists, pinned, envChanged));
     summary.push(`${cfp}: MidBrain capture hooks written (pre_llm_call, post_llm_call)`);
@@ -277,8 +248,7 @@ export class Hermes extends BaseClient {
     validateShimPaths({ isDev });
     const doc = await readYamlDoc(cfp);
     const { exists, pinned, envChanged } = patchMcpEntry(doc, { isDev });
-    await backup(cfp);
-    await writeYamlDoc(cfp, doc);
+    await writeYamlDocIfChanged(cfp, doc, { backupFirst: true });
     return [formatLine(cfp, exists, pinned, envChanged), RESTART_WARNING];
   }
 
@@ -318,14 +288,22 @@ export class Hermes extends BaseClient {
     } catch { return true; }
   }
 
-  /** Repair stale hooks by rewriting them and reinstalling the shim. */
+  /**
+   * Repair stale hooks: rewrite midbrain hook entries and reinstall the shim
+   * when missing or stale. Dev-marked shim bodies are preserved; content-
+   * compared writes keep mtimes (and Hermes hook approvals) stable.
+   */
   async repairHooks() {
     const cfp = configPath();
     validateShimPaths();
-    const doc = await readYamlDoc(cfp);
+    let doc;
+    try {
+      doc = await readYamlDoc(cfp);
+    } catch { return []; } // unreadable config: fail open, skip
     await patchHooks(doc);
-    await installStableHookShim();
-    await writeYamlDoc(cfp, doc);
+    const shim = await installShim('hermes', { mode: 'repair' });
+    const wrote = await writeYamlDocIfChanged(cfp, doc);
+    if (!wrote && !shim.written) return [];
     return ['  ~ Hermes hooks repaired (stable Hermes hook shim installed)'];
   }
 }

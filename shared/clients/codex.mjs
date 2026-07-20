@@ -11,9 +11,10 @@
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
   KEY_FILENAME, MCP_KEY, PKG_NAME, REPO_ROOT,
-  home, readJson, writeJson, backup, writeSecure,
+  home, readJson, writeJsonIfChanged, backup, writeSecure,
   classifyEntry, formatMigrationLine,
 } from './utils.mjs';
+import { shellQuote, stableShimPath, installShim } from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -35,7 +36,7 @@ let tomlModule;
 function codexDir() { return path.join(home(), '.codex'); }
 function configPath() { return path.join(codexDir(), 'config.toml'); }
 function hooksPath() { return path.join(codexDir(), 'hooks.json'); }
-function stableHookPath() { return path.join(home(), '.midbrain', 'bin', 'codex-hook'); }
+function stableHookPath() { return stableShimPath('codex'); }
 function cfgDir() { return path.join(home(), '.config', 'codex'); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
 
@@ -50,10 +51,17 @@ async function readToml(filePath) {
   }
 }
 
-async function writeToml(filePath, data) {
+/** Content-compared TOML write; backs up only when actually changing. */
+async function writeTomlIfChanged(filePath, data, { backupFirst = false } = {}) {
   const toml = await loadToml();
+  const content = toml.stringify(data);
+  try {
+    if ((await fs.readFile(filePath, 'utf8')) === content) return false;
+  } catch { /* missing -> write */ }
+  if (backupFirst) await backup(filePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, toml.stringify(data), 'utf8');
+  await fs.writeFile(filePath, content, 'utf8');
+  return true;
 }
 
 async function loadToml() {
@@ -86,38 +94,8 @@ function patchMcpEntry(config, opts) {
   return { exists, pinned };
 }
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
-}
-
 function buildHookCommand(scriptName) {
   return `${shellQuote(stableHookPath())} ${scriptName}`;
-}
-
-function shimBody() {
-  return `#!/bin/sh
-set +e
-npx -y midbrain-memory-mcp@latest hook codex "$@"
-status=$?
-case "$1" in
-  assistant|tool)
-    if [ "$status" -ne 0 ]; then
-      printf '{}'
-    fi
-    exit 0
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-`;
-}
-
-async function installStableHookShim() {
-  const shim = stableHookPath();
-  await fs.mkdir(path.dirname(shim), { recursive: true });
-  await fs.writeFile(shim, shimBody(), 'utf8');
-  await fs.chmod(shim, 0o755);
 }
 
 function midbrainHook(scriptName) {
@@ -187,14 +165,12 @@ export class Codex extends BaseClient {
     const config = await readToml(cfp);
     const { exists, pinned } = patchMcpEntry(config, opts);
     patchFeatureAliases(config);
-    await backup(cfp);
-    await writeToml(cfp, config);
+    await writeTomlIfChanged(cfp, config, { backupFirst: true });
     summary.push(formatMigrationLine('~/.codex/config.toml', exists, pinned));
 
     const hooks = patchHooks((await readJson(hp)) || {});
-    await installStableHookShim();
-    await backup(hp);
-    await writeJson(hp, hooks);
+    await installShim('codex', { mode: 'install', isDev: opts.isDev });
+    await writeJsonIfChanged(hp, hooks, { backupFirst: true });
     summary.push('~/.codex/hooks.json: MidBrain hooks written');
     summary.push('~/.midbrain/bin/codex-hook: stable Codex hook shim written');
     summary.push('Restart Codex and review/trust MidBrain hooks with /hooks once if prompted.');
@@ -209,8 +185,7 @@ export class Codex extends BaseClient {
     const configFile = path.join(_projectDir, '.codex', 'config.toml');
     const config = await readToml(configFile);
     const { exists, pinned } = patchMcpEntry(config, opts);
-    await backup(configFile);
-    await writeToml(configFile, config);
+    await writeTomlIfChanged(configFile, config, { backupFirst: true });
     return [
       formatMigrationLine(configFile, exists, pinned),
       'Codex project trust required: restart Codex and trust this project config if prompted.',
@@ -222,7 +197,9 @@ export class Codex extends BaseClient {
   }
 
   /**
-   * Check if hooks point to the current REPO_ROOT. Returns true if fresh.
+   * Fresh when midbrain hooks reference the current stable codex-hook shim
+   * (and the shim exists). Canonical since PRD-017 — never compares
+   * REPO_ROOT. Legacy direct-script commands trigger a migration repair.
    */
   async isFresh() {
     try {
@@ -244,14 +221,20 @@ export class Codex extends BaseClient {
   }
 
   /**
-   * Repair stale hooks by rewriting with current REPO_ROOT paths.
+   * Repair stale hooks: rewrite midbrain hook entries to the canonical shim
+   * command and reinstall the shim when missing or stale. Dev-marked shim
+   * bodies are preserved; content-compared writes keep mtimes stable.
    */
   async repairHooks() {
     const hp = hooksPath();
-    const data = (await readJson(hp)) || {};
+    let data;
+    try {
+      data = (await readJson(hp)) || {};
+    } catch { return []; } // unreadable config: fail open, skip
     patchHooks(data);
-    await installStableHookShim();
-    await writeJson(hp, data);
+    const shim = await installShim('codex', { mode: 'repair' });
+    const wrote = await writeJsonIfChanged(hp, data);
+    if (!wrote && !shim.written) return [];
     return ['  ~ Codex hooks repaired (stable Codex hook shim installed)'];
   }
 }

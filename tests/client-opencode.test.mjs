@@ -38,11 +38,12 @@ const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
 const { OpenCode, resolveOpencodeConfig } = await import("../shared/clients/opencode.mjs");
-const { PKG_NAME, PKG_VERSION, REPO_ROOT } = await import("../shared/clients/utils.mjs");
+const { PKG_NAME, PKG_VERSION } = await import("../shared/clients/utils.mjs");
 
 const HOME = os.homedir();
 const MCP_KEY = "midbrain-memory";
-const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}:${REPO_ROOT}\n`;
+// Version-only since PRD-034 S2/M6: the marker must never embed a path.
+const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}\n`;
 
 const PATHS = {
   opencodeDir:     path.join(HOME, ".config", "opencode"),

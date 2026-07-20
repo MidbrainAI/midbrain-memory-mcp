@@ -12,7 +12,7 @@
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT, PKG_NAME, PKG_VERSION,
-  home, backup, classifyEntry, formatMigrationLine,
+  home, backup, classifyEntry, formatMigrationLine, writeFileIfChanged,
 } from './utils.mjs';
 
 import fs from 'fs/promises';
@@ -40,8 +40,27 @@ function ownKeyPath() { return path.join(configDir(), KEY_FILENAME); }
 const PLUGIN_FILE = 'midbrain-memory.ts';
 const BUNDLE_FILE = 'midbrain-shared.mjs';
 const MARKER_FILE = '.midbrain-repo-root';
-const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}:${REPO_ROOT}`;
+// Version-only (PRD-034 S2/M6): the marker must never embed the running
+// instance's location — freshness is version + content, not path identity.
+// Old `name@version:/path` markers mismatch once and migrate on first repair.
+const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}`;
 const EXPECTED_PLUGIN_FILES = new Set([PLUGIN_FILE, BUNDLE_FILE, MARKER_FILE]);
+
+/**
+ * Content-compared copy: write dest only when bytes differ. Falls back to a
+ * plain copy when the source cannot be read for comparison — the copy must
+ * never fail because the no-churn optimization could not run.
+ */
+async function copyFileIfChanged(src, dest) {
+  let content;
+  try {
+    content = await fs.readFile(src, 'utf8');
+  } catch {
+    await fs.copyFile(src, dest);
+    return true;
+  }
+  return writeFileIfChanged(dest, content);
+}
 
 /** Remove stale midbrain plugin files that aren't part of the current release. */
 async function cleanStalePlugins(pd) {
@@ -159,25 +178,26 @@ export class OpenCode extends BaseClient {
     const { isDev = false } = opts;
     const summary = [];
 
-    // Copy plugin + bundled shared code (2 files, no transformation needed)
+    // Copy plugin + bundled shared code (2 files, no transformation needed).
+    // Content-compared: identical files keep their mtimes (PRD-034 D4).
     const pd = pluginsDir();
     await fs.mkdir(pd, { recursive: true });
     await cleanStalePlugins(pd);
 
-    await fs.copyFile(
+    await copyFileIfChanged(
       path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE),
       path.join(pd, PLUGIN_FILE),
     );
     summary.push(`  + Plugin installed: ~/.config/opencode/plugins/${PLUGIN_FILE}`);
 
-    await fs.copyFile(
+    await copyFileIfChanged(
       path.join(REPO_ROOT, 'dist', BUNDLE_FILE),
       path.join(pd, BUNDLE_FILE),
     );
     summary.push(`  + Bundle copied: ~/.config/opencode/plugins/${BUNDLE_FILE}`);
 
     // Write freshness marker for staleness detection
-    await fs.writeFile(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n', 'utf8');
+    await writeFileIfChanged(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n');
 
     // Patch opencode config (.json or .jsonc)
     const configPath = resolveConfig(configDir());
@@ -273,24 +293,27 @@ export class OpenCode extends BaseClient {
   }
 
   /**
-   * Repair stale plugin files by re-copying from current REPO_ROOT.
-   * Also writes a freshness marker.
+   * Repair stale plugin files by re-copying the running package's content.
+   * Copies are version content, not paths — safe from any canonical context.
+   * Content-compared, so an interrupted-marker case rewrites only what
+   * actually differs.
    */
   async repairPlugins() {
     const pd = pluginsDir();
     await fs.mkdir(pd, { recursive: true });
     await cleanStalePlugins(pd);
 
-    await fs.copyFile(
+    const wrotePlugin = await copyFileIfChanged(
       path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE),
       path.join(pd, PLUGIN_FILE),
     );
-    await fs.copyFile(
+    const wroteBundle = await copyFileIfChanged(
       path.join(REPO_ROOT, 'dist', BUNDLE_FILE),
       path.join(pd, BUNDLE_FILE),
     );
 
-    await fs.writeFile(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n', 'utf8');
+    const wroteMarker = await writeFileIfChanged(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n');
+    if (!wrotePlugin && !wroteBundle && !wroteMarker) return [];
     return ['  ~ OpenCode plugin files repaired (re-copied)'];
   }
 }
