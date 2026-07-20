@@ -117,7 +117,9 @@ OpenCode:
 Claude Code:
 
 - `plugins/claude-code/*.mjs` run in Node 20.
-- Hook paths are written into Claude settings by the installer.
+- Installer-written hooks call the stable `~/.midbrain/bin/claude-hook` shim
+  (30s timeout, `Stop` async), not package-cache or checkout script paths. The
+  shim resolves `npx -y midbrain-memory-mcp@latest hook claude <role>`.
 - `common.mjs` owns `createApi()`, the leveled `log` logger, and stdin parsing.
 
 Codex:
@@ -240,6 +242,13 @@ for rule injection unless a future PR explicitly changes that contract.
 ## Installer Rules
 
 - `install.mjs` is the CLI and setup orchestrator.
+- Automatic self-repair is context-gated (`shared/install-context.mjs`):
+  servers launched from temp dirs, git worktrees, or CI skip repair with one
+  stderr line. Repair writes canonical targets only (stable shims,
+  `npx @latest`) and content-compares every write (no mtime churn).
+- `--dev` marks MCP entries with `MIDBRAIN_DEV: "1"` and writes dev-marked
+  shim bodies; automatic repair never reverts them. Explicit `install`
+  (no flag) restores canonical and drops the marker.
 - `setupProject()` writes project key/config files and returns structured
   summary lines.
 - Project setup must preserve existing config files and merge idempotently.

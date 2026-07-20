@@ -268,14 +268,33 @@ tool downloads again on its next cold start.
 ### Automatic Hook & Plugin Repair
 
 When the MCP server starts, it detects whether installed hooks and plugin
-files point to the current package location. If they are stale (e.g., the
-npm package resolved to a new cache directory), they are automatically
-repaired. No manual `install` needed. This covers:
+files match the canonical stable targets. If they are stale (e.g., legacy
+direct script paths, an old npx cache hash, or a missing shim), they are
+automatically repaired. No manual `install` needed. This covers:
 
-- **Claude Code:** Rewrites hook paths in `~/.claude/settings.json`
+- **Claude Code:** Rewrites MidBrain hook entries in
+  `~/.claude/settings.json` to call the stable
+  `~/.midbrain/bin/claude-hook` shim (user hooks you added yourself are
+  preserved)
 - **Codex:** Installs a stable `~/.midbrain/bin/codex-hook` shim and
   rewrites MidBrain hook entries in `~/.codex/hooks.json` to call that shim
+- **Hermes:** Same pattern via `~/.midbrain/bin/hermes-hook`
 - **OpenCode:** Re-copies the plugin bundle to `~/.config/opencode/plugins/`
+
+Repair only ever writes canonical, location-independent values (the stable
+shims and `npx -y midbrain-memory-mcp@latest`) — never the running
+instance's own path. Writes are content-compared: an already-canonical
+config is left completely untouched (no mtime churn, so Hermes hook
+approvals survive).
+
+Repair is also **context-gated**: a server launched from a temp directory,
+a git worktree, or CI skips repair entirely and prints one stderr line
+(`[midbrain] self-repair skipped: running from <kind> (<path>); ...`). This
+prevents throwaway checkouts from ever writing themselves into your
+permanent client configs. npx-cache launches are the canonical install mode
+and still self-repair. Entries and shims written by `install --dev` carry a
+`MIDBRAIN_DEV` marker and are never reverted by automatic repair; run a
+plain `install` to restore canonical.
 
 Repair happens silently on startup (fire-and-forget, never blocks). If
 something goes wrong, the server continues normally. Repair failures are
@@ -373,6 +392,19 @@ Non-interactive installs always use the single shared (global) key.
   }
 }
 ```
+
+Claude Code global install also writes `UserPromptSubmit` and `Stop` capture
+hooks into `~/.claude/settings.json`. The hooks call a stable local shim
+(30-second timeout; the `Stop` hook is async):
+
+```text
+~/.midbrain/bin/claude-hook user
+~/.midbrain/bin/claude-hook assistant
+```
+
+The shim resolves `npx -y midbrain-memory-mcp@latest hook claude <role>`, so
+the hook command in `settings.json` stays stable across package updates, npm
+cache cleans, and Node upgrades.
 
 **Codex**: `~/.codex/config.toml` (global) or
 `<project>/.codex/config.toml` (per-project):
@@ -689,7 +721,16 @@ node install.mjs --dev                               # interactive
 node install.mjs --project /abs/path/to/project --dev  # per-project
 ```
 
-This writes absolute paths into configs instead of `npx @latest`.
+This writes absolute paths into configs instead of `npx @latest`, marks each
+MCP entry with `MIDBRAIN_DEV: "1"`, and writes dev-marked hook shim bodies.
+Automatic self-repair recognizes the markers and never reverts a dev install;
+starting a server from a temp clone, worktree, or CI never overwrites them
+either (self-repair is skipped there entirely). To return to the canonical
+auto-updating setup, run a plain install:
+
+```sh
+npx midbrain-memory-mcp install
+```
 
 ### Commands
 
