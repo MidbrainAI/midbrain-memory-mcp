@@ -16,7 +16,7 @@ import {
 } from './utils.mjs';
 import {
   shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
-  commandHasTrailingSegments, commandHasMidbrainPackageRef,
+  commandHasLegacyScriptPath, commandHasMidbrainInvocation,
 } from './shim.mjs';
 
 import fs from 'fs/promises';
@@ -95,23 +95,18 @@ function midbrainHookEntry(role) {
 const LEGACY_HOOK_DIR = 'claude-code';
 
 function isLegacyHookCommand(command) {
-  if (typeof command !== 'string') return false;
-  return LEGACY_HOOK_SCRIPTS.some((script) =>
-    commandHasTrailingSegments(command, ['plugins', LEGACY_HOOK_DIR, script]) ||
-    (commandHasMidbrainPackageRef(command) && commandHasTrailingSegments(command, [script])));
+  return commandHasLegacyScriptPath(command, LEGACY_HOOK_DIR, LEGACY_HOOK_SCRIPTS);
 }
 
 /** Detect whether a hook object belongs to midbrain (shim, legacy, or npx form). */
 function isMidbrainHook(hook) {
   const command = typeof hook?.command === 'string' ? hook.command : '';
-  // Exact-equality fast path: entries this adapter wrote are recognized even
-  // without parsing — explicit-install idempotency never depends on the
-  // tokenizer keeping up with shellQuote.
+  // Exact-equality fast path: entries this adapter wrote are recognized
+  // directly, independent of the ownership heuristics below.
   if (Object.values(HOOK_EVENTS).some((role) => command === buildHookCommand(role))) return true;
-  const normalized = command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
   return commandReferencesShim(command, 'claude') ||
     isLegacyHookCommand(command) ||
-    (commandHasMidbrainPackageRef(command) && /\bhook\s+claude\b/.test(normalized));
+    commandHasMidbrainInvocation(command, 'claude');
 }
 
 /** Drop midbrain hooks from groups, keeping every user-defined hook. */

@@ -16,7 +16,7 @@ import {
 } from './utils.mjs';
 import {
   shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
-  commandHasTrailingSegments, commandHasMidbrainPackageRef,
+  commandHasLegacyScriptPath, commandHasMidbrainInvocation,
 } from './shim.mjs';
 
 import fs from 'fs/promises';
@@ -110,34 +110,24 @@ function midbrainHook(scriptName) {
   };
 }
 
-function normalizedHookCommand(command) {
-  return command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-// Historic legacy commands always ended in the exact path segments
-// plugins/codex/<script> (any checkout or npx-cache location) or paired an
-// exact package reference with the exact script filename. Segment equality,
-// never substring (AC-12): a user's own `capture-*.mjs` — or a
-// `myplugins/codex/` path — is never ours.
+// Historic legacy commands ended in plugins/codex/<script> (any checkout or
+// npx-cache location) or paired a package reference with the exact script
+// filename. Boundary-anchored, never substring: a user's own `capture-*.mjs`
+// or a `myplugins/codex/` path is never ours. Transitional (pre-0.4.7).
 const LEGACY_HOOK_DIR = 'codex';
 
 function isLegacyHookCommand(command) {
-  if (typeof command !== 'string') return false;
-  return LEGACY_HOOK_SCRIPTS.some((script) =>
-    commandHasTrailingSegments(command, ['plugins', LEGACY_HOOK_DIR, script]) ||
-    (commandHasMidbrainPackageRef(command) && commandHasTrailingSegments(command, [script])));
+  return commandHasLegacyScriptPath(command, LEGACY_HOOK_DIR, LEGACY_HOOK_SCRIPTS);
 }
 
 function isMidbrainHook(hook) {
   const command = typeof hook?.command === 'string' ? hook.command : '';
-  // Exact-equality fast path: entries this adapter wrote are recognized even
-  // without parsing — explicit-install idempotency never depends on the
-  // tokenizer keeping up with shellQuote.
+  // Exact-equality fast path: entries this adapter wrote are recognized
+  // directly, independent of the ownership heuristics below.
   if (Object.values(HOOK_EVENTS).some((scriptName) => command === buildHookCommand(scriptName))) return true;
-  const normalized = normalizedHookCommand(command);
   return commandReferencesShim(command, 'codex') ||
     isLegacyHookCommand(command) ||
-    (commandHasMidbrainPackageRef(command) && /\bhook\s+codex\b/.test(normalized));
+    commandHasMidbrainInvocation(command, 'codex');
 }
 
 function withoutMidbrainGroups(groups) {

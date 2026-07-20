@@ -250,16 +250,17 @@ for rule injection unless a future PR explicitly changes that contract.
   the canonical install mode and still repairs.
 - Self-repair is cross-client by design: one startup may converge every
   detected client, but changes only positively owned MidBrain state. Hook
-  ownership is exact: commands are split with a real shell-word tokenizer
-  (quoted spaces, unquoted win32 backslash paths, and the POSIX `'\''`
-  apostrophe idiom all survive, so hostile paths stay recognizable), and a
-  command is ours only via the exact shim path, exact trailing
-  `plugins/<dir>/capture-*.mjs` path segments, or an exact package
-  reference (the bare package word, an `@version` form, or a
-  `midbrain-memory-mcp` path segment) paired with a `hook <client>`
-  invocation or the exact capture-script filename — never substring or
-  near-name matches. Shim freshness requires the exact
-  canonical body (or dev marker) plus executable mode, not mere existence.
+  ownership uses boundary-anchored matching on the slash-normalized command
+  (no shell tokenizer): a command is ours only via the client's stable shim
+  under `.midbrain/bin/<client>-hook` (basename-anchored, so
+  `<client>-hook-wrapper` is a user hook), a legacy `plugins/<dir>/capture-*.mjs`
+  path or a package reference paired with a bare capture-script filename, or a
+  `midbrain-memory-mcp` package reference (bare word, `@version`, or path
+  segment) dispatching `hook <client>`. Left/right boundaries reject
+  `myplugins/...` and `midbrain-memory-mcp-wrapper` near-names — never
+  substring matches. The legacy-script and invocation signals are transitional
+  (pre-0.4.7 installs). Shim freshness requires the exact canonical body (or
+  dev marker) plus executable mode, not mere existence.
 - OpenCode plugin cleanup deletes only the closed legacy-artifact list
   (`logger.mjs`, `midbrain-api.mjs`, `midbrain-common.mjs`, the seven known
   `clients/` files);

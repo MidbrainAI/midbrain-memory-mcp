@@ -125,110 +125,104 @@ export function isDevShimContent(content) {
     .some((line) => line === DEV_MARKER_POSIX || line === DEV_MARKER_WIN);
 }
 
-/**
- * Split a command string into shell words the way sh would (AC-12). Adjacent
- * quoted/unquoted fragments concatenate into ONE word — this is what makes
- * the POSIX `'\''` idiom (shellQuote's own output for paths containing
- * apostrophes) round-trip back to the original path. Backslash handling is
- * deliberately conservative: outside quotes it escapes only quotes,
- * backslash, and whitespace — before any other character it is a literal,
- * because these commands include UNQUOTED win32 paths (`C:\Users\...`) that
- * legacy installers ≤0.4.6 wrote and that must keep tokenizing to matchable
- * path words. Inside double quotes backslash escapes only `"` `\` `$` and
- * backtick; inside single quotes nothing escapes. Unterminated quotes are
- * taken to end-of-string.
- */
-export function tokenizeShellWords(command) {
-  const words = [];
-  let current = '';
-  let hasFragment = false;
-  let state = 'plain';
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (state === 'single') {
-      if (ch === "'") state = 'plain';
-      else current += ch;
-      continue;
-    }
-    if (state === 'double') {
-      if (ch === '"') state = 'plain';
-      else if (ch === '\\' && '"\\$`'.includes(command[i + 1])) current += command[++i];
-      else current += ch;
-      continue;
-    }
-    if (ch === "'") { state = 'single'; hasFragment = true; continue; }
-    if (ch === '"') { state = 'double'; hasFragment = true; continue; }
-    if (ch === '\\' && ('\'"\\'.includes(command[i + 1]) || /\s/.test(command[i + 1] ?? ''))) {
-      current += command[++i];
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (current.length || hasFragment) words.push(current);
-      current = '';
-      hasFragment = false;
-      continue;
-    }
-    current += ch;
-  }
-  if (current.length || hasFragment) words.push(current);
-  return words;
+// ---------------------------------------------------------------------------
+// Hook ownership (AC-12, PRD-034 rev4 simplification)
+//
+// Repair may only claim hook commands that are positively OURS. The previous
+// implementation hand-rolled a POSIX shell tokenizer to match path *words*;
+// this replaces it with boundary-anchored substring matching on the
+// slash-normalized command. Three signals, each a real regex with word/segment
+// boundaries so near-names never match:
+//
+//   1. references the client's own stable shim under ~/.midbrain/bin
+//   2. is a legacy pre-shim capture script under plugins/<dir>/
+//   3. is a midbrain package invocation (npx or a checkout index.js) that
+//      dispatches `hook <client>`
+//
+// Everything keys on `.midbrain/bin/<client>-hook` (our private dir, ours by
+// construction) or `midbrain-memory-mcp` as a package boundary — a user's
+// `claude-hook-wrapper`, `myplugins/...`, or `midbrain-memory-mcp-wrapper`
+// never matches. Signals 2 and 3 are transitional (pre-0.4.7 installs) and
+// can be removed once those installs age out.
+// ---------------------------------------------------------------------------
+
+/** Slash-normalize (win32 backslashes -> forward slashes) for matching. */
+function normalizeCommand(command) {
+  return String(command).replace(/\\/g, '/');
 }
 
-/** Path segments of a token, backslashes normalized (empty segments dropped). */
-function pathSegments(token) {
-  return String(token).replace(/\\/g, '/').split('/').filter(Boolean);
+/** Escape a string for safe embedding in a RegExp. */
+function escapeRe(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
- * True when some shell word of `command` is a path whose TRAILING segments
- * are exactly `segments` (AC-12). Segment equality, never substring — a
- * `myplugins/claude-code/capture-user.mjs` path does not end with the
- * segments ['plugins', 'claude-code', 'capture-user.mjs'].
+ * True when a hook command references the client's stable shim
+ * (~/.midbrain/bin/<client>-hook[.cmd]). The basename is anchored so
+ * `<client>-hook-wrapper` (a user hook) never matches. Absolute, `~`, and
+ * `$HOME` forms all normalize to a `.midbrain/bin/<client>-hook` substring,
+ * so the private-dir path alone is a sufficient, safe ownership signal.
  */
-export function commandHasTrailingSegments(command, segments) {
+export function commandReferencesShim(command, client) {
   if (typeof command !== 'string') return false;
-  return tokenizeShellWords(command).some((token) => {
-    const segs = pathSegments(token);
-    if (segs.length < segments.length) return false;
-    const tail = segs.slice(segs.length - segments.length);
-    return segments.every((want, i) => tail[i] === want);
+  const normalized = normalizeCommand(command);
+  // `.midbrain/bin/<client>-hook` optionally followed by `.cmd`, then a path
+  // boundary (end, whitespace, or closing quote) — never a trailing `-wrapper`.
+  const re = new RegExp(`\\.midbrain/bin/${escapeRe(client)}-hook(?:\\.cmd)?(?=$|['"\\s])`);
+  return re.test(normalized);
+}
+
+/**
+ * True when `command` is a legacy pre-shim capture script for this client:
+ * a `plugins/<dir>/<script>` path (checkout or npx-cache location), or a
+ * midbrain package invocation paired with a bare `<script>` filename. The
+ * leading `/` (or start) before `plugins/` prevents `myplugins/...` from
+ * matching (no substring prefixes).
+ *
+ * @param {string} command
+ * @param {string} legacyDir - e.g. 'claude-code', 'codex', 'hermes'.
+ * @param {string[]} scripts - legacy capture script filenames.
+ */
+export function commandHasLegacyScriptPath(command, legacyDir, scripts) {
+  if (typeof command !== 'string') return false;
+  const normalized = normalizeCommand(command);
+  return scripts.some((script) => {
+    const pathRe = new RegExp(`(?:^|/)plugins/${escapeRe(legacyDir)}/${escapeRe(script)}(?=$|['"\\s])`);
+    if (pathRe.test(normalized)) return true;
+    // Package ref + bare script filename as a standalone word (left boundary:
+    // start, whitespace, quote, or path separator; right boundary: word end).
+    const bareRe = new RegExp(`(?:^|[\\s'"/])${escapeRe(script)}(?=$|['"\\s])`);
+    return commandHasMidbrainPackageRef(command) && bareRe.test(normalized);
   });
 }
 
 /**
- * True when `command` positively references this package (AC-12): an exact
- * `midbrain-memory-mcp` word, a versioned `midbrain-memory-mcp@...` word
- * (npx forms), or a path containing `midbrain-memory-mcp` as an exact
- * segment (checkout, node_modules, npx-cache locations). Never a substring —
+ * True when `command` positively references this package as a boundary-anchored
+ * token: `midbrain-memory-mcp` as a whole word, a versioned
+ * `midbrain-memory-mcp@...` (npx forms), or `midbrain-memory-mcp` as an exact
+ * path segment (checkout, node_modules, npx-cache). Never a substring —
  * `midbrain-memory-mcp-wrapper` is somebody else's binary.
  */
 export function commandHasMidbrainPackageRef(command) {
   if (typeof command !== 'string') return false;
-  return tokenizeShellWords(command).some((token) =>
-    token === PKG_NAME ||
-    token.startsWith(`${PKG_NAME}@`) ||
-    pathSegments(token).includes(PKG_NAME));
+  const normalized = normalizeCommand(command);
+  // Left boundary: start, whitespace, quote, or path separator.
+  // Right boundary: `@` (versioned), `/` (path segment), or a word boundary
+  // (end/space/quote) — but NOT `-` (rejects `...-mcp-wrapper`).
+  const re = new RegExp(`(?:^|[\\s'"/])${escapeRe(PKG_NAME)}(?:@|/|(?=$|['"\\s]))`);
+  return re.test(normalized);
 }
 
 /**
- * True when a hook command references the client's stable shim as a complete
- * path word (exact ownership, AC-12). Tokenization is real shell-word
- * splitting (see tokenizeShellWords) — quoted spaces and the `'\''`
- * apostrophe idiom both resolve to one word — and a word owns the shim only
- * when it equals the resolved stableShimPath or its basename is exactly
- * `<client>-hook` / `<client>-hook.cmd` under a `.midbrain/bin` directory
- * (`~`, `$HOME`, and drive-letter forms included). Near-names like
- * `claude-hook-wrapper` never match — those are user hooks.
+ * True when `command` is a midbrain package invocation dispatching
+ * `hook <client>` (npx form or a checkout index.js form). Complements the
+ * shim + legacy signals for the pre-shim invocation shapes.
  */
-export function commandReferencesShim(command, client) {
+export function commandHasMidbrainInvocation(command, client) {
   if (typeof command !== 'string') return false;
-  const resolved = stableShimPath(client);
-  return tokenizeShellWords(command).some((token) => {
-    if (token === resolved) return true;
-    const normalized = token.replace(/\\/g, '/');
-    const match = normalized.match(/^(?:~|\$HOME)?(?:[A-Za-z]:)?(?:\/[^/]*)*\/\.midbrain\/bin\/([^/]+)$/);
-    return !!match && (match[1] === `${client}-hook` || match[1] === `${client}-hook.cmd`);
-  });
+  if (!commandHasMidbrainPackageRef(command)) return false;
+  const normalized = normalizeCommand(command).replace(/['"]/g, ' ').replace(/\s+/g, ' ');
+  return new RegExp(`\\bhook\\s+${escapeRe(client)}\\b`).test(normalized);
 }
 
 /** chmod 0755 (POSIX only, best-effort). mtime-safe: chmod touches ctime only. */

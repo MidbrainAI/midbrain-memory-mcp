@@ -1,12 +1,15 @@
 /**
- * AC-12 (PRD-034 rev 3, B16): exact hook ownership.
+ * AC-12 (PRD-034 rev 4, B16): hook ownership.
  *
- * Repair may claim only positively owned MidBrain hooks: the exact stable-shim
- * command (token equality — near-names like `claude-hook-wrapper` are user
- * hooks), positively identified legacy commands (`plugins/<dir>/capture-*.mjs`
- * or the package name), and npx invocation forms. A user's own script that
- * merely shares a filename with our legacy scripts must survive repair in all
- * three shim clients, preserving ordering.
+ * Repair may claim only positively owned MidBrain hooks. Ownership uses
+ * boundary-anchored matching (shared/clients/shim.mjs) — never a shell
+ * tokenizer: the client's stable shim under `.midbrain/bin/<client>-hook`
+ * (basename-anchored, so `claude-hook-wrapper` is a user hook), positively
+ * identified legacy commands (`plugins/<dir>/capture-*.mjs` or a package ref
+ * + bare script), and midbrain `hook <client>` invocation forms. A user's own
+ * script that merely shares a filename with our legacy scripts, or lives under
+ * `myplugins/<dir>`, must survive repair in all three shim clients, preserving
+ * ordering.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

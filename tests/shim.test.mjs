@@ -22,7 +22,9 @@ import {
   installShim,
   shimStatus,
   commandReferencesShim,
-  tokenizeShellWords,
+  commandHasLegacyScriptPath,
+  commandHasMidbrainPackageRef,
+  commandHasMidbrainInvocation,
 } from "../shared/clients/shim.mjs";
 import { writeFileIfChanged } from "../shared/clients/utils.mjs";
 
@@ -352,43 +354,52 @@ describe("commandReferencesShim — quote-aware tokens (AC-12, spaced homes)", (
   });
 });
 
-describe("tokenizeShellWords — real shell-word splitting (AC-12, hostile homes)", () => {
-  it("concatenates adjacent fragments: the POSIX '\\'' idiom round-trips shellQuote", () => {
-    const p = "/tmp/O'Brien home/.midbrain/bin/claude-hook";
-    expect(tokenizeShellWords(`${shellQuote(p)} user`)).toEqual([p, "user"]);
+describe("commandHasMidbrainPackageRef — boundary-anchored package match", () => {
+  it("matches npx versioned, whole-word, and path-segment forms", () => {
+    expect(commandHasMidbrainPackageRef("npx -y midbrain-memory-mcp@latest hook claude")).toBe(true);
+    expect(commandHasMidbrainPackageRef("node /work/midbrain-memory-mcp/index.js hook claude")).toBe(true);
+    expect(commandHasMidbrainPackageRef("C:\\Users\\u\\dev\\midbrain-memory-mcp\\index.js")).toBe(true);
+    expect(commandHasMidbrainPackageRef(".../_npx/abc/node_modules/midbrain-memory-mcp/x")).toBe(true);
   });
 
-  it("joins mixed adjacent quoted and bare fragments into one word", () => {
-    expect(tokenizeShellWords(`"a b"'c'd e`)).toEqual(["a bcd", "e"]);
+  it("rejects near-name binaries (no -wrapper substring match)", () => {
+    expect(commandHasMidbrainPackageRef("/usr/local/bin/midbrain-memory-mcp-wrapper hook claude")).toBe(false);
+    expect(commandHasMidbrainPackageRef("midbrain-memory-mcp-plus")).toBe(false);
+  });
+});
+
+describe("commandHasLegacyScriptPath — pre-shim capture scripts", () => {
+  const SCRIPTS = ["capture-user.mjs", "capture-assistant.mjs"];
+
+  it("matches plugins/<dir>/<script> in checkout, npx-cache, and win32 forms", () => {
+    expect(commandHasLegacyScriptPath("node /old/plugins/claude-code/capture-user.mjs", "claude-code", SCRIPTS)).toBe(true);
+    expect(commandHasLegacyScriptPath("node /u/.npm/_npx/0f/node_modules/midbrain-memory-mcp/plugins/claude-code/capture-user.mjs", "claude-code", SCRIPTS)).toBe(true);
+    expect(commandHasLegacyScriptPath("C:\\dev\\midbrain-memory-mcp\\plugins\\claude-code\\capture-user.mjs", "claude-code", SCRIPTS)).toBe(true);
   });
 
-  it("backslash escapes whitespace and quotes outside quotes", () => {
-    expect(tokenizeShellWords("foo\\ bar baz")).toEqual(["foo bar", "baz"]);
-    expect(tokenizeShellWords("foo\\'s bar")).toEqual(["foo's", "bar"]);
+  it("matches a package ref paired with a bare script filename", () => {
+    expect(commandHasLegacyScriptPath("npx midbrain-memory-mcp@1.0.0 capture-user.mjs", "claude-code", SCRIPTS)).toBe(true);
   });
 
-  it("preserves win32 backslash paths inside double quotes", () => {
-    expect(tokenizeShellWords('"C:\\Users\\First Last\\.midbrain\\bin\\claude-hook.cmd" user'))
-      .toEqual(["C:\\Users\\First Last\\.midbrain\\bin\\claude-hook.cmd", "user"]);
+  it("rejects myplugins/<dir> and user scripts outside our paths (no substring prefixes)", () => {
+    expect(commandHasLegacyScriptPath("node /home/alice/myplugins/claude-code/capture-user.mjs", "claude-code", SCRIPTS)).toBe(false);
+    expect(commandHasLegacyScriptPath("node /home/alice/scripts/capture-user.mjs", "claude-code", SCRIPTS)).toBe(false);
+  });
+});
+
+describe("commandHasMidbrainInvocation — package + hook dispatch", () => {
+  it("matches npx and checkout index.js invocations dispatching hook <client>", () => {
+    expect(commandHasMidbrainInvocation("npx -y midbrain-memory-mcp@latest hook claude user", "claude")).toBe(true);
+    expect(commandHasMidbrainInvocation("node /work/midbrain-memory-mcp/index.js hook claude user", "claude")).toBe(true);
   });
 
-  it("preserves UNQUOTED win32 backslash paths (legacy ≤0.4.6 hook commands)", () => {
-    // Backslash before an ordinary character is a path separator, not an
-    // escape — only quotes, backslash, and whitespace are escapable.
-    expect(tokenizeShellWords("C:\\Users\\me\\dev\\x\\plugins\\claude-code\\capture-user.mjs"))
-      .toEqual(["C:\\Users\\me\\dev\\x\\plugins\\claude-code\\capture-user.mjs"]);
-    expect(tokenizeShellWords("C:\\Program Files\\nodejs\\node.exe run"))
-      .toEqual(["C:\\Program", "Files\\nodejs\\node.exe", "run"]);
+  it("rejects a foreign binary that merely says hook <client>", () => {
+    expect(commandHasMidbrainInvocation("/usr/local/bin/midbrain-memory-mcp-wrapper hook claude user", "claude")).toBe(false);
+    expect(commandHasMidbrainInvocation("some-tool hook claude user", "claude")).toBe(false);
   });
 
-  it("is graceful on unterminated quotes and empty input", () => {
-    expect(tokenizeShellWords("'abc")).toEqual(["abc"]);
-    expect(tokenizeShellWords("")).toEqual([]);
-    expect(tokenizeShellWords("   ")).toEqual([]);
-  });
-
-  it("an empty quoted argument is a real (empty) word", () => {
-    expect(tokenizeShellWords("cmd '' x")).toEqual(["cmd", "", "x"]);
+  it("does not match a package ref without the hook <client> dispatch", () => {
+    expect(commandHasMidbrainInvocation("npx midbrain-memory-mcp@latest install", "claude")).toBe(false);
   });
 });
 
