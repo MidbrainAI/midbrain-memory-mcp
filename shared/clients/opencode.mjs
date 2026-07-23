@@ -12,7 +12,7 @@
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT, PKG_NAME, PKG_VERSION,
-  home, backup, classifyEntry, formatMigrationLine,
+  home, backup, classifyEntry, formatMigrationLine, writeFileIfChanged,
 } from './utils.mjs';
 
 import fs from 'fs/promises';
@@ -40,21 +40,77 @@ function ownKeyPath() { return path.join(configDir(), KEY_FILENAME); }
 const PLUGIN_FILE = 'midbrain-memory.ts';
 const BUNDLE_FILE = 'midbrain-shared.mjs';
 const MARKER_FILE = '.midbrain-repo-root';
-const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}:${REPO_ROOT}`;
-const EXPECTED_PLUGIN_FILES = new Set([PLUGIN_FILE, BUNDLE_FILE, MARKER_FILE]);
+// Version-only (PRD-034 S2/M6): the marker must never embed the running
+// instance's location — freshness is version + content, not path identity.
+// Old `name@version:/path` markers mismatch once and migrate on first repair.
+const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}`;
+// Dev installs flag the marker (AC-14): automatic repair treats it as pinned
+// regardless of version, mirroring dev shim bodies. Explicit non-dev install
+// rewrites the canonical value, clearing the flag.
+const MARKER_VALUE_DEV = `${MARKER_VALUE}-dev`;
 
-/** Remove stale midbrain plugin files that aren't part of the current release. */
-async function cleanStalePlugins(pd) {
+/** True for any dev-flagged marker, any version — dev pins never expire. */
+function isDevMarkerValue(raw) {
+  if (typeof raw !== 'string') return false;
+  const value = raw.trim();
+  return value.startsWith(`${PKG_NAME}@`) && value.endsWith('-dev');
+}
+
+/** True when the running server itself was launched by a dev MCP entry. */
+function isDevInstance() {
+  return Boolean(process.env.MIDBRAIN_DEV);
+}
+
+// Closed list of legacy artifacts (AC-13): exactly what prior releases copied
+// into ~/.config/opencode/plugins/ (pre-bundle era: shared modules — incl.
+// midbrain-common.mjs shipped v0.1.0–v0.3.2 — plus a clients/ tree) and
+// nothing else. The plugins dir is user territory — never delete by prefix
+// or dirname guesses.
+const LEGACY_PLUGIN_FILES = ['logger.mjs', 'midbrain-api.mjs', 'midbrain-common.mjs'];
+const LEGACY_CLIENTS_DIR = 'clients';
+const LEGACY_CLIENTS_FILES = [
+  'base.mjs', 'utils.mjs', 'generic.mjs', 'opencode.mjs', 'claude.mjs', 'codex.mjs', 'registry.mjs',
+];
+
+/**
+ * Content-compared copy: write dest only when bytes differ. Falls back to a
+ * plain copy when the source cannot be read for comparison — the copy must
+ * never fail because the no-churn optimization could not run.
+ */
+async function copyFileIfChanged(src, dest) {
+  let content;
   try {
-    const entries = await fs.readdir(pd);
-    for (const entry of entries) {
-      if (entry.startsWith('midbrain-') || entry.startsWith('.midbrain-') || entry === 'clients') {
-        if (!EXPECTED_PLUGIN_FILES.has(entry)) {
-          await fs.rm(path.join(pd, entry), { recursive: true, force: true });
-        }
-      }
-    }
-  } catch { /* ignore — dir may not exist yet */ }
+    content = await fs.readFile(src, 'utf8');
+  } catch {
+    await fs.copyFile(src, dest);
+    return true;
+  }
+  return writeFileIfChanged(dest, content);
+}
+
+/** Delete one file, fail-open (missing, mocked-out fs, or permissions). */
+async function rmQuiet(target) {
+  try {
+    await fs.rm(target, { force: true });
+  } catch { /* fail open: cleanup must never break install/repair */ }
+}
+
+/**
+ * Remove confirmed legacy midbrain artifacts — closed list only (AC-13).
+ * The legacy clients/ dir is removed only when emptied by that list: rmdir
+ * refuses a non-empty dir, so user-owned files keep the dir alive.
+ */
+async function cleanStalePlugins(pd) {
+  for (const name of LEGACY_PLUGIN_FILES) {
+    await rmQuiet(path.join(pd, name));
+  }
+  const clientsDir = path.join(pd, LEGACY_CLIENTS_DIR);
+  for (const name of LEGACY_CLIENTS_FILES) {
+    await rmQuiet(path.join(clientsDir, name));
+  }
+  try {
+    await fs.rmdir(clientsDir);
+  } catch { /* absent, non-empty (user files), or mocked fs — keep it */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +165,7 @@ async function patchJsonFile(filePath, modifications) {
 /** Builds the MCP entry for this client. */
 function buildEntry({ isDev = false, projectDir } = {}) {
   if (isDev) {
-    const environment = { MIDBRAIN_CLIENT: 'opencode' };
+    const environment = { MIDBRAIN_CLIENT: 'opencode', MIDBRAIN_DEV: '1' };
     if (projectDir) environment.MIDBRAIN_PROJECT_DIR = projectDir;
     return {
       type: 'local',
@@ -159,25 +215,27 @@ export class OpenCode extends BaseClient {
     const { isDev = false } = opts;
     const summary = [];
 
-    // Copy plugin + bundled shared code (2 files, no transformation needed)
+    // Copy plugin + bundled shared code (2 files, no transformation needed).
+    // Content-compared: identical files keep their mtimes (PRD-034 D4).
     const pd = pluginsDir();
     await fs.mkdir(pd, { recursive: true });
     await cleanStalePlugins(pd);
 
-    await fs.copyFile(
+    await copyFileIfChanged(
       path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE),
       path.join(pd, PLUGIN_FILE),
     );
     summary.push(`  + Plugin installed: ~/.config/opencode/plugins/${PLUGIN_FILE}`);
 
-    await fs.copyFile(
+    await copyFileIfChanged(
       path.join(REPO_ROOT, 'dist', BUNDLE_FILE),
       path.join(pd, BUNDLE_FILE),
     );
     summary.push(`  + Bundle copied: ~/.config/opencode/plugins/${BUNDLE_FILE}`);
 
-    // Write freshness marker for staleness detection
-    await fs.writeFile(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n', 'utf8');
+    // Write freshness marker for staleness detection; --dev flags it so
+    // automatic repair pins the checkout's plugin bytes (AC-14).
+    await writeFileIfChanged(path.join(pd, MARKER_FILE), (isDev ? MARKER_VALUE_DEV : MARKER_VALUE) + '\n');
 
     // Patch opencode config (.json or .jsonc)
     const configPath = resolveConfig(configDir());
@@ -255,11 +313,16 @@ export class OpenCode extends BaseClient {
    * Check if plugin files are fresh by comparing a version marker.
    * Returns true only when marker and copied file contents match. The marker
    * alone can lie if a previous repair was interrupted or manually reverted.
+   * Dev state is pinned in both directions (AC-14): a dev-flagged marker is
+   * never judged stale, and a dev instance never judges canonical state stale
+   * (it must not auto-propagate its checkout bytes).
    */
   async isFresh() {
     try {
+      if (isDevInstance()) return true;
       const markerPath = path.join(pluginsDir(), MARKER_FILE);
       const raw = await fs.readFile(markerPath, 'utf8');
+      if (isDevMarkerValue(raw)) return true;
       if (raw.trim() !== MARKER_VALUE) return false;
 
       const sourcePlugin = await fs.readFile(path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE), 'utf8');
@@ -273,24 +336,33 @@ export class OpenCode extends BaseClient {
   }
 
   /**
-   * Repair stale plugin files by re-copying from current REPO_ROOT.
-   * Also writes a freshness marker.
+   * Repair stale plugin files by re-copying the running package's content.
+   * Copies are version content, not paths — safe from any canonical context.
+   * Content-compared, so an interrupted-marker case rewrites only what
+   * actually differs. Dev state is pinned (AC-14): a dev-flagged install is
+   * preserved byte-identical, and a dev instance never propagates its bytes —
+   * only an explicit `install` crosses the dev/canonical boundary.
    */
   async repairPlugins() {
+    if (isDevInstance()) return [];
     const pd = pluginsDir();
+    try {
+      if (isDevMarkerValue(await fs.readFile(path.join(pd, MARKER_FILE), 'utf8'))) return [];
+    } catch { /* marker missing or unreadable -> proceed with canonical repair */ }
     await fs.mkdir(pd, { recursive: true });
     await cleanStalePlugins(pd);
 
-    await fs.copyFile(
+    const wrotePlugin = await copyFileIfChanged(
       path.join(REPO_ROOT, 'plugins', 'opencode', PLUGIN_FILE),
       path.join(pd, PLUGIN_FILE),
     );
-    await fs.copyFile(
+    const wroteBundle = await copyFileIfChanged(
       path.join(REPO_ROOT, 'dist', BUNDLE_FILE),
       path.join(pd, BUNDLE_FILE),
     );
 
-    await fs.writeFile(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n', 'utf8');
+    const wroteMarker = await writeFileIfChanged(path.join(pd, MARKER_FILE), MARKER_VALUE + '\n');
+    if (!wrotePlugin && !wroteBundle && !wroteMarker) return [];
     return ['  ~ OpenCode plugin files repaired (re-copied)'];
   }
 }

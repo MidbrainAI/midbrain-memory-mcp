@@ -12,8 +12,12 @@
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT,
-  home, readJson, writeJson, backup, classifyEntry, formatMigrationLine,
+  home, readJson, writeJson, writeJsonIfChanged, backup, classifyEntry, formatMigrationLine,
 } from './utils.mjs';
+import {
+  shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
+  commandHasLegacyScriptPath, commandHasMidbrainInvocation,
+} from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -42,7 +46,7 @@ const PERM_KEYS = [
 /** Builds the MCP entry for this client. */
 function buildEntry({ isDev = false, projectDir } = {}) {
   if (isDev) {
-    const env = { MIDBRAIN_CLIENT: 'claude' };
+    const env = { MIDBRAIN_CLIENT: 'claude', MIDBRAIN_DEV: '1' };
     if (projectDir) env.MIDBRAIN_PROJECT_DIR = projectDir;
     return {
       type: 'stdio',
@@ -61,23 +65,77 @@ function buildEntry({ isDev = false, projectDir } = {}) {
   };
 }
 
-/** Builds hook entries for capture scripts. */
-function buildHooks() {
-  const userCmd = `${process.execPath} ${path.join(REPO_ROOT, 'plugins', 'claude-code', 'capture-user.mjs')}`;
-  const assistCmd = `${process.execPath} ${path.join(REPO_ROOT, 'plugins', 'claude-code', 'capture-assistant.mjs')}`;
-  return {
-    UserPromptSubmit: [{ hooks: [{ type: 'command', command: userCmd, timeout: 10 }] }],
-    Stop: [{ hooks: [{ type: 'command', command: assistCmd, timeout: 10, async: true }] }],
-  };
+// Hooks always call the stable ~/.midbrain/bin/claude-hook shim (PRD-034 S2):
+// the command string in user config survives package moves, cache cleans, and
+// Node upgrades. 30s timeout absorbs cold npx resolution inside the shim
+// (the 10s value starved exactly that path in the 2026-07 Hermes incident).
+const HOOK_TIMEOUT_SEC = 30;
+const HOOK_EVENTS = {
+  UserPromptSubmit: 'user',
+  Stop: 'assistant',
+};
+const LEGACY_HOOK_SCRIPTS = ['capture-user.mjs', 'capture-assistant.mjs'];
+
+function buildHookCommand(role) {
+  return `${shellQuote(stableShimPath('claude'))} ${role}`;
+}
+
+function midbrainHookEntry(role) {
+  const entry = { type: 'command', command: buildHookCommand(role), timeout: HOOK_TIMEOUT_SEC };
+  if (role === 'assistant') entry.async = true;
+  return entry;
+}
+
+// Historic buildHooks() always wrote scripts under this package dir, so a
+// positively identified legacy command ends in the exact path segments
+// plugins/claude-code/<script> (any checkout or npx-cache location) or pairs
+// an exact package reference with the exact script filename. Segment
+// equality, never substring (AC-12): a user's own `capture-user.mjs` — or a
+// `myplugins/claude-code/` path — is never ours.
+const LEGACY_HOOK_DIR = 'claude-code';
+
+function isLegacyHookCommand(command) {
+  return commandHasLegacyScriptPath(command, LEGACY_HOOK_DIR, LEGACY_HOOK_SCRIPTS);
+}
+
+/** Detect whether a hook object belongs to midbrain (shim, legacy, or npx form). */
+function isMidbrainHook(hook) {
+  const command = typeof hook?.command === 'string' ? hook.command : '';
+  // Exact-equality fast path: entries this adapter wrote are recognized
+  // directly, independent of the ownership heuristics below.
+  if (Object.values(HOOK_EVENTS).some((role) => command === buildHookCommand(role))) return true;
+  return commandReferencesShim(command, 'claude') ||
+    isLegacyHookCommand(command) ||
+    commandHasMidbrainInvocation(command, 'claude');
+}
+
+/** Drop midbrain hooks from groups, keeping every user-defined hook. */
+function withoutMidbrainGroups(groups) {
+  return groups
+    .map((group) => ({ ...group, hooks: (group.hooks || []).filter((hook) => !isMidbrainHook(hook)) }))
+    .filter((group) => group.hooks.length > 0);
+}
+
+/**
+ * Rewrite only the midbrain hooks: exactly one canonical group per capture
+ * event, all non-midbrain hooks and unrelated events preserved (the previous
+ * wholesale `data.hooks = buildHooks()` wiped user hooks on repair).
+ */
+function patchHooks(data) {
+  data.hooks = data.hooks || {};
+  for (const [event, role] of Object.entries(HOOK_EVENTS)) {
+    const groups = Array.isArray(data.hooks[event]) ? data.hooks[event] : [];
+    data.hooks[event] = [...withoutMidbrainGroups(groups), { hooks: [midbrainHookEntry(role)] }];
+  }
+  return data;
 }
 
 /** Checks if midbrain hooks are already present in settings. */
 function hooksAlreadyPresent(settings) {
   const hooks = settings.hooks || {};
-  const ups = hooks.UserPromptSubmit || [];
-  return ups.some((entry) =>
-    (entry.hooks || []).some((h) =>
-      typeof h.command === 'string' && h.command.includes('capture-user.mjs')
+  return Object.keys(HOOK_EVENTS).some((event) =>
+    (Array.isArray(hooks[event]) ? hooks[event] : []).some((entry) =>
+      (entry.hooks || []).some((h) => isMidbrainHook(h))
     )
   );
 }
@@ -116,7 +174,7 @@ export class Claude extends BaseClient {
     await this._installClaudeJson(summary, { isDev });
 
     // 2. ~/.claude/settings.json — hooks + permissions
-    await this._installClaudeSettings(summary);
+    await this._installClaudeSettings(summary, { isDev });
 
     summary.push('  -> Restart Claude Code to apply changes');
     return summary;
@@ -159,31 +217,49 @@ export class Claude extends BaseClient {
   }
 
   /**
-   * Check if hooks point to the current REPO_ROOT. Returns true if fresh.
-   * Returns false if stale or not installed.
+   * Fresh when midbrain hooks reference the current stable claude-hook shim
+   * and the shim itself is canonical (exact body or dev-marked) and
+   * executable (AC-11). Never compares against REPO_ROOT: the running
+   * instance's location must not define what user config should contain.
+   * Legacy direct-script commands trigger a migration repair.
    */
   async isFresh() {
     try {
       const data = (await readJson(claudeSettingsPath())) || {};
       if (!hooksAlreadyPresent(data)) return true; // no hooks = nothing to repair
-      const hook = data.hooks?.UserPromptSubmit?.[0]?.hooks?.[0];
-      if (!hook?.command) return true;
-      const expectedPath = path.join(REPO_ROOT, 'plugins', 'claude-code', 'capture-user.mjs');
-      return hook.command.includes(expectedPath);
+
+      for (const [event, role] of Object.entries(HOOK_EVENTS)) {
+        const groups = Array.isArray(data.hooks?.[event]) ? data.hooks[event] : [];
+        const hooks = groups.flatMap((group) => group.hooks || []);
+        if (hooks.some((h) => isLegacyHookCommand(h?.command))) return false;
+        const midbrain = hooks.filter((h) => isMidbrainHook(h));
+        if (midbrain.length !== 1) return false;
+        if (midbrain[0].command !== buildHookCommand(role)) return false;
+        if (midbrain[0].timeout !== HOOK_TIMEOUT_SEC) return false;
+        if (role === 'assistant' && midbrain[0].async !== true) return false;
+      }
+      return (await shimStatus('claude')).fresh;
     } catch { return true; } // if we can't read, don't repair
   }
 
   /**
-   * Repair stale hooks by rewriting with current REPO_ROOT paths.
-   * Returns summary lines or empty array if nothing to repair.
+   * Repair stale hooks: rewrite midbrain hook entries to the canonical shim
+   * command (preserving user hooks) and reinstall the shim when it is missing
+   * or stale. Dev-marked shim bodies are preserved. Content-compared writes —
+   * an unchanged file keeps its mtime (Hermes hook-approval safety).
    */
   async repairHooks() {
     const csp = claudeSettingsPath();
-    const data = (await readJson(csp)) || {};
+    let data;
+    try {
+      data = (await readJson(csp)) || {};
+    } catch { return []; } // unreadable config: fail open, skip
     if (!hooksAlreadyPresent(data)) return [];
-    data.hooks = buildHooks();
-    await writeJson(csp, data);
-    return ['  ~ Claude Code hooks repaired (paths updated)'];
+    patchHooks(data);
+    const shim = await installShim('claude', { mode: 'repair' });
+    const wrote = await writeJsonIfChanged(csp, data);
+    if (!wrote && !shim.written) return [];
+    return ['  ~ Claude Code hooks repaired (stable claude-hook shim installed)'];
   }
 
   // --- Private helpers ---
@@ -213,21 +289,15 @@ export class Claude extends BaseClient {
     }
   }
 
-  async _installClaudeSettings(summary) {
+  async _installClaudeSettings(summary, { isDev = false } = {}) {
     const csp = claudeSettingsPath();
-    const settingsDir = path.dirname(csp);
-    await fs.mkdir(settingsDir, { recursive: true });
-
     const data = (await readJson(csp)) || {};
-    await backup(csp);
 
-    if (hooksAlreadyPresent(data)) {
-      data.hooks = buildHooks();
-      summary.push('  ~ Hooks: updated in ~/.claude/settings.json');
-    } else {
-      data.hooks = buildHooks();
-      summary.push('  + Hooks added to ~/.claude/settings.json');
-    }
+    const had = hooksAlreadyPresent(data);
+    patchHooks(data);
+    summary.push(had
+      ? '  ~ Hooks: updated in ~/.claude/settings.json'
+      : '  + Hooks added to ~/.claude/settings.json');
 
     // Permissions
     data.permissions = data.permissions || {};
@@ -241,7 +311,10 @@ export class Claude extends BaseClient {
       }
     }
 
-    await writeJson(csp, data);
+    // Explicit install always writes the shim per its flags (dev or canonical).
+    await installShim('claude', { mode: 'install', isDev });
+    summary.push('  + Stable claude-hook shim written: ~/.midbrain/bin/claude-hook');
+    await writeJsonIfChanged(csp, data, { backupFirst: true });
   }
 
   async _patchProjectLocal(projectDir, { isDev }) {

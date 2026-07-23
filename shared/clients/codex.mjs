@@ -10,10 +10,14 @@
 
 import { BaseClient, readKeyFile } from './base.mjs';
 import {
-  KEY_FILENAME, MCP_KEY, PKG_NAME, REPO_ROOT,
-  home, readJson, writeJson, backup, writeSecure,
+  KEY_FILENAME, MCP_KEY, REPO_ROOT,
+  home, readJson, writeJsonIfChanged, backup, writeSecure,
   classifyEntry, formatMigrationLine,
 } from './utils.mjs';
+import {
+  shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
+  commandHasLegacyScriptPath, commandHasMidbrainInvocation,
+} from './shim.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -35,7 +39,7 @@ let tomlModule;
 function codexDir() { return path.join(home(), '.codex'); }
 function configPath() { return path.join(codexDir(), 'config.toml'); }
 function hooksPath() { return path.join(codexDir(), 'hooks.json'); }
-function stableHookPath() { return path.join(home(), '.midbrain', 'bin', 'codex-hook'); }
+function stableHookPath() { return stableShimPath('codex'); }
 function cfgDir() { return path.join(home(), '.config', 'codex'); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
 
@@ -50,10 +54,17 @@ async function readToml(filePath) {
   }
 }
 
-async function writeToml(filePath, data) {
+/** Content-compared TOML write; backs up only when actually changing. */
+async function writeTomlIfChanged(filePath, data, { backupFirst = false } = {}) {
   const toml = await loadToml();
+  const content = toml.stringify(data);
+  try {
+    if ((await fs.readFile(filePath, 'utf8')) === content) return false;
+  } catch { /* missing -> write */ }
+  if (backupFirst) await backup(filePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, toml.stringify(data), 'utf8');
+  await fs.writeFile(filePath, content, 'utf8');
+  return true;
 }
 
 async function loadToml() {
@@ -65,6 +76,7 @@ function buildEntry({ isDev = false, projectDir, extraEnv = {} } = {}) {
   const env = { ...extraEnv, MIDBRAIN_CLIENT: 'codex' };
   if (projectDir) env.MIDBRAIN_PROJECT_DIR = projectDir;
   if (isDev) {
+    env.MIDBRAIN_DEV = '1';
     return { command: process.execPath, args: [path.join(REPO_ROOT, 'index.js')], env };
   }
   return { command: 'npx', args: ['-y', 'midbrain-memory-mcp@latest'], env };
@@ -86,38 +98,8 @@ function patchMcpEntry(config, opts) {
   return { exists, pinned };
 }
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
-}
-
 function buildHookCommand(scriptName) {
   return `${shellQuote(stableHookPath())} ${scriptName}`;
-}
-
-function shimBody() {
-  return `#!/bin/sh
-set +e
-npx -y midbrain-memory-mcp@latest hook codex "$@"
-status=$?
-case "$1" in
-  assistant|tool)
-    if [ "$status" -ne 0 ]; then
-      printf '{}'
-    fi
-    exit 0
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-`;
-}
-
-async function installStableHookShim() {
-  const shim = stableHookPath();
-  await fs.mkdir(path.dirname(shim), { recursive: true });
-  await fs.writeFile(shim, shimBody(), 'utf8');
-  await fs.chmod(shim, 0o755);
 }
 
 function midbrainHook(scriptName) {
@@ -128,19 +110,24 @@ function midbrainHook(scriptName) {
   };
 }
 
-function normalizedHookCommand(command) {
-  return command.replace(/['"]/g, ' ').replace(/\s+/g, ' ').trim();
+// Historic legacy commands ended in plugins/codex/<script> (any checkout or
+// npx-cache location) or paired a package reference with the exact script
+// filename. Boundary-anchored, never substring: a user's own `capture-*.mjs`
+// or a `myplugins/codex/` path is never ours. Transitional (pre-0.4.7).
+const LEGACY_HOOK_DIR = 'codex';
+
+function isLegacyHookCommand(command) {
+  return commandHasLegacyScriptPath(command, LEGACY_HOOK_DIR, LEGACY_HOOK_SCRIPTS);
 }
 
 function isMidbrainHook(hook) {
   const command = typeof hook?.command === 'string' ? hook.command : '';
-  const normalized = normalizedHookCommand(command);
-  return normalized.includes(stableHookPath()) ||
-    normalized.includes('/.midbrain/bin/codex-hook') ||
-    normalized.includes('~/.midbrain/bin/codex-hook') ||
-    normalized.includes('$HOME/.midbrain/bin/codex-hook') ||
-    LEGACY_HOOK_SCRIPTS.some((script) => command.includes(script)) ||
-    (normalized.includes(PKG_NAME) && /\bhook\s+codex\b/.test(normalized));
+  // Exact-equality fast path: entries this adapter wrote are recognized
+  // directly, independent of the ownership heuristics below.
+  if (Object.values(HOOK_EVENTS).some((scriptName) => command === buildHookCommand(scriptName))) return true;
+  return commandReferencesShim(command, 'codex') ||
+    isLegacyHookCommand(command) ||
+    commandHasMidbrainInvocation(command, 'codex');
 }
 
 function withoutMidbrainGroups(groups) {
@@ -187,14 +174,12 @@ export class Codex extends BaseClient {
     const config = await readToml(cfp);
     const { exists, pinned } = patchMcpEntry(config, opts);
     patchFeatureAliases(config);
-    await backup(cfp);
-    await writeToml(cfp, config);
+    await writeTomlIfChanged(cfp, config, { backupFirst: true });
     summary.push(formatMigrationLine('~/.codex/config.toml', exists, pinned));
 
     const hooks = patchHooks((await readJson(hp)) || {});
-    await installStableHookShim();
-    await backup(hp);
-    await writeJson(hp, hooks);
+    await installShim('codex', { mode: 'install', isDev: opts.isDev });
+    await writeJsonIfChanged(hp, hooks, { backupFirst: true });
     summary.push('~/.codex/hooks.json: MidBrain hooks written');
     summary.push('~/.midbrain/bin/codex-hook: stable Codex hook shim written');
     summary.push('Restart Codex and review/trust MidBrain hooks with /hooks once if prompted.');
@@ -209,8 +194,7 @@ export class Codex extends BaseClient {
     const configFile = path.join(_projectDir, '.codex', 'config.toml');
     const config = await readToml(configFile);
     const { exists, pinned } = patchMcpEntry(config, opts);
-    await backup(configFile);
-    await writeToml(configFile, config);
+    await writeTomlIfChanged(configFile, config, { backupFirst: true });
     return [
       formatMigrationLine(configFile, exists, pinned),
       'Codex project trust required: restart Codex and trust this project config if prompted.',
@@ -222,7 +206,9 @@ export class Codex extends BaseClient {
   }
 
   /**
-   * Check if hooks point to the current REPO_ROOT. Returns true if fresh.
+   * Fresh when midbrain hooks reference the current stable codex-hook shim
+   * (and the shim exists). Canonical since PRD-017 — never compares
+   * REPO_ROOT. Legacy direct-script commands trigger a migration repair.
    */
   async isFresh() {
     try {
@@ -235,23 +221,29 @@ export class Codex extends BaseClient {
           .map((hook) => typeof hook?.command === 'string' ? hook.command : '');
         if (!commands.some((command) => isMidbrainHook({ command }))) continue;
         hasMidbrainHook = true;
-        if (commands.some((command) => LEGACY_HOOK_SCRIPTS.some((script) => command.includes(script)))) return false;
+        if (commands.some((command) => isLegacyHookCommand(command))) return false;
         if (!commands.some((command) => command === buildHookCommand(hookName))) return false;
       }
       if (!hasMidbrainHook) return true;
-      return existsSync(stableHookPath());
+      return (await shimStatus('codex')).fresh;
     } catch { return true; }
   }
 
   /**
-   * Repair stale hooks by rewriting with current REPO_ROOT paths.
+   * Repair stale hooks: rewrite midbrain hook entries to the canonical shim
+   * command and reinstall the shim when missing or stale. Dev-marked shim
+   * bodies are preserved; content-compared writes keep mtimes stable.
    */
   async repairHooks() {
     const hp = hooksPath();
-    const data = (await readJson(hp)) || {};
+    let data;
+    try {
+      data = (await readJson(hp)) || {};
+    } catch { return []; } // unreadable config: fail open, skip
     patchHooks(data);
-    await installStableHookShim();
-    await writeJson(hp, data);
+    const shim = await installShim('codex', { mode: 'repair' });
+    const wrote = await writeJsonIfChanged(hp, data);
+    if (!wrote && !shim.written) return [];
     return ['  ~ Codex hooks repaired (stable Codex hook shim installed)'];
   }
 }

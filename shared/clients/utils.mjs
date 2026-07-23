@@ -17,7 +17,11 @@ import { readKeyFile } from './base.mjs';
 export const KEY_FILENAME = ".midbrain-key";
 export const MIDBRAIN_DIR = '.midbrain';
 export const MCP_KEY = 'midbrain-memory';
-export const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR', 'MIDBRAIN_CLIENT']);
+// MIDBRAIN_DEV is the dev-install marker (PRD-034 S3): reserved so
+// extractCustomEnv never carries it into rebuilt entries — an explicit
+// non-dev install therefore drops the marker and restores canonical.
+export const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR', 'MIDBRAIN_CLIENT', 'MIDBRAIN_DEV']);
+export const DEV_ENV_MARKER = 'MIDBRAIN_DEV';
 export const PINNED_RE = /midbrain-memory-mcp@\d+\.\d+\.\d+/;
 
 const __filename = fileURLToPath(import.meta.url);
@@ -60,6 +64,40 @@ export async function backup(filePath) {
   if (existsSync(filePath)) {
     await fs.copyFile(filePath, filePath + '.bak');
   }
+}
+
+/**
+ * Write content only when it differs from what is on disk (PRD-034 S2, D4).
+ * Skipped writes leave mtime untouched, which keeps Hermes' hook-approval
+ * layer (and any other mtime-sensitive consumer) undisturbed.
+ *
+ * @returns {Promise<boolean>} true when the file was written.
+ */
+export async function writeFileIfChanged(filePath, content) {
+  try {
+    const current = await fs.readFile(filePath, 'utf8');
+    if (current === content) return false;
+  } catch { /* missing/unreadable -> write */ }
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content, 'utf8');
+  return true;
+}
+
+/**
+ * Content-compared JSON write in writeJson's exact format (PRD-034 S2, D4).
+ * Optionally backs the file up first, but only when actually changing it.
+ *
+ * @returns {Promise<boolean>} true when the file was written.
+ */
+export async function writeJsonIfChanged(filePath, data, { backupFirst = false } = {}) {
+  const content = JSON.stringify(data, null, 2) + '\n';
+  try {
+    if ((await fs.readFile(filePath, 'utf8')) === content) return false;
+  } catch { /* missing/unreadable -> write */ }
+  if (backupFirst) await backup(filePath);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content, 'utf8');
+  return true;
 }
 
 /** Write a key file with chmod 600 (creates parent dirs). */

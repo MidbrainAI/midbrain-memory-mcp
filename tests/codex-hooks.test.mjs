@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   captureAssistant,
@@ -364,12 +364,13 @@ describe("Codex hook wrappers", () => {
     const home = tempHomeWithKey();
     const loaded = preload(mode);
     const result = spawnSync(process.execPath, [
-      "--import", loaded.file,
+      // --import needs a file:// URL on Windows (absolute C:\ paths rejected).
+      "--import", pathToFileURL(loaded.file).href,
       path.join(REPO_ROOT, "plugins", "codex", "capture-user.mjs"),
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
-      env: { ...process.env, HOME: home, [PK_ENV]: undefined, ...extraEnv },
+      env: { ...process.env, HOME: home, USERPROFILE: home, [PK_ENV]: undefined, ...extraEnv },
     });
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(loaded.dir, { recursive: true, force: true });
@@ -417,7 +418,7 @@ describe("Codex hook wrappers", () => {
 
   function runPersistentUserHook({ home, preloadFile, fetchLog, mode, prompt }) {
     return spawnSync(process.execPath, [
-      "--import", preloadFile,
+      "--import", pathToFileURL(preloadFile).href,
       path.join(REPO_ROOT, "plugins", "codex", "capture-user.mjs"),
     ], {
       input: JSON.stringify({ prompt, cwd: path.join(home, "project") }),
@@ -425,6 +426,9 @@ describe("Codex hook wrappers", () => {
       env: {
         ...process.env,
         HOME: home,
+        // os.homedir() reads USERPROFILE on Windows, HOME on POSIX; set both so
+        // key resolution and the episodic cache dir land in the sandbox home.
+        USERPROFILE: home,
         [PK_ENV]: undefined,
         MIDBRAIN_TEST_FETCH_LOG: fetchLog,
         MIDBRAIN_TEST_FETCH_MODE: mode,

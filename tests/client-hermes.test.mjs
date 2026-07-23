@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "path";
 import os from "os";
 
-import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -35,21 +35,30 @@ vi.mock("fs", async (importOriginal) => {
 const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
+const statFor = makeStatFor(mocks);
 
 const { BaseClient } = await import("../shared/clients/base.mjs");
 const { Hermes } = await import("../shared/clients/hermes.mjs");
+const { buildShimBody } = await import("../shared/clients/shim.mjs");
 const YAML = await import("yaml");
 
 const HOME = os.homedir();
+const IS_WIN = process.platform === "win32";
+const HERMES_SHIM_FILE = IS_WIN ? "hermes-hook.cmd" : "hermes-hook";
 const ORIGINAL_HERMES_HOME = process.env.HERMES_HOME;
 const ORIGINAL_LOCALAPPDATA = process.env.LOCALAPPDATA;
 
 const PATHS = {
   hermesHome:   path.join(HOME, ".hermes"),
   hermesConfig: path.join(HOME, ".hermes", "config.yaml"),
-  hermesShim:   path.join(HOME, ".midbrain", "bin", "hermes-hook"),
+  hermesShim:   path.join(HOME, ".midbrain", "bin", HERMES_SHIM_FILE),
   hermesKey:    path.join(HOME, ".config", "hermes", ".midbrain-key"),
 };
+
+// hermesHome() resolves to %LOCALAPPDATA%/hermes on win32 by default; pin
+// HERMES_HOME to ~/.hermes so the adapter and PATHS agree on every platform.
+// Tests that exercise the fallback logic set their own HERMES_HOME/LOCALAPPDATA.
+const PINNED_HERMES_HOME = PATHS.hermesHome;
 
 /** Return the parsed YAML object written to config.yaml (last write). */
 function lastConfigWrite() {
@@ -64,10 +73,21 @@ function lastConfigRaw() {
   return calls.length ? calls[calls.length - 1][1] : "";
 }
 
-const HERMES_HOOK_RE = /hermes-hook' user$/;
+const HERMES_HOOK_RE = IS_WIN ? /hermes-hook\.cmd' user$/ : /hermes-hook' user$/;
 const TERMINAL_CWD = "${TERMINAL_CWD}";
 const RESTART_WARNING =
   "If a Hermes gateway is already running, restart that gateway before memory capture takes effect.";
+
+// Pin HERMES_HOME before every test so hermesHome() resolves to ~/.hermes on
+// all platforms (win32 would otherwise use %LOCALAPPDATA%/hermes). Tests that
+// deliberately probe the fallback set their own value and restore it below.
+beforeEach(() => {
+  process.env.HERMES_HOME = PINNED_HERMES_HOME;
+});
+afterEach(() => {
+  if (ORIGINAL_HERMES_HOME === undefined) delete process.env.HERMES_HOME;
+  else process.env.HERMES_HOME = ORIGINAL_HERMES_HOME;
+});
 
 describe("Hermes adapter identity", () => {
   const hermes = new Hermes();
@@ -98,7 +118,12 @@ describe("Hermes adapter identity", () => {
 
   it("falls back from a whitespace-only Hermes home", () => {
     process.env.HERMES_HOME = "   ";
-    expect(hermes.projectConfigFiles("/unused")).toEqual([PATHS.hermesConfig]);
+    // Fallback is platform-specific: %LOCALAPPDATA%/hermes on win32,
+    // ~/.hermes elsewhere.
+    const expected = IS_WIN
+      ? path.resolve(process.env.LOCALAPPDATA ?? path.join(HOME, "AppData", "Local"), "hermes", "config.yaml")
+      : PATHS.hermesConfig;
+    expect(hermes.projectConfigFiles("/unused")).toEqual([expected]);
   });
 
   it("trims Windows LOCALAPPDATA and falls back when it is whitespace-only", () => {
@@ -209,12 +234,12 @@ describe("Hermes.installGlobal", () => {
     await hermes.installGlobal();
     const cfg = lastConfigWrite();
     expect(cfg.hooks.pre_llm_call).toEqual([
-      { command: expect.stringContaining("hermes-hook' user"), timeout: 30 },
+      { command: expect.stringContaining(`${HERMES_SHIM_FILE}' user`), timeout: 30 },
     ]);
     expect(cfg.hooks.post_llm_call).toEqual([
-      { command: expect.stringContaining("hermes-hook' assistant"), timeout: 30 },
+      { command: expect.stringContaining(`${HERMES_SHIM_FILE}' assistant`), timeout: 30 },
     ]);
-    expect(cfg.hooks.pre_llm_call[0].command).not.toContain("hermes-hook' hermes");
+    expect(cfg.hooks.pre_llm_call[0].command).not.toContain(`${HERMES_SHIM_FILE}' hermes`);
   });
 
   it("installs the stable hook shim executable", async () => {
@@ -224,15 +249,20 @@ describe("Hermes.installGlobal", () => {
       expect.stringContaining("hook hermes"),
       "utf8",
     );
-    expect(mocks.chmod).toHaveBeenCalledWith(PATHS.hermesShim, 0o755);
+    // chmod applies exec bits (POSIX only); win32 shims are .cmd, no chmod.
+    if (!IS_WIN) expect(mocks.chmod).toHaveBeenCalledWith(PATHS.hermesShim, 0o755);
   });
 
   it("points the stable hook shim at this exact clone in dev mode", async () => {
     await hermes.installGlobal({ isDev: true });
     const shimWrite = mocks.writeFile.mock.calls.find(([p]) => p === PATHS.hermesShim);
     const cfg = lastConfigWrite();
-    expect(shimWrite[1]).toContain(`'${process.execPath}'`);
-    expect(shimWrite[1]).toContain("index.js' hook hermes");
+    // The dev shim body is platform-specific (POSIX quoting vs win32 .cmd), so
+    // assert byte-equality against the source builder rather than reconstruct.
+    expect(shimWrite[1]).toBe(buildShimBody("hermes", { isDev: true }));
+    expect(shimWrite[1]).toContain(process.execPath);
+    expect(shimWrite[1]).toContain("index.js");
+    expect(shimWrite[1]).toContain("hook hermes");
     expect(shimWrite[1]).not.toContain("midbrain-memory-mcp@latest");
     expect(cfg.mcp_servers["midbrain-memory"].command).toBe(process.execPath);
     expect(shimWrite[1]).toContain(cfg.mcp_servers["midbrain-memory"].args[0]);
@@ -413,12 +443,27 @@ describe("Hermes.isFresh / repairHooks", () => {
     expect(await hermes.isFresh()).toBe(true);
   });
 
-  it("fresh when hooks reference the current shim and the shim exists", async () => {
+  it("fresh when hooks reference the current shim and the shim is canonical + executable", async () => {
     await hermes.installGlobal();
     const raw = lastConfigRaw();
-    readFileReturns({ [PATHS.hermesConfig]: raw });
-    existsFor(PATHS.hermesShim);
+    readFileReturns({
+      [PATHS.hermesConfig]: raw,
+      // AC-11: freshness reads the shim body + mode, not mere existence
+      [PATHS.hermesShim]: buildShimBody("hermes"),
+    });
+    statFor(PATHS.hermesShim);
     expect(await hermes.isFresh()).toBe(true);
+  });
+
+  it("stale when the shim body is foreign even though the file exists (B14)", async () => {
+    await hermes.installGlobal();
+    const raw = lastConfigRaw();
+    readFileReturns({
+      [PATHS.hermesConfig]: raw,
+      [PATHS.hermesShim]: `#!/bin/sh\n'/private/tmp/gone/index.js' hook hermes "$@"\n`,
+    });
+    statFor(PATHS.hermesShim);
+    expect(await hermes.isFresh()).toBe(false);
   });
 
   it("stale when a legacy capture-user.mjs command is present", async () => {
@@ -458,10 +503,16 @@ describe("Hermes.isFresh / repairHooks", () => {
     try {
       process.env.HERMES_HOME = path.join(HOME, "hermes-win-fixture");
       const shim = path.join(os.homedir(), ".midbrain", "bin", "hermes-hook.cmd");
-      readFileReturns({
-        [path.join(process.env.HERMES_HOME, "config.yaml")]:
-          `hooks:\n  pre_llm_call:\n    - command: "'${shim}' user"\n      timeout: 30\n  post_llm_call:\n    - command: "'${shim}' assistant"\n      timeout: 30\n`,
+      // Serialize with the real YAML writer so backslashes in the Windows shim
+      // path are escaped exactly as the adapter writes them (a hand-written
+      // double-quoted scalar would mis-escape \U, \b, etc. and not round-trip).
+      const cfg = YAML.stringify({
+        hooks: {
+          pre_llm_call: [{ command: `'${shim}' user`, timeout: 30 }],
+          post_llm_call: [{ command: `'${shim}' assistant`, timeout: 30 }],
+        },
       });
+      readFileReturns({ [path.join(process.env.HERMES_HOME, "config.yaml")]: cfg });
       existsFor(shim);
       expect(await hermes.isFresh()).toBe(false);
     } finally {
@@ -527,7 +578,8 @@ describe("Hermes.isFresh / repairHooks", () => {
     expect(cfg.hooks.pre_llm_call[0].command).toMatch(HERMES_HOOK_RE);
     expect(cfg.hooks.pre_llm_call[0].timeout).toBe(30);
     expect(cfg.hooks.post_llm_call[0].timeout).toBe(30);
-    expect(mocks.chmod).toHaveBeenCalledWith(PATHS.hermesShim, 0o755);
+    // chmod restores exec bits on POSIX only; win32 .cmd shims are not chmod'd.
+    if (!IS_WIN) expect(mocks.chmod).toHaveBeenCalledWith(PATHS.hermesShim, 0o755);
     expect(lines.join("\n")).toContain("repaired");
   });
 });

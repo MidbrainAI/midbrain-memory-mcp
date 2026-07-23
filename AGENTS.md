@@ -117,7 +117,9 @@ OpenCode:
 Claude Code:
 
 - `plugins/claude-code/*.mjs` run in Node 20.
-- Hook paths are written into Claude settings by the installer.
+- Installer-written hooks call the stable `~/.midbrain/bin/claude-hook` shim
+  (30s timeout, `Stop` async), not package-cache or checkout script paths. The
+  shim resolves `npx -y midbrain-memory-mcp@latest hook claude <role>`.
 - `common.mjs` owns `createApi()`, the leveled `log` logger, and stdin parsing.
 
 Codex:
@@ -240,6 +242,33 @@ for rule injection unless a future PR explicitly changes that contract.
 ## Installer Rules
 
 - `install.mjs` is the CLI and setup orchestrator.
+- Automatic self-repair is context-gated (`shared/install-context.mjs`):
+  servers launched from temp dirs, git worktrees, or CI skip repair with one
+  stderr line. Repair writes canonical targets only (stable shims,
+  `npx @latest`) and content-compares every write (no mtime churn). The
+  `_npx` classification deliberately outranks tmp/CI: an npx-cache launch is
+  the canonical install mode and still repairs.
+- Self-repair is cross-client by design: one startup may converge every
+  detected client, but changes only positively owned MidBrain state. Hook
+  ownership uses boundary-anchored matching on the slash-normalized command
+  (no shell tokenizer): a command is ours only via the client's stable shim
+  under `.midbrain/bin/<client>-hook` (basename-anchored, so
+  `<client>-hook-wrapper` is a user hook), a legacy `plugins/<dir>/capture-*.mjs`
+  path or a package reference paired with a bare capture-script filename, or a
+  `midbrain-memory-mcp` package reference (bare word, `@version`, or path
+  segment) dispatching `hook <client>`. Left/right boundaries reject
+  `myplugins/...` and `midbrain-memory-mcp-wrapper` near-names — never
+  substring matches. The legacy-script and invocation signals are transitional
+  (pre-0.4.7 installs). Shim freshness requires the exact canonical body (or
+  dev marker) plus executable mode, not mere existence.
+- OpenCode plugin cleanup deletes only the closed legacy-artifact list
+  (`logger.mjs`, `midbrain-api.mjs`, `midbrain-common.mjs`, the seven known
+  `clients/` files);
+  everything else under `~/.config/opencode/plugins/` is user-owned.
+- `--dev` marks MCP entries with `MIDBRAIN_DEV: "1"`, writes dev-marked
+  shim bodies, and dev-flags the OpenCode plugin marker; automatic repair
+  never reverts any of them (dev instances also never auto-propagate).
+  Explicit `install` (no flag) restores canonical and drops the markers.
 - `setupProject()` writes project key/config files and returns structured
   summary lines.
 - Project setup must preserve existing config files and merge idempotently.
@@ -293,6 +322,15 @@ Vitest tests live in `tests/`.
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.
+
+Installer/repair/adapter integration tests run against a throwaway home via
+`tests/helpers/test-env.mjs` (`makeTestEnv()`); the vitest globalSetup
+tripwire hashes the enumerated real-home surfaces before the suite and fails
+the run on any drift afterward — it detects escapes, it does not prevent
+them. Workers are ambient-env independent: the config injects poison
+`HERMES_HOME`/`NANOCLAW_HOME` and `tests/helpers/scrub-env.mjs` deletes the
+whole client-path env set before each test file (`tests/env-isolation.test.mjs`
+guards the mechanism).
 
 ## Git And Release Safety
 

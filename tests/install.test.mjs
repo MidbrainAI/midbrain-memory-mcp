@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "path";
 import os from "os";
 
-import { enoent, makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { enoent, makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -65,6 +65,7 @@ const existsSync = mocks.existsSync;
 const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
+const statFor = makeStatFor(mocks);
 
 const {
   main, setupProject, projectSetup, runInstallerCli, printHelp, checkForUpdate,
@@ -81,6 +82,7 @@ function bumpVersion(v, delta) {
 const NEWER_VERSION = bumpVersion(PKG_VERSION, 1);
 const { buildRulesBlock } = await import("../shared/agent-rules.mjs");
 const { REPO_ROOT } = await import("../shared/clients/utils.mjs");
+const { buildShimBody } = await import("../shared/clients/shim.mjs");
 
 describe("isNewerVersion", () => {
   it.each([
@@ -129,7 +131,10 @@ const PATHS = {
 };
 const NANOCLAW_SKILL_SRC = path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md");
 
-const PROJECT_DIR = "/home/testuser/myproject";
+// Pre-resolve so it matches path.resolve(rawPath) inside setupProject on every
+// platform (on Windows "/home/..." resolves to "<drive>:\home\..."). All mock
+// keys and assertions build off this resolved value.
+const PROJECT_DIR = path.resolve("/home/testuser/myproject");
 
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);
@@ -618,7 +623,7 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
       [PATHS.nanoclawSkill]: "stale skill\n",
     });
 
-    await checkForUpdate();
+    await checkForUpdate({ context: { kind: "durable", path: "/durable/install" } });
 
     const copiedSkill = fs.copyFile.mock.calls.some(([, dst]) => dst === PATHS.nanoclawSkill);
     expect(copiedSkill).toBe(true);
@@ -631,21 +636,30 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
-          UserPromptSubmit: [{ hooks: [{ command: "old capture-user.mjs" }] }],
-          PostToolUse: [{ hooks: [{ command: "old capture-tool.mjs" }] }],
-          Stop: [{ hooks: [{ command: "old capture-assistant.mjs" }] }],
+          // realistic legacy forms: full package plugins path (AC-12 positive identity)
+          UserPromptSubmit: [{ hooks: [{ command: "node /old/plugins/codex/capture-user.mjs" }] }],
+          PostToolUse: [{ hooks: [{ command: "node /old/plugins/codex/capture-tool.mjs" }] }],
+          Stop: [{ hooks: [{ command: "node /old/plugins/codex/capture-assistant.mjs" }] }],
         },
       }),
     });
 
-    await checkForUpdate();
+    await checkForUpdate({ context: { kind: "durable", path: "/durable/install" } });
 
-    const hooksWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexHooks);
+    const hooksWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexShim ? false : p === PATHS.codexHooks);
     const shimWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexShim);
     expect(hooksWrite).toBeDefined();
-    expect(hooksWrite[1]).toContain(PATHS.codexShim);
+    // Parse the written JSON before asserting on the shim path: a raw substring
+    // check fails on Windows because JSON.stringify doubles the backslashes in
+    // the drive-letter path.
+    const writtenHooks = JSON.parse(hooksWrite[1]);
+    const allCommands = Object.values(writtenHooks.hooks)
+      .flat()
+      .flatMap((g) => g.hooks.map((h) => h.command));
+    expect(allCommands.some((c) => c.includes(PATHS.codexShim))).toBe(true);
     expect(shimWrite).toBeDefined();
-    expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
+    // chmod applies exec bits on POSIX only.
+    if (process.platform !== "win32") expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
     expect(logSpy).not.toHaveBeenCalled();
     expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("Codex hooks repaired");
   });
@@ -660,9 +674,12 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
           Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
         },
       }),
+      // AC-11: freshness now validates the shim body + exec mode too
+      [PATHS.codexShim]: buildShimBody("codex"),
     });
+    statFor(PATHS.codexShim);
 
-    await checkForUpdate();
+    await checkForUpdate({ context: { kind: "durable", path: "/durable/install" } });
 
     const hooksWrites = fs.writeFile.mock.calls.filter(([p]) => p === PATHS.codexHooks);
     expect(hooksWrites).toHaveLength(0);

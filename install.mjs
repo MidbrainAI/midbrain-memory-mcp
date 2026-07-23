@@ -26,7 +26,8 @@ import { createRequire } from 'module';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
 import { writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
-import { PKG_NAME } from './shared/clients/utils.mjs';
+import { PKG_NAME, REPO_ROOT } from './shared/clients/utils.mjs';
+import { classifyInstallContext, shouldSkipSelfRepair } from './shared/install-context.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -200,13 +201,48 @@ async function ensureHooksFresh() {
 }
 
 /**
- * Combined startup check: repair stale hooks, then check for npm updates.
- * Started from index.js after server.connect(); never throws.
+ * Context-gated self-repair (PRD-034 S1). Automatic repair may only run from
+ * a durable location: instances launched from temp dirs, git worktrees, or CI
+ * must never write their own paths — or anything else — into permanent
+ * user-scope config (the 2026-07 /private/tmp + npx-cache incident).
+ * npx-cache launches proceed: they are the canonical install mode and all
+ * writes are canonical-only values. Never throws.
+ *
+ * @param {object} [opts]
+ * @param {{kind: string, path: string}} [opts.context] - Injectable
+ *   classification for tests; defaults to classifying this instance.
+ * @param {string} [opts.repoRoot] - Root to classify when no context is
+ *   given (default: this package's own root). Lets tests drive the real
+ *   classification seam with real fixture directories.
+ * @returns {Promise<{skipped: boolean, kind: string}>}
  */
-export async function checkForUpdate() {
+export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
   try {
-    // Phase 1: Hook/plugin freshness (always, local I/O only)
+    const ctx = context ?? classifyInstallContext(repoRoot);
+    if (shouldSkipSelfRepair(ctx)) {
+      console.error(
+        `[midbrain] self-repair skipped: running from ${ctx.kind} (${ctx.path}); ` +
+        `run 'npx midbrain-memory-mcp install' to repair configs from a durable install`,
+      );
+      return { skipped: true, kind: ctx.kind };
+    }
     await ensureHooksFresh();
+    return { skipped: false, kind: ctx.kind };
+  } catch {
+    return { skipped: false, kind: 'unknown' };
+  }
+}
+
+/**
+ * Combined startup check: repair stale hooks (context-gated), then check for
+ * npm updates. Started from index.js after server.connect(); never throws.
+ *
+ * @param {object} [opts] - Forwarded to runSelfRepair (context injection).
+ */
+export async function checkForUpdate(opts = {}) {
+  try {
+    // Phase 1: Hook/plugin freshness (context-gated, local I/O only)
+    await runSelfRepair(opts);
 
     // Phase 2: npm version check (throttled). Applies to npx AND global installs.
     const latestVersion = await fetchLatestVersion();
@@ -554,6 +590,14 @@ async function main(opts = {}) {
   }
 
   printSummary(keyLines, clientSummaries);
+
+  if (isDev) {
+    const { REPO_ROOT } = await import('./shared/clients/utils.mjs');
+    console.log('DEV INSTALL: the files listed above point at this checkout and carry the MIDBRAIN_DEV marker.');
+    console.log(`  Checkout: ${REPO_ROOT}`);
+    console.log('  Automatic self-repair will preserve them; explicit install wins.');
+    console.log('  Revert to the canonical npx install with: npx midbrain-memory-mcp install');
+  }
 
   if (!skipRules) {
     await writeRulesForMainMode(nonInteractive);

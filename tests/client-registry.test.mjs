@@ -109,10 +109,19 @@ describe("detectClients", () => {
   });
 
   it("detects only Hermes when only ~/.hermes exists", () => {
-    existsFor(path.join(HOME, ".hermes"));
-    const clients = detectClients();
-    expect(clients).toHaveLength(1);
-    expect(clients[0].id).toBe("hermes");
+    // hermesHome() resolves to %LOCALAPPDATA%/hermes on win32 by default; pin
+    // HERMES_HOME so the adapter checks ~/.hermes on every platform.
+    const savedHermesHome = process.env.HERMES_HOME;
+    process.env.HERMES_HOME = path.join(HOME, ".hermes");
+    try {
+      existsFor(path.join(HOME, ".hermes"));
+      const clients = detectClients();
+      expect(clients).toHaveLength(1);
+      expect(clients[0].id).toBe("hermes");
+    } finally {
+      if (savedHermesHome === undefined) delete process.env.HERMES_HOME;
+      else process.env.HERMES_HOME = savedHermesHome;
+    }
   });
 
   it("returns empty when nothing installed", () => {

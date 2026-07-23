@@ -49,16 +49,18 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(agents).not.toMatch(SIXTY_CHAR_FORM);
   });
 
+  // Synchronous spawn of git-bash + a tree scan can exceed vitest's 5s default
+  // under heavy parallel load on Windows; give this test a longer budget.
   it("D-3: scripts/check-pinned-spec.sh exits 0 on the current tree", () => {
     const result = spawnSync("bash", [SCRIPT_PATH], {
       cwd: REPO_ROOT,
       encoding: "utf8",
-      timeout: 10000,
+      timeout: 60000,
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("OK: no unpinned midbrain-memory-mcp references.");
     expect(result.stdout).toContain("OK: no legacy 60-char install-command references.");
-  });
+  }, 60000);
 
   it("D-4: the 60-char regex detects a known offending string", () => {
     // A minimal known-offending string that should trip the new regex block.
@@ -107,7 +109,9 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
         cwd: REPO_ROOT,
         encoding: "utf8",
         env: { ...process.env, npm_config_cache: cacheDir },
-        timeout: 10000,
+        timeout: 60000,
+        // npm is npm.cmd on Windows; shell resolution lets spawnSync find it.
+        shell: process.platform === "win32",
       });
       expect(result.status).toBe(0);
       const [{ files }] = JSON.parse(result.stdout);
@@ -123,7 +127,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     } finally {
       fsSync.rmSync(cacheDir, { recursive: true, force: true });
     }
-  });
+  }, 90000);
 
   it("D-9: README MCP tool table matches the seven-tool server surface", async () => {
     const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
