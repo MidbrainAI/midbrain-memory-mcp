@@ -113,6 +113,10 @@ then tells the user to restart.
 | `read_file` | Read a semantic memory document by line range |
 | `check_session_status` | Check for recent activity from other clients/sessions |
 | `memory_setup_project` | Configure project memory and detected-client rules |
+| `list_agents` | List agents owned by the account (needs user API key) |
+| `create_agent` | Create an agent + mint its key, cataloged locally (explicit request) |
+| `set_agent` | Point a project at an agent by writing its project `.midbrain-key` |
+| `set_user_api_key` | Store/reroll the account-level user API key |
 
 ---
 
@@ -373,6 +377,37 @@ Resolution order:
 - `EACCES` on any key file is a hard error (not silent fallthrough)
 - Empty key files are a hard error naming the file path
 - Fallthrough from project to global key emits a warning to stderr
+
+Agent selection is **`.midbrain-key`-only**: the keystore is never consulted
+for the active agent key. A project `.midbrain-key` overrides the global one; a
+corrupt keystore that *is* read (for the user key) is a hard error (fail-closed),
+never a silent reset.
+
+### Keystore, agents, and the two-file model
+
+There are two kinds of on-disk state:
+
+- **`.midbrain-key`** — the selected agent for a scope. `<project>/.midbrain/.midbrain-key`
+  overrides the global `~/.config/midbrain/.midbrain-key`. This is the *only*
+  thing that selects which agent memory tools talk to.
+- **`.midbrain-keystore.json`** (chmod 600) — a credential + catalog store, **not** a
+  selector. It holds the account-level `user_key` and per-agent catalog records
+  (`key_provider`, `agent_key`, `alias`; e2ee `client_key`/`inner_keys` reserved
+  for a future release).
+
+The account-level **user API key** is global only
+(`~/.config/midbrain/.midbrain-keystore.json` or `$MIDBRAIN_USER_API_KEY`) — never
+project-scoped. It authenticates the account tools (`list_agents`,
+`create_agent`). Reroll it without editing files by running
+`midbrain-memory-mcp@latest user-key set` with **no argument** — it prompts on
+stderr so the secret stays out of shell history and any assistant transcript.
+(Passing the key inline as `user-key set <key>` works for scripts/CI but records
+it in shell history.) The `set_user_api_key` MCP tool is also available.
+
+Typical flow: `create_agent` (creates an agent, mints its key, catalogs both in
+the keystore masked — the raw key is never echoed) → `set_agent` (writes the
+chosen agent's key into a project's `.midbrain-key`, never the global one). This
+gives each project its own agent without cross-project interference.
 
 By default the installer writes a single global key at
 `~/.config/midbrain/.midbrain-key` and relies on the resolution chain above —

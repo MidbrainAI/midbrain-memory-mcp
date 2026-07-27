@@ -1,9 +1,10 @@
 /**
  * mcp.mjs — MCP server declaration.
  *
- * Defines all MCP tools (memory_search, grep, get_episodic_memories_by_date,
- * list_files, read_file, check_session_status, memory_setup_project). Uses MidbrainApi for all
- * API communication.
+ * Defines all MCP tools: memory recall (memory_search, grep,
+ * get_episodic_memories_by_date, list_files, read_file, check_session_status,
+ * memory_setup_project) and account management (list_agents, create_agent,
+ * set_agent, set_user_api_key). Uses MidbrainApi for all API communication.
  *
  * IMPORTANT: No console.log — corrupts stdio JSON-RPC pipe. Use console.error only.
  */
@@ -13,6 +14,13 @@ import { z } from "zod";
 import { MidbrainApi } from "./shared/midbrain-api.mjs";
 import { getClient } from "./shared/clients/registry.mjs";
 import { setupProject } from "./install.mjs";
+import {
+  readGlobalKeystore,
+  writeGlobalKeystore,
+  listAgents as ksListAgents,
+  upsertAgent,
+  resolveAgentRef,
+} from "./shared/keystore.mjs";
 
 const EPISODIC_PAGE_LIMIT = 1000;
 const PEEK_TTL_MS = 60_000; // 1 minute cache
@@ -20,6 +28,24 @@ const PEEK_TTL_MS = 60_000; // 1 minute cache
 /** Creates a MidbrainApi instance for the current environment. */
 async function createApi() {
   return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT));
+}
+
+/** Creates a user-key authenticated MidbrainApi for account operations. */
+async function createAccountApi() {
+  return MidbrainApi.createForUser(getClient(process.env.MIDBRAIN_CLIENT));
+}
+
+/** Mask a secret, showing only the last 4 characters. */
+function maskSecret(s) {
+  if (!s || s.length < 4) return "****";
+  return `...${s.slice(-4)}`;
+}
+
+/** Format an agent record as a human-readable line. */
+function formatAgentLine(a) {
+  const label = a.alias || a.name || "(unnamed)";
+  const provider = a.key_provider ? ` [${a.key_provider}]` : "";
+  return `- ${label} (${a.agent_id})${provider}`;
 }
 
 /**
@@ -382,6 +408,177 @@ full context if needed.`,
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { content: [{ type: "text", text: `Error: ${msg}` }] };
+      }
+    }
+  );
+
+  // --- Account management tools (user-key authenticated) ---
+  //
+  // These operate on the account-level user API key and let the user manage
+  // agents from within the assistant. Write tools must ONLY be called on the
+  // user's explicit request — never autonomously to "make a place to store
+  // data". Agent selection is done by writing a project .midbrain-key
+  // (set_agent); the keystore is only a credential/catalog store, never a
+  // selector.
+
+  // --- list_agents ---
+
+  server.tool(
+    "list_agents",
+    `List the MidBrain agents owned by the user's account. Requires a configured
+user API key. Read-only; safe to call whenever the user asks which agents exist.`,
+    {},
+    async () => {
+      try {
+        const account = await createAccountApi();
+        const agents = await account.listAgents();
+        if (agents.length === 0) {
+          return { content: [{ type: "text", text: "No agents found for this account." }] };
+        }
+        const lines = agents.map(formatAgentLine);
+        return { content: [{ type: "text", text: `Agents:\n${lines.join("\n")}` }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: `Failed to list agents: ${msg}` }] };
+      }
+    }
+  );
+
+  // --- create_agent ---
+
+  server.tool(
+    "create_agent",
+    `Create a new MidBrain agent AND mint its API key in one step, storing both
+in the local keystore catalog. ONLY call this when the user has EXPLICITLY asked
+to create a new agent. Do NOT create agents on your own initiative or to
+organize memory. The raw key is NEVER returned — a masked confirmation is shown.
+After creating, use set_agent to point a project at this agent. Requires a user
+API key.`,
+    {
+      name: z.string().describe("Human-readable name for the new agent."),
+      description: z.string().optional().describe("Optional description."),
+    },
+    async ({ name, description }) => {
+      try {
+        const account = await createAccountApi();
+        const agent = await account.createAgent({ name, description });
+        const keyRes = await account.createKey({
+          agent_id: agent.agent_id,
+          key_alias: `${name} key`,
+        });
+
+        // Catalog the agent + its key locally; never echo the raw secret.
+        let ks = await readGlobalKeystore();
+        ks = upsertAgent(ks, {
+          agent_id: agent.agent_id,
+          key_provider: "midbrain",
+          agent_key: keyRes.key,
+          alias: name,
+        });
+        await writeGlobalKeystore(ks);
+
+        return {
+          content: [{
+            type: "text",
+            text: `Created agent "${name}" (${agent.agent_id}) and minted its key ` +
+              `(secret ${maskSecret(keyRes.key)}, stored in keystore). ` +
+              `Use set_agent to point a project at it.`,
+          }],
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: `Failed to create agent: ${msg}` }] };
+      }
+    }
+  );
+
+  // --- set_agent ---
+
+  server.tool(
+    "set_agent",
+    `Point a project at one of your agents by writing that agent's key into the
+project's .midbrain-key file (<project_dir>/.midbrain/.midbrain-key). Accepts an
+agent name/alias (preferred) or an exact agent id, matched against the local
+keystore catalog. NEVER touches the global ~/.config/midbrain/.midbrain-key — it
+only sets the per-project agent. If the reference is ambiguous or unknown, the
+available agents are listed instead of guessing.`,
+    {
+      agent: z.string().describe("Agent name, alias, or id to use for this project."),
+      project_dir: z.string().describe("Absolute path to the project root directory."),
+    },
+    async ({ agent, project_dir }) => {
+      try {
+        const ks = await readGlobalKeystore();
+        const local = ksListAgents(ks);
+        const match = resolveAgentRef(local, agent);
+
+        if (match.status === "ok") {
+          const key = match.agent.agent_key;
+          if (!key) {
+            return {
+              content: [{
+                type: "text",
+                text: `Agent "${match.agent.alias || match.agent.agent_id}" has no key stored ` +
+                  `in the keystore. Re-create it with create_agent.`,
+              }],
+            };
+          }
+          const keyPath = await getClient("generic").setProjectKey(project_dir, key);
+          const label = match.agent.alias || match.agent.name || match.agent.agent_id;
+          return {
+            content: [{
+              type: "text",
+              text: `Project "${project_dir}" is now set to agent "${label}" ` +
+                `(${match.agent.agent_id}).\nWrote ${keyPath}.\n` +
+                `IMPORTANT: Restart your client for this to take effect — long-lived ` +
+                `plugin sessions cache the previous key until restart.`,
+            }],
+          };
+        }
+
+        const candidates = match.status === "ambiguous" ? match.candidates : local;
+        const listText = candidates.length
+          ? candidates.map(formatAgentLine).join("\n")
+          : "(no agents in keystore — use create_agent first)";
+        const reason = match.status === "ambiguous"
+          ? `"${agent}" matches more than one agent. Please be more specific.`
+          : `No agent matched "${agent}".`;
+        return { content: [{ type: "text", text: `${reason}\nAvailable agents:\n${listText}` }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: `Failed to set project agent: ${msg}` }] };
+      }
+    }
+  );
+
+  // --- set_user_api_key ---
+
+  server.tool(
+    "set_user_api_key",
+    `Store or update (reroll) the account-level user API key used to manage
+agents and keys. NOTE: the key you paste here may be captured to memory — for
+sensitive use prefer the terminal command \`midbrain-memory-mcp@latest user-key set\`.
+The key is stored as-is; if it is invalid the account tools will report the
+server error when you next use them.`,
+    {
+      user_api_key: z.string().describe("The account-level user API key (sk-...)."),
+    },
+    async ({ user_api_key }) => {
+      try {
+        // Store unconditionally — validity is checked by the account tools that
+        // use the key, which surface the real server error at that point.
+        let ks = await readGlobalKeystore();
+        ks = { ...ks, user_key: user_api_key };
+        await writeGlobalKeystore(ks);
+        return {
+          content: [{
+            type: "text",
+            text: `User API key saved (${maskSecret(user_api_key)}). Account tools are now available.`,
+          }],
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: `Failed to set user API key: ${msg}` }] };
       }
     }
   );

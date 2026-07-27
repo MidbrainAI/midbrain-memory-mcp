@@ -496,3 +496,89 @@ describe("MidbrainApi.create", () => {
     await expect(MidbrainApi.create(mockClient)).rejects.toThrow(/No API key/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Account management (user-key authenticated)
+// ---------------------------------------------------------------------------
+
+describe("MidbrainApi account operations", () => {
+  let fetchSpy;
+
+  function jsonResponse(status, body) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    };
+  }
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("createForUser resolves the user key and errors when absent", async () => {
+    const withKey = { resolveUserKey: vi.fn().mockResolvedValue({ key: "sk-user", source: "ks" }) };
+    const api = await MidbrainApi.createForUser(withKey);
+    expect(api.keySource).toBe("ks");
+
+    const noKey = { resolveUserKey: vi.fn().mockResolvedValue(null) };
+    await expect(MidbrainApi.createForUser(noKey)).rejects.toThrow(/No user API key configured/);
+  });
+
+  it("listAgents sends the key as a Bearer token to the account endpoint", async () => {
+    fetchSpy.mockResolvedValue(jsonResponse(200, [{ agent_id: "a1", name: "One" }]));
+    const api = new MidbrainApi("sk-user", "test");
+    await expect(api.listAgents()).resolves.toEqual([{ agent_id: "a1", name: "One" }]);
+    const [url, opts] = fetchSpy.mock.calls[0];
+    expect(url).toMatch(/\/api\/v1\/account\/agents$/);
+    expect(opts.headers.Authorization).toBe("Bearer sk-user");
+  });
+
+  it("listAgents tolerates a non-array body", async () => {
+    fetchSpy.mockResolvedValue(jsonResponse(200, { unexpected: true }));
+    const api = new MidbrainApi("sk-user", "test");
+    await expect(api.listAgents()).resolves.toEqual([]);
+  });
+
+  it("createAgent POSTs name + description and requires a name", async () => {
+    fetchSpy.mockResolvedValue(jsonResponse(201, { agent_id: "a1", name: "One" }));
+    const api = new MidbrainApi("sk-user", "test");
+    await api.createAgent({ name: "One", description: "desc" });
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.method).toBe("POST");
+    expect(JSON.parse(opts.body)).toEqual({ name: "One", description: "desc" });
+    await expect(api.createAgent({})).rejects.toThrow(/requires a name/);
+  });
+
+  it("createKey returns the KeyResponse and validates inputs", async () => {
+    fetchSpy.mockResolvedValue(jsonResponse(201, {
+      key: "sk-secret", token: "tok-1", key_alias: "k", agent_id: "a1", max_budget: null,
+    }));
+    const api = new MidbrainApi("sk-user", "test");
+    const res = await api.createKey({ agent_id: "a1", key_alias: "k" });
+    expect(res.key).toBe("sk-secret");
+    expect(res.token).toBe("tok-1");
+    await expect(api.createKey({ key_alias: "k" })).rejects.toThrow(/requires an agent_id/);
+    await expect(api.createKey({ agent_id: "a1" })).rejects.toThrow(/requires a key_alias/);
+  });
+
+  it("createKey passes optional read_only and max_budget", async () => {
+    fetchSpy.mockResolvedValue(jsonResponse(201, { key: "sk", token: "t", key_alias: "k", agent_id: "a1", max_budget: 5 }));
+    const api = new MidbrainApi("sk-user", "test");
+    await api.createKey({ agent_id: "a1", key_alias: "k", read_only: true, max_budget: 5 });
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({ agent_id: "a1", key_alias: "k", read_only: true, max_budget: 5 });
+  });
+
+  it("throws with status + body on a non-2xx account response", async () => {
+    fetchSpy.mockResolvedValue({ ok: false, status: 404, text: async () => "Agent not found" });
+    const api = new MidbrainApi("sk-user", "test");
+    await expect(api.createKey({ agent_id: "x", key_alias: "k" }))
+      .rejects.toThrow(/Account API 404: Agent not found/);
+  });
+});

@@ -210,9 +210,9 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP server tool listing", () => {
-  it("exposes exactly 7 tools", async () => {
+  it("exposes exactly 11 tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(11);
   });
 
   it("exposes the expected tool names", async () => {
@@ -220,12 +220,16 @@ describe("MCP server tool listing", () => {
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "check_session_status",
+      "create_agent",
       "get_episodic_memories_by_date",
       "grep",
+      "list_agents",
       "list_files",
       "memory_search",
       "memory_setup_project",
       "read_file",
+      "set_agent",
+      "set_user_api_key",
     ]);
   });
 });
@@ -1692,13 +1696,16 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     expect(mcpSrc).toMatch(/^import\s.*setupProject.*from\s+['"]\.\/install\.mjs['"]/m);
   });
 
-  it("R-4: index.js statically imports PKG_VERSION + checkForUpdate, dynamically imports runInstallerCli", () => {
+  it("R-4: index.js statically imports PKG_VERSION + checkForUpdate, dynamically imports installer CLIs", () => {
     // Static import for PKG_VERSION and checkForUpdate
     expect(serverSrc).toMatch(/^import\s.*PKG_VERSION.*from\s+["']\.\/install\.mjs["']/m);
-    // Dynamic import for the interactive installer CLI
+    // Dynamic imports for the CLI subcommands (installer + user-key) keep
+    // install.mjs out of the hot stdio-server start path.
     const dynamicMatches =
       serverSrc.match(/await\s+import\(["']\.\/install\.mjs["']\)/g) || [];
-    expect(dynamicMatches.length).toBe(1);
+    expect(dynamicMatches.length).toBe(2);
+    expect(serverSrc).toMatch(/runInstallerCli/);
+    expect(serverSrc).toMatch(/runUserKeyCli/);
   });
 });
 
@@ -2262,5 +2269,166 @@ describe("recency hint — empty episodic store", () => {
     const text = result.content[0].text;
     expect(text).toContain("How do I set up the project?");
     expect(text).not.toContain("[Note:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Account management tools
+// ---------------------------------------------------------------------------
+
+describe("account management tools", () => {
+  let acServer;
+  let acClient;
+  let acFetchSpy;
+  let acFakeHome;
+  const acSavedEnv = {};
+  const acEnvKeys = ["HOME", "USERPROFILE", "MIDBRAIN_USER_API_KEY", "MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR", "MIDBRAIN_CLIENT"];
+
+  function keystoreFile() {
+    return path.join(acFakeHome, ".config", "midbrain", ".midbrain-keystore.json");
+  }
+  function readKeystore() {
+    return JSON.parse(fs.readFileSync(keystoreFile(), "utf8"));
+  }
+
+  beforeEach(async () => {
+    for (const k of acEnvKeys) acSavedEnv[k] = process.env[k];
+    acFakeHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-account-home-")));
+    process.env.HOME = acFakeHome;
+    process.env.USERPROFILE = acFakeHome;
+    process.env.MIDBRAIN_USER_API_KEY = "sk-user-test";
+    process.env.MIDBRAIN_CLIENT = "generic";
+    delete process.env.MIDBRAIN_API_KEY;
+    delete process.env.MIDBRAIN_PROJECT_DIR;
+
+    acServer = createServer("test");
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await acServer.connect(st);
+    acClient = new Client({ name: "test-account", version: "0.0.1" });
+    await acClient.connect(ct);
+  });
+
+  afterEach(async () => {
+    try { await acClient?.close(); } catch { /* ignore */ }
+    try { await acServer?.close(); } catch { /* ignore */ }
+    acFetchSpy?.mockRestore();
+    try { fs.rmSync(acFakeHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    for (const k of acEnvKeys) {
+      if (acSavedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = acSavedEnv[k];
+    }
+  });
+
+  function mockAccountFetch(handler) {
+    acFetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, opts) => handler(String(url), opts));
+  }
+
+  it("list_agents renders the account's agents", async () => {
+    mockAccountFetch(async (url) => {
+      if (url.endsWith("/api/v1/account/agents")) {
+        return { ok: true, status: 200, json: async () => [
+          { agent_id: "agent_1", name: "Work", key_provider: "midbrain" },
+        ], text: async () => "" };
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    const res = await acClient.callTool({ name: "list_agents", arguments: {} });
+    expect(res.content[0].text).toContain("Work (agent_1)");
+  });
+
+  it("create_agent creates agent + key, catalogs masked, never echoes secret", async () => {
+    mockAccountFetch(async (url, opts) => {
+      if (url.endsWith("/api/v1/account/agents") && opts.method === "POST") {
+        return { ok: true, status: 201, json: async () => ({ agent_id: "agent_9", name: "New" }), text: async () => "" };
+      }
+      if (url.endsWith("/api/v1/account/keys") && opts.method === "POST") {
+        return { ok: true, status: 201, json: async () => ({
+          key: "sk-supersecret-abcd", token: "tok-1", key_alias: "New key", agent_id: "agent_9", max_budget: null,
+        }), text: async () => "" };
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    const res = await acClient.callTool({
+      name: "create_agent",
+      arguments: { name: "New" },
+    });
+    const text = res.content[0].text;
+    expect(text).toContain("agent_9");
+    expect(text).toContain("...abcd");            // masked
+    expect(text).not.toContain("sk-supersecret");  // never echoed
+    // Both agent + its key cataloged locally.
+    const ks = readKeystore();
+    expect(ks.agents.agent_9.agent_key).toBe("sk-supersecret-abcd");
+    expect(ks.agents.agent_9.alias).toBe("New");
+    // Never a selector: no active/default pointer written.
+    expect(ks.active_agent_id).toBeUndefined();
+    expect(ks.default_agent_id).toBeUndefined();
+  });
+
+  it("set_agent writes a PROJECT .midbrain-key and never the global one", async () => {
+    // Seed the keystore with two cataloged agents.
+    const dir = path.dirname(keystoreFile());
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(keystoreFile(), JSON.stringify({
+      version: 1,
+      agents: {
+        agent_1: { agent_key: "sk-1", alias: "Work", key_provider: "midbrain" },
+        agent_2: { agent_key: "sk-2", alias: "Personal", key_provider: "midbrain" },
+      },
+    }));
+    const projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-setagent-proj-")));
+    try {
+      const res = await acClient.callTool({
+        name: "set_agent",
+        arguments: { agent: "personal", project_dir: projectDir },
+      });
+      expect(res.content[0].text).toContain("agent_2");
+      expect(res.content[0].text).toMatch(/Restart your client/i);
+      // Project key file written with agent_2's key.
+      const projKey = fs.readFileSync(path.join(projectDir, ".midbrain", ".midbrain-key"), "utf8").trim();
+      expect(projKey).toBe("sk-2");
+      // Global .midbrain-key must NOT be created.
+      expect(fs.existsSync(path.join(acFakeHome, ".config", "midbrain", ".midbrain-key"))).toBe(false);
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("set_agent refuses on ambiguous match and lists candidates", async () => {
+    const dir = path.dirname(keystoreFile());
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(keystoreFile(), JSON.stringify({
+      version: 1,
+      agents: {
+        agent_1: { agent_key: "sk-1", alias: "Work Agent" },
+        agent_2: { agent_key: "sk-2", alias: "Personal Agent" },
+      },
+    }));
+    const res = await acClient.callTool({
+      name: "set_agent",
+      arguments: { agent: "agent", project_dir: "/tmp/whatever" },
+    });
+    expect(res.content[0].text).toMatch(/more than one agent/i);
+    expect(res.content[0].text).toContain("agent_1");
+    expect(res.content[0].text).toContain("agent_2");
+  });
+
+  it("set_user_api_key persists masked without any network validation", async () => {
+    delete process.env.MIDBRAIN_USER_API_KEY; // force keystore-only resolution afterwards
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const res = await acClient.callTool({
+      name: "set_user_api_key",
+      arguments: { user_api_key: "sk-new-user-wxyz" },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(res.content[0].text).toContain("...wxyz");
+    expect(readKeystore().user_key).toBe("sk-new-user-wxyz");
+    fetchSpy.mockRestore();
+  });
+
+  it("account tools report a clear error when no user key is configured", async () => {
+    delete process.env.MIDBRAIN_USER_API_KEY;
+    const res = await acClient.callTool({ name: "list_agents", arguments: {} });
+    expect(res.content[0].text).toMatch(/No user API key configured/i);
   });
 });

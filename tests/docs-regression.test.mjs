@@ -157,13 +157,13 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     }
   }, 90000);
 
-  it("D-9: README MCP tool table matches the seven-tool server surface", async () => {
+  it("D-9: README MCP tool table matches the server surface", async () => {
     const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
     const mcp = await fs.readFile(path.join(REPO_ROOT, "mcp.mjs"), "utf8");
     const readmeTools = toolNamesFromReadme(readme).sort();
     const serverTools = toolNamesFromMcp(mcp).sort();
 
-    expect(serverTools).toHaveLength(7);
+    expect(serverTools).toHaveLength(11);
     expect(readmeTools).toEqual(serverTools);
     expect(readmeTools).not.toContain("procedural_knowledge");
   });

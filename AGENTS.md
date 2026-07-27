@@ -83,12 +83,46 @@ Resolution priority:
 6. `~/.config/midbrain/.midbrain-key`
 7. `$MIDBRAIN_API_KEY` for CI/debug fallback
 
+Agent selection is `.midbrain-key`-only. The keystore is NEVER consulted for
+the active agent key — `resolveKey()` reads only `.midbrain-key` files (project
+overrides global). The keystore is read solely for the user key
+(`resolveUserKey()`).
+
 Rules:
 
 - `EACCES` on a key file is a hard error.
 - Empty key files are hard errors naming the path.
+- A corrupt `.midbrain-keystore.json` is a hard error (fail-closed) — never silently reset.
 - Falling through from project key to global key emits a warning to stderr.
-- Never commit `.midbrain-key` files or real API keys.
+- Never commit `.midbrain-key` files, `.midbrain-keystore.json`, or real API keys.
+
+## Keystore And Account Management
+
+`shared/keystore.mjs` owns a structured, versioned `.midbrain-keystore.json`
+(chmod 600). It is a credential + catalog store, **not** an agent selector: it holds the
+`user_key` and per-agent catalog records (`key_provider`, `agent_key`, `alias`;
+`client_key`/`inner_keys` reserved for e2ee). Read/write via the keystore module
+— never hand-roll keystore I/O.
+
+- The account-level **user API key** is global only
+  (`~/.config/midbrain/.midbrain-keystore.json` or `$MIDBRAIN_USER_API_KEY`), resolved by
+  `BaseClient.resolveUserKey()`. It is never project-scoped.
+- `MidbrainApi` (in `shared/midbrain-api.mjs`) also exposes the account surface
+  (`/api/v1/account/agents` and `/api/v1/account/keys`) via account methods on
+  instances built with `MidbrainApi.createForUser(client)` (resolves the user
+  key). All API HTTP — memory and account — lives in this one module.
+- Account MCP tools (`list_agents`, `create_agent`, `set_agent`,
+  `set_user_api_key`) are unprefixed by convention (name by action) and must be
+  called only on explicit user request — never to autonomously provision storage.
+- `create_agent` creates an agent AND mints its key in one step, cataloging both
+  in the keystore masked; the raw secret is never returned in tool output.
+- `set_agent` selects an agent for a project by writing that agent's key into
+  `<project_dir>/.midbrain/.midbrain-key` (via `Generic.setProjectKey`). It
+  resolves a free-form name/alias (or exact id) via `resolveAgentRef`; on an
+  ambiguous or unknown reference it lists candidates instead of guessing. It
+  NEVER writes the global `.midbrain-key`.
+- Reroll the user key via `midbrain-memory-mcp@latest user-key set` (stderr
+  prompt) or `set_user_api_key`.
 
 Key-write policy at install time:
 
