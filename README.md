@@ -679,6 +679,46 @@ If you manage rules manually, use this portable Codex/OpenCode variant:
 <!-- midbrain-memory-rules:end -->
 ```
 
+### Client-specific tool loading
+
+The behavioral body above is shared by every client. For manual configuration,
+replace only its `### Tool loading` section with the matching adapter below.
+This matters because Claude Code and NanoClaw may lazy-load MCP functions, while
+Hermes uses its own deferred-tool sequence.
+
+**Claude Code**
+
+```markdown
+### Tool loading
+
+- Claude: if MidBrain is deferred, `ToolSearch` for `memory_search` or the
+  needed function—not only the server name—then call it. Discovery is the only
+  allowed pre-recall action. Continue externalized results only with `Read`.
+```
+
+**Hermes**
+
+```markdown
+### Tool loading
+
+- Hermes: call visible `mcp__midbrain_memory__*` tools. If deferred,
+  `tool_search` the needed function, then `tool_describe` and `tool_call`
+  it. Discovery is the only allowed pre-recall action.
+```
+
+**NanoClaw**
+
+```markdown
+### Tool loading
+
+- NanoClaw: if MidBrain is deferred, `ToolSearch` for `memory_search` or the
+  needed function—not only the server name—then call it. Discovery is the only
+  allowed pre-recall action. Continue externalized results only with `Read`.
+```
+
+Normal installation selects and writes the correct adapter automatically; these
+snippets are only for users who maintain instruction files manually.
+
 ---
 
 ## Troubleshooting

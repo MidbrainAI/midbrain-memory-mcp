@@ -59,6 +59,13 @@ function sharedRulesBody(block) {
   return block.slice(block.indexOf("## MidBrain Memory"));
 }
 
+function clientLoadingAdapter(block) {
+  return block.slice(
+    block.indexOf("### Tool loading"),
+    block.indexOf("\n\n## MidBrain Memory"),
+  );
+}
+
 describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
   it("D-1: README.md contains no 60-char install form", async () => {
     const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
@@ -353,6 +360,14 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(readme).toContain("--no-rules");
     expect(readme).toMatch(/custom hardening[\s\S]*preserved/i);
     expect(skill).toMatch(/never delete custom\s+MidBrain hardening/i);
+  });
+
+  it("D-27: README publishes every client-specific tool-loading adapter", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    for (const client of ["agents", "claude", "hermes", "nanoclaw"]) {
+      expect(readme).toContain(clientLoadingAdapter(buildRulesBlock(client)));
+    }
+    expect(readme).toMatch(/replace only its `### Tool loading` section/i);
   });
 });
 
