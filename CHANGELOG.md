@@ -3,6 +3,47 @@
 All notable public release changes for `midbrain-memory-mcp` are tracked here.
 Full release-note bodies live in `docs/releases/`.
 
+## 0.4.7
+
+Full notes: [docs/releases/v0.4.7.md](docs/releases/v0.4.7.md)
+
+### Added
+
+- Added first-class Hermes Agent detection, YAML MCP configuration, stable
+  capture hooks, project scoping, installer support, and user/assistant
+  episodic capture.
+- Added proactive MidBrain memory rules for Codex, OpenCode, Claude Code,
+  Hermes, and NanoClaw, including client-specific deferred-tool adapters.
+
+### Changed
+
+- Made automatic self-repair context-aware and canonical so temporary
+  worktrees, `/private/tmp`, and npx-cache package paths cannot become durable
+  client configuration.
+- Moved Claude Code capture to a stable local shim and unified stable-shim,
+  ownership, development-install, and no-churn repair behavior across Claude
+  Code, Codex, and Hermes.
+- Made global and project setup update the instruction surfaces actually used
+  by detected clients while preserving custom or uncertain user hardening.
+
+### Fixed
+
+- Restricted hook and plugin migration to positively identified MidBrain state
+  so similarly named user hooks and OpenCode plugin files survive repair.
+- Made installer and repair tests independent of ambient client-path
+  environment variables and expanded real-home drift detection.
+
+### Notes
+
+- `--no-rules` remains available for users who manage instruction files
+  themselves.
+- Existing marked development installs remain pinned during automatic repair;
+  an explicit non-development install restores canonical state.
+- Live validation found some exact-retrieval variance in noisy memory corpora;
+  follow-up prompt hardening is planned. MCP loading, capture, installer
+  correctness, and configuration safety are unaffected.
+- Breaking changes: None.
+
 ## 0.4.6
 
 Full notes: [docs/releases/v0.4.6.md](docs/releases/v0.4.6.md)
