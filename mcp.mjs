@@ -367,14 +367,14 @@ full context if needed.`,
 
   server.tool(
     "memory_setup_project",
-    "Set up per-project MidBrain memory. ALWAYS use this tool when the user asks to configure, set up, or initialize MidBrain memory for a project. This tool creates the .midbrain/.midbrain-key file (chmod 600), writes the project-level MCP config, and sets correct permissions. Do NOT manually create key files or configs with shell commands -- this tool handles all edge cases including path resolution, config merging, and permission setting.",
+    "Set up per-project MidBrain memory. ALWAYS use this tool when the user asks to configure, set up, or initialize MidBrain memory for a project. This tool creates the .midbrain/.midbrain-key file (chmod 600), writes project-level MCP config, installs proactive memory rules for detected clients, and sets correct permissions. Do NOT manually create key files, configs, or rule blocks with shell commands -- this tool handles client detection, config merging, instruction placement, and permissions.",
     {
       project_dir: z.string().describe("Absolute path to the project root directory."),
       api_key: z.string().optional().describe("MidBrain API key. If omitted, uses the server's current key."),
     },
     async ({ project_dir, api_key }) => {
       try {
-        const result = await setupProject(project_dir, { apiKey: api_key, skipRules: true });
+        const result = await setupProject(project_dir, { apiKey: api_key });
         const lines = [...result.lines];
         lines.push("");
         lines.push("IMPORTANT: You MUST tell the user to restart this application for the new project memory to take effect. The current session is still using the previous API key. Memory will not be stored to the new project agent until after restart.");

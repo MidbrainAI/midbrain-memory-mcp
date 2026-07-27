@@ -56,6 +56,7 @@ export class NanoClaw extends BaseClient {
   get displayName() { return 'NanoClaw'; }
 
   isInstalled() { return resolveNanoClawRoot() !== null; }
+  resolveRoot() { return resolveNanoClawRoot(); }
 
   async resolveClientKey() {
     const source = keyFilePath();

@@ -31,8 +31,9 @@ The installer detects OpenCode, Claude Code, Codex, Hermes Agent, and/or
 NanoClaw on your
 machine, opens browser-based authentication, creates or selects a memory agent,
 writes key files (chmod 600), patches MCP configs, copies hook/plugin/skill
-files, and adds a bounded MidBrain rules block to project instruction files
-when project setup is used. One command, done.
+files, and synchronizes the managed MidBrain rules block across every detected
+client's global instruction surface. Project setup also updates the active
+project surfaces. One command, done.
 
 If browser authentication is unavailable, use the manual fallback and paste an
 existing API key when prompted:
@@ -80,8 +81,8 @@ Codex assistant capture stores the clean assistant answer separately from one
 bounded reasoning/commentary summary, so interim commentary does not create
 many standalone memories.
 
-**Procedural knowledge**: Automatic procedural-knowledge injection is disabled
-by default in v0.4.3 while the experience layer is redesigned. Hooks do not
+**Procedural knowledge**: Automatic procedural-knowledge injection is disabled by default
+in v0.4.3 while the experience layer is redesigned. Hooks do not
 call `/api/v1/memories/search/procedural` or prepend procedural context unless
 `MIDBRAIN_ENABLE_PK_INJECTION=1` is explicitly set in the hook environment.
 There is no manual MCP tool for procedural knowledge; agents should use the
@@ -97,8 +98,9 @@ total. Marker-like text in PK is escaped, and trusted injected blocks include
 `ctx-meta nonce` metadata plus a signature over the PK ids so user-authored
 marker examples cannot spoof deduplication or strip prompt text.
 
-**Project Setup**: The LLM calls `memory_setup_project` via MCP to scope
-memory to a specific project, then tells the user to restart.
+**Project Setup**: The LLM calls `memory_setup_project` via MCP to scope memory
+to a specific project, synchronize detected-client global and project rules,
+then tells the user to restart.
 
 ### MCP Tools
 
@@ -110,7 +112,7 @@ memory to a specific project, then tells the user to restart.
 | `list_files` | Browse semantic memory documents |
 | `read_file` | Read a semantic memory document by line range |
 | `check_session_status` | Check for recent activity from other clients/sessions |
-| `memory_setup_project` | Configure per-project memory scoping |
+| `memory_setup_project` | Configure project memory and detected-client rules |
 
 ---
 
@@ -153,7 +155,18 @@ npx midbrain-memory-mcp install
 ```
 
 This is the right default for most users. It gives your configured clients one
-shared memory agent unless a project overrides it.
+shared memory agent unless a project overrides it, and keeps their global
+MidBrain rules current:
+
+- Codex: `~/.codex/AGENTS.md`
+- OpenCode: `~/.config/opencode/AGENTS.md`
+- Claude Code: `~/.claude/CLAUDE.md`
+- Hermes: active `$HERMES_HOME/SOUL.md` (normally `~/.hermes/SOUL.md`)
+- NanoClaw: `container/CLAUDE.md` and every existing
+  `groups/<group>/CLAUDE.local.md`
+
+NanoClaw's composed `groups/<group>/CLAUDE.md` files are generated at spawn
+and are never edited directly.
 
 ### Per-Project Memory
 
@@ -172,11 +185,15 @@ npx midbrain-memory-mcp install --project /absolute/path/to/project
 ```
 
 Non-interactive. Resolves the API key from existing files, creates per-client
-MCP configs, writes the MidBrain rules block to `AGENTS.md` and `CLAUDE.md`,
-and outputs JSON to stdout. All progress goes to stderr.
+MCP configs, synchronizes detected-client global rules, writes the active
+project instruction surfaces, and outputs JSON to stdout. All progress goes to
+stderr.
 
-Project setup never clobbers existing instructions. It appends or replaces only
-the sentinel-bounded MidBrain block:
+Project setup never clobbers uncertain instructions. It updates only an exact
+current block or a byte-recognized block shipped by an earlier MidBrain
+release. Unknown customized or malformed managed blocks are preserved and
+reported for manual review. Unsentinelled custom MidBrain prose is also
+preserved when a new managed block is appended:
 
 ```html
 <!-- midbrain-memory-rules:start -->
@@ -208,8 +225,8 @@ Use the memory_setup_project tool to configure this project
 
 Restart after setup for the project memory to take effect.
 
-The MCP setup tool configures keys and MCP client files only. It does not write
-`AGENTS.md` or `CLAUDE.md`; rule injection through the MCP tool is deferred.
+The MCP setup tool configures keys and MCP client files and uses the same
+global/project rule synchronization and preservation behavior as CLI setup.
 
 #### Option C: Manual
 
@@ -543,7 +560,9 @@ Per-client files: `midbrain-opencode.log`, `midbrain-claude.log`,
 
 NanoClaw runs Claude Code inside Docker containers. MidBrain integrates via
 NanoClaw's skill system. The installer copies a `/add-midbrain` skill that
-handles group-scoped setup.
+handles group-scoped MCP and capture setup. It also synchronizes the proactive
+rules into NanoClaw's shared `container/CLAUDE.md` and every existing group's
+writable `CLAUDE.local.md`, without editing composed `CLAUDE.md` artifacts.
 
 **Install the skill:**
 
@@ -599,39 +618,65 @@ above, not `/pnpm/.../midbrain-memory-mcp@<version>/...` paths.
 
 ## Memory-First Agent Rules
 
-Project CLI setup writes this block automatically to `AGENTS.md` and
-`CLAUDE.md`, unless `--no-rules` is used. Existing content is preserved and
-only the sentinel-bounded MidBrain block is updated on later runs.
+Global install and project setup write rules only to surfaces used by detected
+clients, unless `--no-rules` is used:
 
-If you manage rules manually, use this distilled block:
+- Codex and OpenCode use `AGENTS.md`.
+- Claude Code uses `CLAUDE.md`.
+- Hermes global and gateway behavior uses the active `SOUL.md`. For project
+  rules, Hermes updates an existing `.hermes.md`, then an existing `HERMES.md`;
+  otherwise it uses `AGENTS.md`. The installer does not create `.hermes.md`,
+  because doing so could shadow portable project rules.
+- NanoClaw uses shared `container/CLAUDE.md` plus every existing group's
+  writable `CLAUDE.local.md`; it never edits composed group `CLAUDE.md` files.
+
+All variants share the exact behavioral core. Their short loading adapter
+differs only where a client may defer MCP tools. Exact known MidBrain blocks
+are upgraded; uncertain custom hardening and malformed blocks are preserved for
+manual review.
+
+If you manage rules manually, use this portable Codex/OpenCode variant:
 
 ```markdown
-## MidBrain Memory Rules
-- Use memory_search at session start to load relevant context
-- Use check_session_status at session start to detect recent activity from
-  other sessions or clients. If it reports recent activity, use
-  get_episodic_memories_by_date to fetch full context.
-- Use grep for exact pattern matches (names, IDs, code, URLs)
-- Use list_files and read_file to browse semantic memory documents
-- Use get_episodic_memories_by_date for conversation history by date
-- When the user asks to "continue", "pick up where we left off", or similar,
-  use get_episodic_memories_by_date with today's date to retrieve recent context.
-- If a tool response includes a recency hint about newer episodic memories on
-  the server, consider fetching them with get_episodic_memories_by_date if
-  relevant to the user's current intent.
-- NEVER create semantic memories. Semantic is managed by dream consolidation.
-- NEVER create episodic memories. Episodic capture is automatic.
-- Procedural knowledge is not injected automatically. Use explicit memory tools
-  for recall; do not call or expect a manual procedural knowledge MCP tool.
-  Legacy PK injection only runs when `MIDBRAIN_ENABLE_PK_INJECTION=1` is set.
-  Injected PK blocks include `ctx-meta nonce` trust metadata plus an id
-  signature, and are capped at 160 title characters, 2,000 content characters
-  per entry, and 6,000 characters total.
-- The memory tools are memory_search, grep, get_episodic_memories_by_date,
-  list_files, read_file, check_session_status, and memory_setup_project. Use
-  them proactively.
-- When the user asks to set up MidBrain memory for a project, ALWAYS use the
-  memory_setup_project tool. NEVER manually create key files or configs.
+<!-- midbrain-memory-rules:start -->
+### Tool loading
+
+- Codex/OpenCode: call visible MidBrain tools. If deferred, discover
+  `memory_search` or the needed function, then call it. Discovery is the only
+  allowed pre-recall action.
+
+## MidBrain Memory
+
+- Before substantive work, recall relevant MidBrain context; skip only trivial
+  self-contained work or explicit opt-out. Start with contextual
+  `memory_search`. Search one target per call. Treat every request ID, name,
+  file, and date as a retrieval anchor: copy it verbatim into the query; never
+  merge or generalize targets. Never use `check_session_status` as a default
+  primer; use it only when the user signals session/client continuity or
+  recent-session metadata is itself needed, then perform targeted search/date
+  recall.
+- Use recovered context. Refine irrelevant or incomplete results before acting
+  and recall again only for a new material target.
+- Tools: `memory_search(all)` for broad context; episodic search for prior
+  conversations/decisions; `get_episodic_memories_by_date` for known periods
+  or continuity; semantic search plus `list_files`/`read_file` for stored
+  documents; `grep` for exact semantic anchors only. MidBrain
+  `list_files`/`read_file` read remote memory, so local-filesystem bans do
+  not prohibit them.
+- Reliability outranks cost. Start near 10 results; if the target is absent or
+  noisy, repeat at the supported maximum (currently 50). Then refine anchors or
+  surfaces, paginate, or traverse dates while useful. Ranked misses are not
+  absence; recall depth is uncapped. Stop on direct recovery.
+- Current/latest claims require the underlying state-changing episode or direct
+  current evidence; assistant restatements are insufficient. Current repos,
+  configs, and live systems override memory.
+- Report only `found`, `maybe found`, or `not found after search`; report
+  tool failure separately. Never infer or reconstruct missing memory.
+- Never query secrets/large sensitive blobs or create memories.
+  `memory_setup_project` requires an explicit setup request.
+- Procedural knowledge is not injected automatically unless
+  `MIDBRAIN_ENABLE_PK_INJECTION=1`.
+<!-- midbrain-memory-rules:end -->
 ```
 
 ---

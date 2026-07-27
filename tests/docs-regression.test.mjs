@@ -18,6 +18,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { buildRulesBlock } from "../shared/agent-rules.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -36,6 +37,26 @@ function toolNamesFromMcp(source) {
 function toolNamesFromReadme(readme) {
   const section = readme.split("### MCP Tools")[1].split("## Per-Project Memory")[0];
   return [...section.matchAll(/\| `([^`]+)` \|/g)].map((match) => match[1]);
+}
+
+function rulesBlocksFrom(text) {
+  const start = "<!-- midbrain-memory-rules:start -->";
+  const end = "<!-- midbrain-memory-rules:end -->";
+  const blocks = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const startIndex = text.indexOf(start, cursor);
+    if (startIndex === -1) break;
+    const endIndex = text.indexOf(end, startIndex);
+    if (endIndex === -1) break;
+    blocks.push(text.slice(startIndex, endIndex + end.length));
+    cursor = endIndex + end.length;
+  }
+  return blocks;
+}
+
+function sharedRulesBody(block) {
+  return block.slice(block.indexOf("## MidBrain Memory"));
 }
 
 describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
@@ -293,6 +314,45 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(readme).toContain("pre_llm_call");
     expect(readme).toContain("post_llm_call");
     expect(readme).toContain("~/.midbrain/bin/hermes-hook");
+  });
+
+  it("D-23: shipped instruction files exactly match generated client rules", async () => {
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+    const claude = await fs.readFile(path.join(REPO_ROOT, "CLAUDE.md"), "utf8");
+    const nanoclaw = await fs.readFile(NANOCLAW_SKILL, "utf8");
+
+    expect(rulesBlocksFrom(agents)).toContain(buildRulesBlock("agents"));
+    expect(rulesBlocksFrom(claude)).toContain(buildRulesBlock("claude"));
+    expect(rulesBlocksFrom(nanoclaw)).toContain(buildRulesBlock("nanoclaw"));
+  });
+
+  it("D-24: README publishes the exact shared proactive-memory contract", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const readmeBlock = rulesBlocksFrom(readme)
+      .find((block) => block.includes("## MidBrain Memory"));
+    expect(readmeBlock).toBeDefined();
+    expect(sharedRulesBody(readmeBlock)).toBe(
+      sharedRulesBody(buildRulesBlock("agents")),
+    );
+  });
+
+  it("D-25: docs describe global and detected-client project placement", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    expect(readme).toContain("~/.codex/AGENTS.md");
+    expect(readme).toContain("~/.config/opencode/AGENTS.md");
+    expect(readme).toContain("~/.claude/CLAUDE.md");
+    expect(readme).toContain("$HERMES_HOME/SOUL.md");
+    expect(readme).toContain("container/CLAUDE.md");
+    expect(readme).toContain("CLAUDE.local.md");
+    expect(readme).toMatch(/does not create `\.hermes\.md`/i);
+  });
+
+  it("D-26: docs preserve custom hardening and retain --no-rules opt-out", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
+    expect(readme).toContain("--no-rules");
+    expect(readme).toMatch(/custom hardening[\s\S]*preserved/i);
+    expect(skill).toMatch(/never delete custom\s+MidBrain hardening/i);
   });
 });
 

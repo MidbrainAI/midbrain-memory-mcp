@@ -224,20 +224,34 @@ Rules:
 
 Public-safe agent instructions should say:
 
-- Use `check_session_status` at session start.
-- Use `memory_search` for broad orientation before substantive work.
+- Prime substantive work with contextual recall. Use `check_session_status`
+  only for explicit session/client continuity or when recent-session metadata
+  is itself needed.
+- Preserve exact request anchors, search one target per call, and never merge or
+  generalize IDs, names, files, or dates.
+- Use recovered context; refine incomplete recall instead of treating one miss
+  as absence.
+- Start near 10 results, widen to the supported maximum when needed, and do not
+  cap total recall depth.
 - Use `grep` for exact anchors such as names, IDs, URLs, and code.
-- Use `list_files` and `read_file` for semantic memory documents.
+- Use `list_files` and `read_file` for remote semantic memory documents.
 - Use `get_episodic_memories_by_date` for continuation or date-specific recall.
-- Verify current repo facts from files before exact claims or edits.
+- Require the underlying state-changing episode or direct current evidence for
+  latest-state claims; live state overrides memory.
+- Never infer or reconstruct missing memory.
 - Never manually create semantic memories.
 - Never manually create episodic memories.
-- Use `memory_setup_project` when asked to configure project memory.
+- Use `memory_setup_project` only when explicitly asked to configure project
+  memory.
 - Do not manually search procedural knowledge.
 
-Installer project setup writes this rules block to `AGENTS.md` and `CLAUDE.md`
-with sentinel markers. The MCP `memory_setup_project` tool remains config-only
-for rule injection unless a future PR explicitly changes that contract.
+Global install synchronizes each detected client's user-wide rules. CLI and MCP
+project setup also write the sentinel-bounded rules only to detected project
+surfaces. Codex/OpenCode use `AGENTS.md`; Claude uses `CLAUDE.md`; Hermes uses
+global `SOUL.md` and prefers an existing project `.hermes.md`, then `HERMES.md`,
+otherwise `AGENTS.md`. NanoClaw updates shared `container/CLAUDE.md` and every
+existing group's writable `CLAUDE.local.md`; composed `CLAUDE.md` files are
+never edited. `--no-rules` remains the explicit opt-out.
 
 ## Installer Rules
 
@@ -344,28 +358,41 @@ guards the mechanism).
 
 
 <!-- midbrain-memory-rules:start -->
-## MidBrain Memory Rules
+### Tool loading
 
-- Use `check_session_status` at session start to detect recent activity from
-  other sessions or clients. If it reports recent activity, use
-  `get_episodic_memories_by_date` to fetch full context.
-- Use `memory_search` at session start and before any work that depends on
-  prior context.
-- Use `grep` for exact pattern matches (names, IDs, code, URLs).
-- Use `list_files` and `read_file` to browse semantic memory documents.
-- Use `get_episodic_memories_by_date` for conversation history by date or
-  to continue prior work.
-- When the user asks to "continue", "pick up where we left off", or similar,
-  use `get_episodic_memories_by_date` with today's date to retrieve context.
-- If a tool response includes a recency hint about newer episodic memories,
-  fetch them with `get_episodic_memories_by_date` if relevant.
-- NEVER create semantic memories. Semantic memories are managed by dream
-  consolidation.
-- NEVER create episodic memories. Episodic capture is automatic via hooks.
-- Procedural knowledge is not injected automatically. Use explicit memory tools
-  for recall; do not call or expect a PK MCP tool.
-- Legacy PK injection only runs when `MIDBRAIN_ENABLE_PK_INJECTION=1` is set
-  explicitly in the hook environment.
-- When asked to set up MidBrain memory for a project, ALWAYS use the
-  `memory_setup_project` tool. Never manually create key files or configs.
+- Codex/OpenCode: call visible MidBrain tools. If deferred, discover
+  `memory_search` or the needed function, then call it. Discovery is the only
+  allowed pre-recall action.
+
+## MidBrain Memory
+
+- Before substantive work, recall relevant MidBrain context; skip only trivial
+  self-contained work or explicit opt-out. Start with contextual
+  `memory_search`. Search one target per call. Treat every request ID, name,
+  file, and date as a retrieval anchor: copy it verbatim into the query; never
+  merge or generalize targets. Never use `check_session_status` as a default
+  primer; use it only when the user signals session/client continuity or
+  recent-session metadata is itself needed, then perform targeted search/date
+  recall.
+- Use recovered context. Refine irrelevant or incomplete results before acting
+  and recall again only for a new material target.
+- Tools: `memory_search(all)` for broad context; episodic search for prior
+  conversations/decisions; `get_episodic_memories_by_date` for known periods
+  or continuity; semantic search plus `list_files`/`read_file` for stored
+  documents; `grep` for exact semantic anchors only. MidBrain
+  `list_files`/`read_file` read remote memory, so local-filesystem bans do
+  not prohibit them.
+- Reliability outranks cost. Start near 10 results; if the target is absent or
+  noisy, repeat at the supported maximum (currently 50). Then refine anchors or
+  surfaces, paginate, or traverse dates while useful. Ranked misses are not
+  absence; recall depth is uncapped. Stop on direct recovery.
+- Current/latest claims require the underlying state-changing episode or direct
+  current evidence; assistant restatements are insufficient. Current repos,
+  configs, and live systems override memory.
+- Report only `found`, `maybe found`, or `not found after search`; report
+  tool failure separately. Never infer or reconstruct missing memory.
+- Never query secrets/large sensitive blobs or create memories.
+  `memory_setup_project` requires an explicit setup request.
+- Procedural knowledge is not injected automatically unless
+  `MIDBRAIN_ENABLE_PK_INJECTION=1`.
 <!-- midbrain-memory-rules:end -->
