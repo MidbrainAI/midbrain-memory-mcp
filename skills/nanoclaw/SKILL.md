@@ -70,7 +70,61 @@ add_mcp_server({
 
 If using the NanoClaw CLI instead of self-mod tooling, preserve existing group config and run the equivalent `bash bin/ncl groups config add-mcp-server` command for the selected `AGENT_GROUP_ID`.
 
-## Phase 4: Prepare Auto-Updating Hook Commands
+## Phase 4: Install Proactive Memory Rules
+
+Resolve the selected group's `folder` from:
+
+```bash
+bash bin/ncl groups get --id "$AGENT_GROUP_ID" --json
+```
+
+Update `groups/<folder>/CLAUDE.local.md`. Preserve all existing content and
+replace only a byte-recognized MidBrain block shipped by this package. Preserve
+unknown customized or malformed blocks for manual review; never delete custom
+MidBrain hardening. Otherwise append the block once. Do not edit the composed
+`CLAUDE.md`, which NanoClaw regenerates.
+
+<!-- midbrain-memory-rules:start -->
+### Tool loading
+
+- NanoClaw: if MidBrain is deferred, `ToolSearch` for `memory_search` or the
+  needed function—not only the server name—then call it. Discovery is the only
+  allowed pre-recall action. Continue externalized results only with `Read`.
+
+## MidBrain Memory
+
+- Before substantive work, recall relevant MidBrain context; skip only trivial
+  self-contained work or explicit opt-out. Start with contextual
+  `memory_search`. Search one target per call. Treat every request ID, name,
+  file, and date as a retrieval anchor: copy it verbatim into the query; never
+  merge or generalize targets. Never use `check_session_status` as a default
+  primer; use it only when the user signals session/client continuity or
+  recent-session metadata is itself needed, then perform targeted search/date
+  recall.
+- Use recovered context. Refine irrelevant or incomplete results before acting
+  and recall again only for a new material target.
+- Tools: `memory_search(all)` for broad context; episodic search for prior
+  conversations/decisions; `get_episodic_memories_by_date` for known periods
+  or continuity; semantic search plus `list_files`/`read_file` for stored
+  documents; `grep` for exact semantic anchors only. MidBrain
+  `list_files`/`read_file` read remote memory, so local-filesystem bans do
+  not prohibit them.
+- Reliability outranks cost. Start near 10 results; if the target is absent or
+  noisy, repeat at the supported maximum (currently 50). Then refine anchors or
+  surfaces, paginate, or traverse dates while useful. Ranked misses are not
+  absence; recall depth is uncapped. Stop on direct recovery.
+- Current/latest claims require the underlying state-changing episode or direct
+  current evidence; assistant restatements are insufficient. Current repos,
+  configs, and live systems override memory.
+- Report only `found`, `maybe found`, or `not found after search`; report
+  tool failure separately. Never infer or reconstruct missing memory.
+- Never query secrets/large sensitive blobs or create memories.
+  `memory_setup_project` requires an explicit setup request.
+- Procedural knowledge is not injected automatically unless
+  `MIDBRAIN_ENABLE_PK_INJECTION=1`.
+<!-- midbrain-memory-rules:end -->
+
+## Phase 5: Prepare Auto-Updating Hook Commands
 
 ```bash
 MIDBRAIN_NPX="npx -y midbrain-memory-mcp@latest"
@@ -83,7 +137,7 @@ paths. Versioned package-store paths pin hooks to an old release. The `npx
 @latest` hook command is intentionally durable so NanoClaw cold starts can
 resolve the current package.
 
-## Phase 5: Direct Settings Merge
+## Phase 6: Direct Settings Merge
 
 Merge MidBrain hooks directly into the mounted Claude settings file:
 
@@ -136,7 +190,7 @@ The resulting settings must contain commands equivalent to this redacted shape:
 When writing the real file, replace `<redacted>` with the local key value. Do
 not show the real command afterward.
 
-## Phase 6: Environment File
+## Phase 7: Environment File
 
 If the group also needs an env file, add the key without printing it:
 
@@ -148,11 +202,11 @@ cp .env data/env/env
 
 Do not commit `.env`, `data/env/env`, or any NanoClaw group settings.
 
-## Phase 7: Restart With Approval
+## Phase 8: Restart With Approval
 
 Ask the operator before restarting the selected group or service. Use the NanoClaw command appropriate for the local installation.
 
-## Phase 8: Verify
+## Phase 9: Verify
 
 Verify MCP tools:
 
@@ -171,6 +225,9 @@ Verify memory search from the agent:
 1. Send a harmless test phrase.
 2. Wait for indexing.
 3. Use `memory_search` to find the phrase.
+
+Verify `groups/<folder>/CLAUDE.local.md` contains exactly one
+`midbrain-memory-rules:start` / `midbrain-memory-rules:end` block.
 
 ## MCP Tools Available
 

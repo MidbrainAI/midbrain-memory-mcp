@@ -24,7 +24,7 @@ import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
-import { writeProjectRules } from './shared/agent-rules.mjs';
+import { writeGlobalRules, writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
 import { PKG_NAME, REPO_ROOT } from './shared/clients/utils.mjs';
 import { classifyInstallContext, shouldSkipSelfRepair } from './shared/install-context.mjs';
@@ -463,13 +463,23 @@ async function distributeSharedKey(clients, sharedKey, { interactive }) {
 
 /** Convert writeProjectRules() results to human-readable status lines. */
 function formatRulesLines(results) {
-  return results.map(({ action, path: filePath, error }) => {
+  return results.map(({ action, path: filePath, error, reason }) => {
     const name = path.basename(filePath);
     if (action === 'created') return `Rules written: ${name}`;
     if (action === 'updated') return `Rules updated: ${name}`;
     if (action === 'skipped') return `Rules already current: ${name}`;
+    if (action === 'preserved') {
+      return `Rules preserved for manual review (${reason}): ${filePath}`;
+    }
     return `Rules error (${error?.code || error?.message || 'unknown'}): ${name}`;
   });
+}
+
+function rulesOptions(clients) {
+  return {
+    clients: clients.map((client) => client.id),
+    nanoclawRoot: getClient('nanoclaw').resolveRoot?.() || null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +515,18 @@ const PROJECT_MARKERS = ['.git', 'package.json', 'opencode.json', 'opencode.json
  * process.cwd() is the user's intended project root when running the global
  * interactive installer — it is not derived from user-controlled input.
  */
-async function writeRulesForMainMode(nonInteractive) {
+async function writeRulesForMainMode(nonInteractive, clients) {
+  const opts = rulesOptions(clients);
+  const globalResults = await writeGlobalRules(opts);
+  const globalLines = formatRulesLines(globalResults);
+  globalLines.forEach((line) => {
+    if (nonInteractive || !process.stdin.isTTY) {
+      console.error(`[midbrain] ${line}`);
+    } else {
+      console.log(line);
+    }
+  });
+
   // Justified use of process.cwd(): this is the global installer; the user
   // runs it from their project root. CWD is the natural target.
   const cwd = process.cwd();
@@ -528,7 +549,7 @@ async function writeRulesForMainMode(nonInteractive) {
     }
   }
 
-  const results = await writeProjectRules(cwd);
+  const results = await writeProjectRules(cwd, opts);
   const lines = formatRulesLines(results);
   if (interactive) {
     lines.forEach((l) => console.log(l));
@@ -600,7 +621,7 @@ async function main(opts = {}) {
   }
 
   if (!skipRules) {
-    await writeRulesForMainMode(nonInteractive);
+    await writeRulesForMainMode(nonInteractive, clients);
   }
 }
 
@@ -686,7 +707,10 @@ async function setupProject(rawPath, opts = {}) {
 
   let rulesWritten = [];
   if (!skipRules) {
-    const rulesResults = await writeProjectRules(projectDir);
+    const opts = rulesOptions(clients);
+    const globalResults = await writeGlobalRules(opts);
+    const projectResults = await writeProjectRules(projectDir, opts);
+    const rulesResults = [...globalResults, ...projectResults];
     lines.push(...formatRulesLines(rulesResults));
     rulesWritten = rulesResults
       .filter((r) => r.action === 'created' || r.action === 'updated')

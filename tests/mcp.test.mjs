@@ -1555,7 +1555,10 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
   it("G-6: unknown subcommand falls through to normal MCP start", () => {
     // Spawn, wait briefly for the 'MCP server running' line, then kill.
     const child = spawnSync(process.execPath, [SERVER_PATH, "foo"], {
-      env: { ...process.env },
+      // Starting the real entry point also starts self-repair. Force the
+      // documented CI gate so this process can never inspect or mutate the
+      // developer's real client installations.
+      env: { ...process.env, CI: "1" },
       encoding: "utf8",
       timeout: 1500,
       // SIGTERM after the timeout since normal start waits on stdin.
@@ -1637,7 +1640,8 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
 
   it("G-5: no-arg startup produces MCP server running line (regression)", () => {
     const child = spawnSync(process.execPath, [SERVER_PATH], {
-      env: { ...process.env },
+      // See G-6: exercise startup without authorizing real-home self-repair.
+      env: { ...process.env, CI: "1" },
       encoding: "utf8",
       timeout: 1500,
     });
@@ -1781,12 +1785,13 @@ describe("memory_setup_project MCP tool coexistence (PRD-011 G-8)", () => {
     const entry = parsed.mcpServers?.["midbrain-memory"];
     expect(entry).toBeDefined();
     expect(entry.args).toEqual(["-y", "midbrain-memory-mcp@latest"]);
+    expect(fs.existsSync(path.join(homeTmpdir, ".claude", "CLAUDE.md"))).toBe(true);
     expect(fs.existsSync(path.join(projectTmpdir, "AGENTS.md"))).toBe(false);
-    expect(fs.existsSync(path.join(projectTmpdir, "CLAUDE.md"))).toBe(false);
+    expect(fs.existsSync(path.join(projectTmpdir, "CLAUDE.md"))).toBe(true);
 
     // Tool response shape unchanged: text content with key + config lines
     expect(text).toMatch(/key|Key|midbrain/);
-    expect(text).not.toContain("Rules written");
+    expect(text).toContain("Rules written");
   });
 });
 

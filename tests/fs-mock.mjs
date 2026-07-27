@@ -63,6 +63,7 @@ export function makeResetMocks(mocks) {
     mocks.mkdir.mockResolvedValue(undefined);
     mocks.chmod.mockResolvedValue(undefined);
     mocks.copyFile.mockResolvedValue(undefined);
+    if (mocks.readdir) mocks.readdir.mockResolvedValue([]);
     mocks.stat.mockRejectedValue(enoent("default"));
     mocks.realpath.mockImplementation(async (p) => p);
     mocks.existsSync.mockReturnValue(false);

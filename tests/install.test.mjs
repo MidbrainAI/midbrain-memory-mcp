@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   stat:       vi.fn(),
   realpath:   vi.fn(),
   copyFile:   vi.fn().mockResolvedValue(undefined),
+  readdir:    vi.fn().mockResolvedValue([]),
   rm:         vi.fn().mockResolvedValue(undefined),
   access:     vi.fn().mockResolvedValue(undefined),
   existsSync: vi.fn(() => false),
@@ -42,9 +43,9 @@ mocks.createReadlineInterface.mockImplementation(() => ({
 vi.mock("fs/promises", () => ({
   default: { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
              chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile,
-             rm: mocks.rm, access: mocks.access },
+             rm: mocks.rm, access: mocks.access, readdir: mocks.readdir },
   readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir, chmod: mocks.chmod,
-  rm: mocks.rm, access: mocks.access,
+  rm: mocks.rm, access: mocks.access, readdir: mocks.readdir,
 }));
 vi.mock("fs", async (importOriginal) => {
   const orig = await importOriginal();
@@ -60,7 +61,7 @@ vi.mock("../shared/device-auth.mjs", () => ({
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
              chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile,
-             rm: mocks.rm, access: mocks.access };
+             rm: mocks.rm, access: mocks.access, readdir: mocks.readdir };
 const existsSync = mocks.existsSync;
 const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
@@ -120,6 +121,8 @@ const PATHS = {
   nanoclawKey:      path.join(HOME, ".config", "nanoclaw", ".midbrain-key"),
   hermesKey:        path.join(HOME, ".config", "hermes", ".midbrain-key"),
   opencodeConfig:   path.join(HOME, ".config", "opencode", "opencode.json"),
+  opencodeAgents:   path.join(HOME, ".config", "opencode", "AGENTS.md"),
+  claudeRules:      path.join(HOME, ".claude", "CLAUDE.md"),
   claudeJson:       path.join(HOME, ".claude.json"),
   codexConfig:      path.join(HOME, ".codex", "config.toml"),
   codexHooks:       path.join(HOME, ".codex", "hooks.json"),
@@ -127,6 +130,8 @@ const PATHS = {
   nanoclawDocker:   path.join(HOME, "nanoclaw-v2", "container", "Dockerfile"),
   nanoclawSkills:   path.join(HOME, "nanoclaw-v2", ".claude", "skills"),
   nanoclawSkill:    path.join(HOME, "nanoclaw-v2", ".claude", "skills", "add-midbrain", "SKILL.md"),
+  nanoclawSharedRules: path.join(HOME, "nanoclaw-v2", "container", "CLAUDE.md"),
+  nanoclawMainRules: path.join(HOME, "nanoclaw-v2", "groups", "main", "CLAUDE.local.md"),
   hermesConfig:     path.join(HOME, ".hermes", "config.yaml"),
 };
 const NANOCLAW_SKILL_SRC = path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md");
@@ -288,6 +293,39 @@ describe("main — per-client key writing", () => {
 
     const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
     expect(ocWrite).toBeUndefined();
+  });
+
+  it("global install always synchronizes the detected client's global rules", async () => {
+    existsFor(PATHS.opencodeConfig);
+    readFileReturns({ [PATHS.opencodeKey]: "my-oc-key\n" });
+
+    await main({ nonInteractive: true });
+
+    const rulesWrite = fs.writeFile.mock.calls.find(
+      ([p]) => p === PATHS.opencodeAgents
+    );
+    expect(rulesWrite?.[1]).toBe(buildRulesBlock("agents"));
+  });
+
+  it("NanoClaw global install updates shared and every existing group fallback only", async () => {
+    existsFor(PATHS.nanoclawDocker, PATHS.nanoclawSkills);
+    readFileReturns({ [PATHS.nanoclawKey]: "my-nanoclaw-key\n" });
+    mocks.readdir.mockResolvedValue([
+      { name: "main", isDirectory: () => true },
+      { name: "worker", isDirectory: () => true },
+    ]);
+
+    await main({ nonInteractive: true });
+
+    const writes = new Map(fs.writeFile.mock.calls.map(([p, body]) => [p, body]));
+    expect(writes.get(PATHS.nanoclawSharedRules)).toBe(buildRulesBlock("nanoclaw"));
+    expect(writes.get(PATHS.nanoclawMainRules)).toBe(buildRulesBlock("nanoclaw"));
+    expect(writes.has(
+      path.join(HOME, "nanoclaw-v2", "groups", "worker", "CLAUDE.local.md")
+    )).toBe(true);
+    expect(writes.has(
+      path.join(HOME, "nanoclaw-v2", "groups", "main", "CLAUDE.md")
+    )).toBe(false);
   });
 
   it("writes global key only for a single detected client (Claude Code)", async () => {
@@ -1222,19 +1260,18 @@ describe("setupProject — rules integration", () => {
     vi.restoreAllMocks();
   });
 
-  it("T-20: fresh dir — rulesWritten includes AGENTS.md and CLAUDE.md", async () => {
+  it("T-20: fresh dir — rulesWritten includes global and project OpenCode rules", async () => {
     setupRulesMocks();
     const result = await setupProject(PROJECT_DIR, { apiKey: "test-key" });
+    expect(result.rulesWritten).toContain(PATHS.opencodeAgents);
     expect(result.rulesWritten).toContain(path.join(PROJECT_DIR, "AGENTS.md"));
-    expect(result.rulesWritten).toContain(path.join(PROJECT_DIR, "CLAUDE.md"));
+    expect(result.rulesWritten).toHaveLength(2);
   });
 
-  it("T-20b: fresh dir — lines[] mentions AGENTS.md and CLAUDE.md written", async () => {
+  it("T-20b: fresh dir — lines[] reports both global and project writes", async () => {
     setupRulesMocks();
     const result = await setupProject(PROJECT_DIR, { apiKey: "test-key" });
-    const joined = result.lines.join("\n");
-    expect(joined).toContain("AGENTS.md");
-    expect(joined).toContain("CLAUDE.md");
+    expect(result.lines.filter((line) => line === "Rules written: AGENTS.md")).toHaveLength(2);
   });
 
   it("T-21: second call — rulesWritten is empty; files unchanged", async () => {
@@ -1246,8 +1283,8 @@ describe("setupProject — rules integration", () => {
     const block = buildRulesBlock();
     setupRulesMocks({
       extraFiles: {
+        [PATHS.opencodeAgents]: block,
         [path.join(PROJECT_DIR, "AGENTS.md")]: block,
-        [path.join(PROJECT_DIR, "CLAUDE.md")]: block,
       },
     });
     const r2 = await setupProject(PROJECT_DIR, { apiKey: "test-key" });
@@ -1261,6 +1298,18 @@ describe("setupProject — rules integration", () => {
     expect(writes).not.toContain(path.join(PROJECT_DIR, "AGENTS.md"));
     expect(writes).not.toContain(path.join(PROJECT_DIR, "CLAUDE.md"));
     expect(result.rulesWritten).toEqual([]);
+  });
+
+  it("T-22b: mixed detected clients receive separate global and project surfaces", async () => {
+    setupRulesMocks();
+    existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+    const result = await setupProject(PROJECT_DIR, { apiKey: "test-key" });
+    expect(result.rulesWritten.sort()).toEqual([
+      PATHS.claudeRules,
+      PATHS.opencodeAgents,
+      path.join(PROJECT_DIR, "AGENTS.md"),
+      path.join(PROJECT_DIR, "CLAUDE.md"),
+    ].sort());
   });
 
   it("T-23: --no-rules CLI — JSON rules_written is []", async () => {
