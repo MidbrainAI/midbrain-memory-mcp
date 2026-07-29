@@ -20,7 +20,6 @@ import {
   commandHasLegacyScriptPath, commandHasMidbrainInvocation,
 } from './shim.mjs';
 
-import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 
