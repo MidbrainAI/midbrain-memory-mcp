@@ -44,7 +44,13 @@ async function prospectiveRealpath(filePath) {
       const resolved = await fs.realpath(cursor);
       return path.join(resolved, ...missing.reverse());
     } catch (err) {
-      if (err.code !== 'ENOENT') throw err;
+      if (err.code !== 'ENOENT') {
+        const category = err.code === 'EACCES' ? 'permission-denied' : 'path-resolution-failed';
+        throw new CredentialWriteError(
+          `Cannot resolve credential path (${category}): ${filePath}`,
+          { category, targetPath: filePath, cause: err },
+        );
+      }
       const parent = path.dirname(cursor);
       if (parent === cursor) throw err;
       missing.push(path.basename(cursor));
@@ -129,21 +135,21 @@ async function readExisting(targetPath) {
 
 async function atomicWrite(targetPath, key) {
   const tempPath = `${targetPath}.tmp`;
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
   let handle;
   try {
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
     handle = await fs.open(tempPath, 'wx', FILE_MODE);
     await handle.writeFile(`${key}\n`, 'utf8');
     await handle.chmod(FILE_MODE);
     await handle.close();
     handle = null;
     await fs.rename(tempPath, targetPath);
-    await fs.chmod(targetPath, FILE_MODE);
   } catch (err) {
     await handle?.close().catch(() => {});
     if (handle !== undefined) await fs.rm(tempPath, { force: true }).catch(() => {});
+    const category = err.code === 'EACCES' ? 'permission-denied' : 'write-failed';
     throw new CredentialWriteError(`Failed to write credential file: ${targetPath}`, {
-      category: 'write-failed',
+      category,
       targetPath,
       cause: err,
     });

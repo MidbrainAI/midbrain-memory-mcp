@@ -194,6 +194,60 @@ describe('writeCredential atomic writes', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
+    'surfaces an unwritable parent mkdir failure as a typed error without a partial file',
+    async () => {
+      const { CredentialWriteError, writeCredential } = await loadWriter();
+      const projectDir = path.join(testEnv.root, 'mkdir-permission-project');
+      const targetPath = path.join(projectDir, '.midbrain', '.midbrain-key');
+      await fs.mkdir(projectDir, { recursive: true, mode: 0o700 });
+      await fs.chmod(projectDir, 0o555);
+      try {
+        const error = await writeCredential({
+          clientId: 'generic',
+          scope: 'project',
+          targetPath,
+          projectDir,
+          key: 'new-dummy',
+        }).catch((err) => err);
+        expect(error).toBeInstanceOf(CredentialWriteError);
+        expect(error.category).toBe('permission-denied');
+        expect(error.targetPath).toBe(targetPath);
+        await expect(fs.access(targetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(fs.access(`${targetPath}.tmp`)).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await fs.chmod(projectDir, 0o700);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'surfaces an unreadable parent realpath failure as a typed error without a partial file',
+    async () => {
+      const { CredentialWriteError, writeCredential } = await loadWriter();
+      const projectDir = path.join(testEnv.root, 'realpath-permission-project');
+      const targetPath = path.join(projectDir, '.midbrain', '.midbrain-key');
+      await fs.mkdir(projectDir, { recursive: true, mode: 0o700 });
+      await fs.chmod(projectDir, 0o000);
+      try {
+        const error = await writeCredential({
+          clientId: 'generic',
+          scope: 'project',
+          targetPath,
+          projectDir,
+          key: 'new-dummy',
+        }).catch((err) => err);
+        expect(error).toBeInstanceOf(CredentialWriteError);
+        expect(error.category).toBe('permission-denied');
+        expect(error.targetPath).toBe(targetPath);
+        await expect(fs.access(targetPath)).rejects.toMatchObject({ code: 'EACCES' });
+        await expect(fs.access(`${targetPath}.tmp`)).rejects.toMatchObject({ code: 'EACCES' });
+      } finally {
+        await fs.chmod(projectDir, 0o700);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
     'refuses a pre-existing temporary-file symlink without touching its target',
     async () => {
       const { CredentialWriteError, writeCredential } = await loadWriter();
