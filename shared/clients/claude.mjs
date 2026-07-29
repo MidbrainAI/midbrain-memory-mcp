@@ -14,6 +14,7 @@ import { writeCredential } from './credential-writer.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT,
   home, readJson, writeJson, writeJsonIfChanged, backup, classifyEntry, formatMigrationLine,
+  migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
 import {
   shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
@@ -192,7 +193,16 @@ export class Claude extends BaseClient {
     const mcpJsonPath = path.join(projectDir, '.mcp.json');
     const mcpJson = (await readJson(mcpJsonPath)) || {};
     mcpJson.mcpServers = mcpJson.mcpServers || {};
-    const { exists: mcpExists, pinned: mcpPinned, extraEnv: mcpExtraEnv } = classifyEntry(mcpJson.mcpServers[MCP_KEY], 'env');
+    const existingMcp = mcpJson.mcpServers[MCP_KEY];
+    const { exists: mcpExists, pinned: mcpPinned, extraEnv: mcpExtraEnv } =
+      classifyEntry(existingMcp, 'env');
+    const mcpHostLines = mcpPinned
+      ? [pinnedHostEnvLine(existingMcp, 'env')].filter(Boolean)
+      : await migrateReservedHostEnv(existingMcp?.env, {
+          clientId: this.id,
+          projectDir,
+          source: mcpJsonPath,
+        });
     if (!mcpPinned) {
       const entry = buildEntry({ isDev, projectDir });
       entry.env = { ...mcpExtraEnv, ...entry.env };
@@ -200,11 +210,13 @@ export class Claude extends BaseClient {
       await writeJson(mcpJsonPath, mcpJson);
     }
     out.push(formatMigrationLine(mcpJsonPath, mcpExists, mcpPinned));
+    out.push(...mcpHostLines);
 
     // 2. ~/.claude.json project-local scope (bypass trust gate)
     try {
       const patched = await this._patchProjectLocal(projectDir, { isDev });
       if (patched.line) out.push(patched.line);
+      out.push(...patched.hostLines);
     } catch (err) {
       if (err.code === 'EACCES') {
         out.push(`Warning: could not patch ${claudeJsonPath()}: ${err.code}`);
@@ -275,6 +287,12 @@ export class Claude extends BaseClient {
 
     const existing = data.mcpServers && data.mcpServers[MCP_KEY];
     const { pinned, extraEnv: customEnv } = classifyEntry(existing, 'env');
+    const hostLines = pinned
+      ? [pinnedHostEnvLine(existing, 'env')].filter(Boolean)
+      : await migrateReservedHostEnv(existing?.env, {
+          clientId: this.id,
+          source: cjp,
+        });
 
     if (!pinned) {
       const entry = buildEntry({ isDev });
@@ -291,6 +309,7 @@ export class Claude extends BaseClient {
     } else {
       summary.push('  + MCP server added to ~/.claude.json');
     }
+    summary.push(...hostLines);
   }
 
   async _installClaudeSettings(summary, { isDev = false } = {}) {
@@ -343,6 +362,13 @@ export class Claude extends BaseClient {
       data.projects[projectDir].mcpServers[MCP_KEY];
 
     const { exists, pinned, extraEnv } = classifyEntry(existingEntry, 'env');
+    const hostLines = pinned
+      ? [pinnedHostEnvLine(existingEntry, 'env')].filter(Boolean)
+      : await migrateReservedHostEnv(existingEntry?.env, {
+          clientId: this.id,
+          projectDir,
+          source: `${cjp} (project-local)`,
+        });
     if (!pinned) {
       const entry = buildEntry({ isDev, projectDir });
       entry.env = { ...extraEnv, ...entry.env };
@@ -353,6 +379,9 @@ export class Claude extends BaseClient {
       await writeJson(cjp, data);
     }
 
-    return { line: formatMigrationLine(`${cjp} (project-local)`, exists, pinned) };
+    return {
+      line: formatMigrationLine(`${cjp} (project-local)`, exists, pinned),
+      hostLines,
+    };
   }
 }

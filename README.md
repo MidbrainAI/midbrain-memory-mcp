@@ -367,6 +367,64 @@ version. The MCP server logs the resolved package version to stderr on startup.
 | `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, `codex`, or `nanoclaw`) | MCP config `environment`/`env` block |
 | `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution | Project-level MCP config |
 | `MIDBRAIN_API_KEY` | API key for CI/debug environments | User environment |
+| `MIDBRAIN_API_URL` | Highest-priority API-host override for development and compatibility | User process environment |
+
+### API Host Resolution
+
+MCP tools and capture runtimes resolve the API host independently from the
+same file-based configuration. With no override, both use
+`https://memory.midbrain.ai`.
+
+Resolution order:
+
+| # | Scope | Location |
+|---|---|---|
+| 1 | Environment | `$MIDBRAIN_API_URL` |
+| 2 | Project | `<project>/.midbrain/config.json` → `apiUrl` |
+| 3 | Client | `~/.config/midbrain/config.json` → `clients.<clientId>.apiUrl` |
+| 4 | Global | `~/.config/midbrain/config.json` → `apiUrl` |
+| 5 | Default | `https://memory.midbrain.ai` |
+
+Both configuration files are plain JSON. For example:
+
+```json
+{
+  "apiUrl": "https://memory.example.com",
+  "clients": {
+    "opencode": {
+      "apiUrl": "https://opencode-memory.example.com"
+    }
+  }
+}
+```
+
+The project form contains only the top-level field:
+
+```json
+{
+  "apiUrl": "https://project-memory.example.com"
+}
+```
+
+API bases must be HTTP(S), may include a path, and must not already end in
+`/api/v1`; MidBrain appends its API path. Whitespace and trailing slashes are
+normalized. Invalid or corrupt values warn and fall through to the next scope.
+
+For safety, a project `apiUrl` is honored only when the credential also
+resolves from that project. Put both the project key and host configuration
+under `<project>/.midbrain/`; a cloned repository cannot redirect a
+client/global credential to its own host.
+
+`MIDBRAIN_API_URL` is a reserved MCP-entry environment key. On install or
+repair, an existing unpinned entry value is migrated to the matching client or
+project config file and removed from the rebuilt entry. An existing file value
+wins on conflict. A pinned `midbrain-memory-mcp@X.Y.Z` entry is not rebuilt, so
+it retains the environment value and the installer tells you to unpin and
+rerun installation to migrate it.
+
+Episodic cache identity includes the normalized effective host and credential.
+Changing hosts selects a separate pending bucket; MidBrain never flushes,
+merges, or deletes entries belonging to another host/key binding.
 
 ### API Key Resolution
 

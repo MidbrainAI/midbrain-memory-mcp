@@ -14,6 +14,7 @@ import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT,
   home, readJson, writeJsonIfChanged, backup,
   classifyEntry, formatMigrationLine,
+  migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
 import {
   shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
@@ -91,12 +92,19 @@ function patchFeatureAliases(config) {
   if (hadDeprecated || wasDisabled) config.features.hooks = true;
 }
 
-function patchMcpEntry(config, opts) {
+async function patchMcpEntry(config, opts) {
   config.mcp_servers = config.mcp_servers || {};
   const existing = config.mcp_servers[MCP_KEY];
   const { exists, pinned, extraEnv } = classifyEntry(existing, 'env');
+  const hostLines = pinned
+    ? [pinnedHostEnvLine(existing, 'env')].filter(Boolean)
+    : await migrateReservedHostEnv(existing?.env, {
+        clientId: 'codex',
+        projectDir: opts.projectDir,
+        source: opts.source,
+      });
   if (!pinned) config.mcp_servers[MCP_KEY] = buildEntry({ ...opts, extraEnv });
-  return { exists, pinned };
+  return { exists, pinned, hostLines };
 }
 
 function buildHookCommand(scriptName) {
@@ -179,10 +187,14 @@ export class Codex extends BaseClient {
     const hp = hooksPath();
 
     const config = await readToml(cfp);
-    const { exists, pinned } = patchMcpEntry(config, opts);
+    const { exists, pinned, hostLines } = await patchMcpEntry(config, {
+      ...opts,
+      source: cfp,
+    });
     patchFeatureAliases(config);
     await writeTomlIfChanged(cfp, config, { backupFirst: true });
     summary.push(formatMigrationLine('~/.codex/config.toml', exists, pinned));
+    summary.push(...hostLines);
 
     const hooks = patchHooks((await readJson(hp)) || {});
     await installShim('codex', { mode: 'install', isDev: opts.isDev });
@@ -200,10 +212,14 @@ export class Codex extends BaseClient {
     };
     const configFile = path.join(_projectDir, '.codex', 'config.toml');
     const config = await readToml(configFile);
-    const { exists, pinned } = patchMcpEntry(config, opts);
+    const { exists, pinned, hostLines } = await patchMcpEntry(config, {
+      ...opts,
+      source: configFile,
+    });
     await writeTomlIfChanged(configFile, config, { backupFirst: true });
     return [
       formatMigrationLine(configFile, exists, pinned),
+      ...hostLines,
       'Codex project trust required: restart Codex and trust this project config if prompted.',
     ];
   }

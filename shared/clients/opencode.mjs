@@ -14,6 +14,7 @@ import { writeCredential } from './credential-writer.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT, PKG_NAME, PKG_VERSION,
   home, backup, classifyEntry, formatMigrationLine, writeFileIfChanged,
+  migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
 
 import fs from 'fs/promises';
@@ -260,6 +261,12 @@ export class OpenCode extends BaseClient {
 
     const existing = config.mcp && config.mcp[MCP_KEY];
     const { exists, pinned, extraEnv: customEnv } = classifyEntry(existing, 'environment');
+    const hostLines = pinned
+      ? [pinnedHostEnvLine(existing, 'environment')].filter(Boolean)
+      : await migrateReservedHostEnv(existing?.environment, {
+          clientId: this.id,
+          source: configPath,
+        });
     if (!pinned) {
       const entry = buildEntry({ isDev });
       entry.environment = { ...customEnv, ...entry.environment };
@@ -273,6 +280,7 @@ export class OpenCode extends BaseClient {
         ? `  ~ MCP server: updated in ${configBasename}`
         : `  + MCP server added to ${configBasename}`
     );
+    summary.push(...hostLines);
     summary.push('  -> Restart OpenCode to apply changes');
     return summary;
   }
@@ -286,6 +294,13 @@ export class OpenCode extends BaseClient {
 
     const existingEntry = config.mcp && config.mcp[MCP_KEY];
     const { exists, pinned, extraEnv } = classifyEntry(existingEntry, 'environment');
+    const hostLines = pinned
+      ? [pinnedHostEnvLine(existingEntry, 'environment')].filter(Boolean)
+      : await migrateReservedHostEnv(existingEntry?.environment, {
+          clientId: this.id,
+          projectDir,
+          source: configPath,
+        });
 
     const modifications = [];
     if (!config['$schema']) {
@@ -306,6 +321,7 @@ export class OpenCode extends BaseClient {
       await patchJsonFile(configPath, modifications);
     }
     out.push(formatMigrationLine(configPath, exists, pinned));
+    out.push(...hostLines);
     return out;
   }
 
