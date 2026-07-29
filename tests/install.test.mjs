@@ -5,14 +5,16 @@
  * Client adapter behaviour is tested separately in client-opencode.test.mjs,
  * client-claude.test.mjs, and client-registry.test.mjs.
  *
- * All filesystem operations are mocked — no real files read or written.
+ * Production filesystem operations are mocked for call-shape assertions.
+ * The real sandbox fixture contains any fallback if a mock fails to attach.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import path from "path";
 import os from "os";
 
 import { enoent, makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
+import { makeTestEnv, assertSandboxed } from "./helpers/test-env.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -111,35 +113,55 @@ describe("isNewerVersion", () => {
   });
 });
 
-const HOME = os.homedir();
-
-const PATHS = {
-  globalKey:        path.join(HOME, ".config", "midbrain", ".midbrain-key"),
-  opencodeKey:      path.join(HOME, ".config", "opencode", ".midbrain-key"),
-  claudeKey:        path.join(HOME, ".config", "claude", ".midbrain-key"),
-  codexKey:         path.join(HOME, ".config", "codex", ".midbrain-key"),
-  nanoclawKey:      path.join(HOME, ".config", "nanoclaw", ".midbrain-key"),
-  hermesKey:        path.join(HOME, ".config", "hermes", ".midbrain-key"),
-  opencodeConfig:   path.join(HOME, ".config", "opencode", "opencode.json"),
-  opencodeAgents:   path.join(HOME, ".config", "opencode", "AGENTS.md"),
-  claudeRules:      path.join(HOME, ".claude", "CLAUDE.md"),
-  claudeJson:       path.join(HOME, ".claude.json"),
-  codexConfig:      path.join(HOME, ".codex", "config.toml"),
-  codexHooks:       path.join(HOME, ".codex", "hooks.json"),
-  codexShim:        path.join(HOME, ".midbrain", "bin", "codex-hook"),
-  nanoclawDocker:   path.join(HOME, "nanoclaw-v2", "container", "Dockerfile"),
-  nanoclawSkills:   path.join(HOME, "nanoclaw-v2", ".claude", "skills"),
-  nanoclawSkill:    path.join(HOME, "nanoclaw-v2", ".claude", "skills", "add-midbrain", "SKILL.md"),
-  nanoclawSharedRules: path.join(HOME, "nanoclaw-v2", "container", "CLAUDE.md"),
-  nanoclawMainRules: path.join(HOME, "nanoclaw-v2", "groups", "main", "CLAUDE.local.md"),
-  hermesConfig:     path.join(HOME, ".hermes", "config.yaml"),
-};
 const NANOCLAW_SKILL_SRC = path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md");
+let testEnv;
+let HOME;
+let PATHS;
+let PROJECT_DIR;
 
-// Pre-resolve so it matches path.resolve(rawPath) inside setupProject on every
-// platform (on Windows "/home/..." resolves to "<drive>:\home\..."). All mock
-// keys and assertions build off this resolved value.
-const PROJECT_DIR = path.resolve("/home/testuser/myproject");
+// One sandbox per file contains every adapter/global/project path even if the
+// shared filesystem mocks fail to attach in a copied dependency topology.
+beforeAll(async () => {
+  testEnv = await makeTestEnv();
+  const home = testEnv.home;
+  HOME = home;
+  PATHS = {
+    globalKey: path.join(home, ".config", "midbrain", ".midbrain-key"),
+    opencodeKey: path.join(home, ".config", "opencode", ".midbrain-key"),
+    claudeKey: path.join(home, ".config", "claude", ".midbrain-key"),
+    codexKey: path.join(home, ".config", "codex", ".midbrain-key"),
+    nanoclawKey: path.join(home, ".config", "nanoclaw", ".midbrain-key"),
+    hermesKey: path.join(home, ".config", "hermes", ".midbrain-key"),
+    opencodeConfig: path.join(home, ".config", "opencode", "opencode.json"),
+    opencodeAgents: path.join(home, ".config", "opencode", "AGENTS.md"),
+    claudeRules: path.join(home, ".claude", "CLAUDE.md"),
+    claudeJson: path.join(home, ".claude.json"),
+    codexConfig: path.join(home, ".codex", "config.toml"),
+    codexHooks: path.join(home, ".codex", "hooks.json"),
+    codexShim: path.join(home, ".midbrain", "bin", "codex-hook"),
+    nanoclawDocker: path.join(home, "nanoclaw-v2", "container", "Dockerfile"),
+    nanoclawSkills: path.join(home, "nanoclaw-v2", ".claude", "skills"),
+    nanoclawSkill: path.join(home, "nanoclaw-v2", ".claude", "skills", "add-midbrain", "SKILL.md"),
+    nanoclawSharedRules: path.join(home, "nanoclaw-v2", "container", "CLAUDE.md"),
+    nanoclawMainRules: path.join(home, "nanoclaw-v2", "groups", "main", "CLAUDE.local.md"),
+    hermesConfig: path.join(home, ".hermes", "config.yaml"),
+  };
+  PROJECT_DIR = path.join(testEnv.root, "project");
+  for (const target of [
+    PATHS.globalKey,
+    PATHS.opencodeKey,
+    PATHS.claudeKey,
+    PATHS.codexKey,
+    PATHS.nanoclawKey,
+    PATHS.hermesKey,
+  ]) {
+    await assertSandboxed(testEnv, target);
+  }
+});
+
+afterAll(async () => {
+  await testEnv?.restore();
+});
 
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);
@@ -822,8 +844,11 @@ describe("clearStaleSelfNpxCache", () => {
 describe("checkForUpdate — version phase", () => {
   let errSpy;
   let fetchSpy;
-  const cachePath = path.join(os.tmpdir(), ".midbrain-update-check.json");
+  let cachePath;
 
+  beforeAll(() => {
+    cachePath = path.join(os.tmpdir(), ".midbrain-update-check.json");
+  });
   beforeEach(() => {
     resetMocks();
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -879,8 +904,11 @@ describe("checkForUpdate — version phase", () => {
 describe("maybeSelfUpdate", () => {
   let errSpy;
   let fetchSpy;
-  const cachePath = path.join(os.tmpdir(), ".midbrain-update-check.json");
+  let cachePath;
 
+  beforeAll(() => {
+    cachePath = path.join(os.tmpdir(), ".midbrain-update-check.json");
+  });
   beforeEach(() => {
     resetMocks();
     errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
