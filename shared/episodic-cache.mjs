@@ -297,3 +297,23 @@ export function hasCachedEntries(scope) {
     }
   }
 }
+
+function countEntriesInFile(filePath) {
+  try {
+    return validEntriesFromRaw(fs.readFileSync(filePath, "utf8")).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Count valid pending entries across the live and processing files for a
+ * binding. Malformed lines are ignored and files are never mutated.
+ *
+ * @param {string} [scope]
+ * @returns {number}
+ */
+export function countCachedEntries(scope) {
+  return countEntriesInFile(cacheFileForScope(scope)) +
+    countEntriesInFile(processingFileForScope(scope));
+}
