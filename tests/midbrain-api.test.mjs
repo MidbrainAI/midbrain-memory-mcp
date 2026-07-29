@@ -41,6 +41,63 @@ describe("MidbrainApi constants", () => {
   });
 });
 
+describe("MidbrainApi instance API base", () => {
+  it("builds every endpoint and diagnostic getter from the injected base", () => {
+    const api = new MidbrainApi("test-key", "key-file", {
+      apiBase: "http://127.0.0.1:43123/custom",
+      apiBaseScope: "client",
+      apiBaseSource: "/tmp/config.json",
+      keyScope: "global",
+    });
+
+    expect(api.effectiveApiBase).toBe("http://127.0.0.1:43123/custom");
+    expect(api.apiBaseScope).toBe("client");
+    expect(api.apiBaseSource).toBe("/tmp/config.json");
+    expect(api.keyScope).toBe("global");
+    expect(api.SEARCH_SEMANTIC).toBe(
+      "http://127.0.0.1:43123/custom/api/v1/memories/search/semantic",
+    );
+    expect(api.SEARCH_LEXICAL).toBe(
+      "http://127.0.0.1:43123/custom/api/v1/memories/search/lexical",
+    );
+    expect(api.SEARCH_PROCEDURAL).toBe(
+      "http://127.0.0.1:43123/custom/api/v1/memories/search/procedural",
+    );
+    expect(api.EPISODIC).toBe(
+      "http://127.0.0.1:43123/custom/api/v1/memories/episodic",
+    );
+    expect(api.SEMANTIC_FILES).toBe(
+      "http://127.0.0.1:43123/custom/api/v1/memories/semantic/files",
+    );
+    expect(api.PROCEDURAL).toBe(
+      "http://127.0.0.1:43123/custom/api/v1/memories/procedural",
+    );
+  });
+
+  it("keeps v0.4.7 no-override URL bytes unchanged", () => {
+    const api = new MidbrainApi("test-key", "test-source");
+    expect(api.effectiveApiBase).toBe("https://memory.midbrain.ai");
+    expect(api.SEARCH_SEMANTIC).toBe(
+      "https://memory.midbrain.ai/api/v1/memories/search/semantic",
+    );
+    expect(api.SEARCH_LEXICAL).toBe(
+      "https://memory.midbrain.ai/api/v1/memories/search/lexical",
+    );
+    expect(api.SEARCH_PROCEDURAL).toBe(
+      "https://memory.midbrain.ai/api/v1/memories/search/procedural",
+    );
+    expect(api.EPISODIC).toBe(
+      "https://memory.midbrain.ai/api/v1/memories/episodic",
+    );
+    expect(api.SEMANTIC_FILES).toBe(
+      "https://memory.midbrain.ai/api/v1/memories/semantic/files",
+    );
+    expect(api.PROCEDURAL).toBe(
+      "https://memory.midbrain.ai/api/v1/memories/procedural",
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // storeEpisodic
 // ---------------------------------------------------------------------------
@@ -70,6 +127,17 @@ describe("MidbrainApi.storeEpisodic", () => {
     expect(opts.headers.Authorization).toBe("Bearer test-key");
     expect(opts.headers["User-Agent"]).toBe("midbrain-memory-mcp");
     expect(JSON.parse(opts.body)).toEqual({ text: "hello world", role: "user" });
+  });
+
+  it("POSTs episodic data to the injected instance endpoint", async () => {
+    api = new MidbrainApi("test-key", "test-source", {
+      apiBase: "http://127.0.0.1:43123",
+    });
+    await api.storeEpisodic("custom host", "user", makeLog());
+
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      "http://127.0.0.1:43123/api/v1/memories/episodic",
+    );
   });
 
   it.each(["opencode", "claude", "codex"])(
@@ -484,11 +552,22 @@ describe("MidbrainApi.searchProcedural", () => {
 
 describe("MidbrainApi.create", () => {
   it("creates an instance from a client adapter", async () => {
-    const mockClient = { resolveKey: vi.fn().mockResolvedValue({ key: "abc123", source: "test" }) };
+    const mockClient = {
+      id: "opencode",
+      resolveKey: vi.fn().mockResolvedValue({
+        key: "abc123",
+        source: "test",
+        scope: "global",
+      }),
+    };
     const api = await MidbrainApi.create(mockClient, "/some/dir");
     expect(api.keySource).toBe("test");
     expect(api.keyFingerprint).toBe("...c123");
-    expect(mockClient.resolveKey).toHaveBeenCalledWith("/some/dir");
+    expect(api.keyScope).toBe("global");
+    expect(mockClient.resolveKey).toHaveBeenCalledWith(
+      "/some/dir",
+      { includeScope: true },
+    );
   });
 
   it("throws when no key found", async () => {

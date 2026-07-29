@@ -21,19 +21,24 @@
 import { createHash } from "crypto";
 
 import { appendToCache, beginCacheFlush, finishCacheFlush, hasCachedEntries } from "./episodic-cache.mjs";
+import { DEFAULT_API_BASE, resolveApiHost } from "./api-host.mjs";
 
-const API_BASE = process.env.MIDBRAIN_API_URL || "https://memory.midbrain.ai";
-const API_V1 = `${API_BASE}/api/v1`;
+const API_BASE = process.env.MIDBRAIN_API_URL || DEFAULT_API_BASE;
 
-// Endpoint paths — internal, consumed via instance methods and static constants.
-const ENDPOINTS = {
-  SEARCH_SEMANTIC:   `${API_V1}/memories/search/semantic`,
-  SEARCH_LEXICAL:    `${API_V1}/memories/search/lexical`,
-  SEARCH_PROCEDURAL: `${API_V1}/memories/search/procedural`,
-  EPISODIC:          `${API_V1}/memories/episodic`,
-  SEMANTIC_FILES:    `${API_V1}/memories/semantic/files`,
-  PROCEDURAL:        `${API_V1}/memories/procedural`,
-};
+function buildEndpoints(apiBase) {
+  const apiV1 = `${apiBase}/api/v1`;
+  return {
+    SEARCH_SEMANTIC:   `${apiV1}/memories/search/semantic`,
+    SEARCH_LEXICAL:    `${apiV1}/memories/search/lexical`,
+    SEARCH_PROCEDURAL: `${apiV1}/memories/search/procedural`,
+    EPISODIC:          `${apiV1}/memories/episodic`,
+    SEMANTIC_FILES:    `${apiV1}/memories/semantic/files`,
+    PROCEDURAL:        `${apiV1}/memories/procedural`,
+  };
+}
+
+// Compatibility-only static endpoints retain the v0.4.7 import-time behavior.
+const ENDPOINTS = buildEndpoints(API_BASE);
 
 const PK_DEFAULT_LIMIT    = 5;
 const PK_DEFAULT_MIN_SCORE = 0.5;
@@ -46,13 +51,30 @@ export class MidbrainApi {
   #key;
   #source;
   #cacheScope;
+  #apiBase;
+  #apiBaseScope;
+  #apiBaseSource;
+  #keyScope;
+  #endpoints;
 
-  /** @param {string} key  API key. @param {string} source  Debug label for key origin. */
-  constructor(key, source) {
+  /**
+   * @param {string} key API key.
+   * @param {string} source Debug label for key origin.
+   * @param {{apiBase?: string, apiBaseScope?: string, apiBaseSource?: string,
+   *   keyScope?: string}} [options]
+   */
+  constructor(key, source, options = {}) {
     this.#key = key;
     this.#source = source;
+    this.#apiBase = options.apiBase || API_BASE;
+    this.#apiBaseScope = options.apiBaseScope ||
+      (process.env.MIDBRAIN_API_URL ? "environment" : "default");
+    this.#apiBaseSource = options.apiBaseSource ||
+      (process.env.MIDBRAIN_API_URL ? "env:MIDBRAIN_API_URL" : "default");
+    this.#keyScope = options.keyScope;
+    this.#endpoints = buildEndpoints(this.#apiBase);
     this.#cacheScope = createHash("sha256")
-      .update(`${API_BASE}\0${key}`)
+      .update(`${this.#apiBase}\0${key}`)
       .digest("hex");
   }
 
@@ -62,13 +84,39 @@ export class MidbrainApi {
    * @param {string} [projectDir]
    */
   static async create(client, projectDir) {
-    const result = await client.resolveKey(projectDir);
+    const result = await client.resolveKey(projectDir, { includeScope: true });
     if (!result) throw new Error("No API key configured. Run: npx midbrain-memory-mcp install");
-    return new MidbrainApi(result.key, result.source);
+    const host = await resolveApiHost({
+      clientId: client.id,
+      projectDir,
+      keyScope: result.scope,
+    });
+    return new MidbrainApi(result.key, result.source, {
+      apiBase: host.url,
+      apiBaseScope: host.scope,
+      apiBaseSource: host.source,
+      keyScope: result.scope,
+    });
   }
 
   /** Key source label (for debug logging). */
   get keySource() { return this.#source; }
+
+  /** Key resolution scope selected by BaseClient.resolveKey(). */
+  get keyScope() { return this.#keyScope; }
+
+  /** Effective API base and its resolution metadata. */
+  get effectiveApiBase() { return this.#apiBase; }
+  get apiBaseScope() { return this.#apiBaseScope; }
+  get apiBaseSource() { return this.#apiBaseSource; }
+
+  // Instance endpoint getters. Server consumers must use these, not statics.
+  get SEARCH_SEMANTIC() { return this.#endpoints.SEARCH_SEMANTIC; }
+  get SEARCH_LEXICAL() { return this.#endpoints.SEARCH_LEXICAL; }
+  get SEARCH_PROCEDURAL() { return this.#endpoints.SEARCH_PROCEDURAL; }
+  get EPISODIC() { return this.#endpoints.EPISODIC; }
+  get SEMANTIC_FILES() { return this.#endpoints.SEMANTIC_FILES; }
+  get PROCEDURAL() { return this.#endpoints.PROCEDURAL; }
 
   /** Last 4 chars of the key (for safe logging). */
   get keyFingerprint() {
@@ -155,7 +203,7 @@ export class MidbrainApi {
       return false;
     }
     try {
-      const response = await fetch(ENDPOINTS.EPISODIC, {
+      const response = await fetch(this.#endpoints.EPISODIC, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -220,7 +268,7 @@ export class MidbrainApi {
    */
   async searchProcedural({ query, limit, minScore, excludeIds, timeoutMs } = {}) {
     try {
-      const url = new URL(ENDPOINTS.SEARCH_PROCEDURAL);
+      const url = new URL(this.#endpoints.SEARCH_PROCEDURAL);
       url.searchParams.set("query", query);
       url.searchParams.set("limit",     String(limit     ?? PK_DEFAULT_LIMIT));
       url.searchParams.set("min_score", String(minScore  ?? PK_DEFAULT_MIN_SCORE));
