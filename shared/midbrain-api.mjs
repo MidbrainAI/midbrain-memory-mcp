@@ -50,6 +50,17 @@ const PK_DEFAULT_TIMEOUT_MS = 2000;
 const DEFAULT_SEARCH_LIMIT = 10;
 const PRODUCT_USER_AGENT = "midbrain-memory-mcp";
 
+async function inspectCredentialScopes(client, projectDir, result) {
+  if (typeof client.inspectCredentialScopes !== "function") {
+    return { entries: [], shadowNote: null };
+  }
+  try {
+    return await client.inspectCredentialScopes(projectDir, result);
+  } catch {
+    return { entries: [], shadowNote: null };
+  }
+}
+
 export class MidbrainApi {
   #key;
   #source;
@@ -58,13 +69,16 @@ export class MidbrainApi {
   #apiBaseScope;
   #apiBaseSource;
   #keyScope;
+  #credentialScopes;
+  #credentialShadowNote;
   #endpoints;
 
   /**
    * @param {string} key API key.
    * @param {string} source Debug label for key origin.
    * @param {{apiBase?: string, apiBaseScope?: string, apiBaseSource?: string,
-   *   keyScope?: string}} [options]
+   *   keyScope?: string, credentialScopes?: object[],
+   *   credentialShadowNote?: string|null}} [options]
    */
   constructor(key, source, options = {}) {
     this.#key = key;
@@ -73,6 +87,8 @@ export class MidbrainApi {
     this.#apiBaseScope = options.apiBaseScope || API_BASE_SCOPE;
     this.#apiBaseSource = options.apiBaseSource || API_BASE_SOURCE;
     this.#keyScope = options.keyScope;
+    this.#credentialScopes = options.credentialScopes || [];
+    this.#credentialShadowNote = options.credentialShadowNote || null;
     this.#endpoints = buildEndpoints(this.#apiBase);
     this.#cacheScope = createHash("sha256")
       .update(`${this.#apiBase}\0${key}`)
@@ -92,11 +108,14 @@ export class MidbrainApi {
       projectDir,
       keyScope: result.scope,
     });
+    const credentialState = await inspectCredentialScopes(client, projectDir, result);
     return new MidbrainApi(result.key, result.source, {
       apiBase: host.url,
       apiBaseScope: host.scope,
       apiBaseSource: host.source,
       keyScope: result.scope,
+      credentialScopes: credentialState.entries,
+      credentialShadowNote: credentialState.shadowNote,
     });
   }
 
@@ -105,6 +124,8 @@ export class MidbrainApi {
 
   /** Key resolution scope selected by BaseClient.resolveKey(). */
   get keyScope() { return this.#keyScope; }
+  get credentialScopes() { return this.#credentialScopes; }
+  get credentialShadowNote() { return this.#credentialShadowNote; }
 
   /** Effective API base and its resolution metadata. */
   get effectiveApiBase() { return this.#apiBase; }

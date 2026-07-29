@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import os from "os";
 import path from "path";
 
 import { makeResetMocks, makeReadFileReturns } from "./fs-mock.mjs";
@@ -198,6 +199,54 @@ describe("BaseClient.resolveKey — project→global WARN", () => {
       source: keyPath,
     });
     expect(errSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("BaseClient.inspectCredentialScopes", () => {
+  const client = new TestClient();
+  const PROJECT_DIR = "/home/testuser/proj";
+  const projectKey = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+  const globalKey = path.join(os.homedir(), ".config", "midbrain", ".midbrain-key");
+  const savedEnv = {};
+
+  beforeEach(() => {
+    resetMocks();
+    savedEnv.MIDBRAIN_PROJECT_DIR = process.env.MIDBRAIN_PROJECT_DIR;
+    savedEnv.MIDBRAIN_API_KEY = process.env.MIDBRAIN_API_KEY;
+    delete process.env.MIDBRAIN_PROJECT_DIR;
+    delete process.env.MIDBRAIN_API_KEY;
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("marks the winner and reports only a differing higher-priority shadow", async () => {
+    readFileReturns({ [projectKey]: "project-key", [globalKey]: "global-key" });
+    const resolved = await client.resolveKey(PROJECT_DIR, { includeScope: true });
+    const state = await client.inspectCredentialScopes(PROJECT_DIR, resolved);
+
+    expect(state.entries).toEqual([
+      { scope: "project", status: "present", source: projectKey, winner: true },
+      { scope: "client", status: "absent", winner: false },
+      { scope: "global", status: "present", source: globalKey, winner: false },
+      { scope: "environment", status: "absent", winner: false },
+    ]);
+    expect(state.shadowNote).toBe(
+      "project credential shadows the global credential for this client",
+    );
+    expect(JSON.stringify(state)).not.toContain("project-key");
+    expect(JSON.stringify(state)).not.toContain("global-key");
+  });
+
+  it("does not report a same-content shadow", async () => {
+    readFileReturns({ [projectKey]: "same-key", [globalKey]: "same-key" });
+    const resolved = await client.resolveKey(PROJECT_DIR, { includeScope: true });
+    const state = await client.inspectCredentialScopes(PROJECT_DIR, resolved);
+    expect(state.shadowNote).toBeNull();
   });
 });
 

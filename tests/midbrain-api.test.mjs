@@ -629,10 +629,40 @@ describe("MidbrainApi.create", () => {
     expect(api.keySource).toBe("test");
     expect(api.keyFingerprint).toBe("...c123");
     expect(api.keyScope).toBe("global");
+    expect(api.credentialScopes).toEqual([]);
+    expect(api.credentialShadowNote).toBeNull();
     expect(mockClient.resolveKey).toHaveBeenCalledWith(
       "/some/dir",
       { includeScope: true },
     );
+  });
+
+  it("exposes secret-free credential diagnostics from the client resolver", async () => {
+    const diagnosticState = {
+      entries: [
+        { scope: "client", status: "present", source: "/tmp/key", winner: true },
+        { scope: "global", status: "present", source: "/tmp/global", winner: false },
+      ],
+      shadowNote: "client credential shadows the global credential for this client",
+    };
+    const mockClient = {
+      id: "codex",
+      resolveKey: vi.fn().mockResolvedValue({
+        key: "client-secret",
+        source: "/tmp/key",
+        scope: "client",
+      }),
+      inspectCredentialScopes: vi.fn().mockResolvedValue(diagnosticState),
+    };
+
+    const api = await MidbrainApi.create(mockClient, "/project");
+    expect(mockClient.inspectCredentialScopes).toHaveBeenCalledWith(
+      "/project",
+      expect.objectContaining({ scope: "client", source: "/tmp/key" }),
+    );
+    expect(api.credentialScopes).toEqual(diagnosticState.entries);
+    expect(api.credentialShadowNote).toBe(diagnosticState.shadowNote);
+    expect(JSON.stringify(api.credentialScopes)).not.toContain("client-secret");
   });
 
   it("throws when no key found", async () => {

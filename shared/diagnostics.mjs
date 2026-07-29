@@ -4,6 +4,13 @@
 
 import os from "os";
 import path from "path";
+import { createHash } from "crypto";
+
+const AUTH_STEP = "check the credential scope against the API host, then re-run the installer";
+const CACHE_STEP = "pending entries auto-flush on the next successful capture against this binding";
+const HOST_STEP = "verify the non-default host source shown above is intentional";
+const SHADOW_STEP = "review the shadowing note before changing any credential";
+const FILE_STEP = "repair the credential file shown above, then re-run the installer";
 
 /**
  * Render paths under the user's home with a leading `~` and portable
@@ -30,4 +37,111 @@ export function homeRelativePath(
     return value;
   }
   return `~/${relative.replaceAll("\\", "/")}`;
+}
+
+function keyDigest(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+/** Compare credential contents internally and return only a safe finding. */
+export function credentialShadowNote(scope, winnerKey, globalKey) {
+  if (!winnerKey || !globalKey || !["project", "client"].includes(scope)) return null;
+  if (keyDigest(winnerKey) === keyDigest(globalKey)) return null;
+  return `${scope} credential shadows the global credential for this client`;
+}
+
+/** Select deterministic remediation guidance from diagnostic findings. */
+export function nextStepsFor(state) {
+  const steps = [];
+  if (state.probeStatus === "auth-failed (401)") steps.push(AUTH_STEP);
+  if (state.pendingEntries > 0) steps.push(CACHE_STEP);
+  if (state.apiBaseScope && !["default", "environment"].includes(state.apiBaseScope)) {
+    steps.push(HOST_STEP);
+  }
+  if (state.shadowNote) steps.push(SHADOW_STEP);
+  if (state.credentialError) steps.push(FILE_STEP);
+  return steps;
+}
+
+function formatCredentialScope(entry, homeDir) {
+  const winner = entry.winner ? " (winner)" : "";
+  const source = entry.source ? ` ${homeRelativePath(entry.source, homeDir)}` : "";
+  return `  ${entry.scope}: ${entry.status}${winner}${source}`;
+}
+
+function credentialCategory(state) {
+  return state.keySource?.startsWith("env:")
+    ? "environment variable"
+    : `${state.keyScope} key file`;
+}
+
+function pendingLabel(state) {
+  if (state.pendingEntries === 0 && state.cacheFilesPresent) {
+    return "0 valid entries (cache files present but unparseable)";
+  }
+  return String(state.pendingEntries);
+}
+
+function staticLines(state) {
+  const homeDir = state.homeDir || os.homedir();
+  return [
+    "MidBrain memory diagnostics",
+    `version: ${state.version}`,
+    `client: ${state.clientId}`,
+    `project: ${state.projectDir ? homeRelativePath(state.projectDir, homeDir) : "not configured"}`,
+    `api_host: ${state.apiBase}`,
+    `api_scope: ${state.apiBaseScope}`,
+    `api_source: ${homeRelativePath(state.apiBaseSource, homeDir)}`,
+    `credential_scope: ${state.keyScope}`,
+    `credential_source_category: ${credentialCategory(state)}`,
+    `credential_source: ${homeRelativePath(state.keySource, homeDir)}`,
+  ];
+}
+
+/** Assemble the successful diagnostics response in deterministic field order. */
+export function assembleDiagnosticsReport(state) {
+  const homeDir = state.homeDir || os.homedir();
+  const lines = staticLines(state);
+  lines.push("credential_scopes:");
+  lines.push(...(state.credentialScopes || []).map((entry) => formatCredentialScope(entry, homeDir)));
+  if (state.shadowNote) lines.push(`note: ${state.shadowNote}`);
+  lines.push(`probe: ${state.probeStatus}`);
+  lines.push("capture_mode: fail-open (failures never block the client)");
+  lines.push(`pending_entries: ${pendingLabel(state)}`);
+  lines.push(`pending_binding: host=${state.apiBase} key_scope=${state.keyScope}`);
+  lines.push(`other_cache_bindings_with_pending_entries: ${state.otherBindings}`);
+  lines.push(`cache_location: ${homeRelativePath(state.cacheDir, homeDir)}`);
+  lines.push(`capture_log: ${homeRelativePath(state.logPath, homeDir)}`);
+  lines.push("next_steps:");
+  const steps = nextStepsFor(state);
+  lines.push(...(steps.length ? steps : ["no action required"]).map((step) => `  - ${step}`));
+  return lines.join("\n");
+}
+
+function credentialErrorDetails(message, homeDir) {
+  if (/No API key configured/i.test(message)) return "no credential found";
+  const empty = message.match(/^Key file is empty:\s*(.+)$/i);
+  if (empty) return `empty file ${homeRelativePath(empty[1], homeDir)}`;
+  const denied = message.match(/^Permission denied reading key file:\s*(.+)$/i);
+  if (denied) return `unreadable file ${homeRelativePath(denied[1], homeDir)}`;
+  return "credential resolution failed";
+}
+
+/** Assemble a paste-safe report when credential resolution prevents API creation. */
+export function assembleResolutionFailureReport(state) {
+  const homeDir = state.homeDir || os.homedir();
+  const detail = credentialErrorDetails(state.error?.message || String(state.error), homeDir);
+  const lines = [
+    "MidBrain memory diagnostics",
+    `version: ${state.version}`,
+    `client: ${state.clientId}`,
+    `project: ${state.projectDir ? homeRelativePath(state.projectDir, homeDir) : "not configured"}`,
+    `credential_error: ${detail}`,
+    "scopes_checked: project, client, global, environment",
+    "probe: unavailable (credential resolution failed)",
+    "next_steps:",
+  ];
+  const install = detail === "no credential found" ? "run: npx midbrain-memory-mcp install" : FILE_STEP;
+  lines.push(`  - ${install}`);
+  return lines.join("\n");
 }

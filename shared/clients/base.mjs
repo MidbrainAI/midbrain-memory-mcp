@@ -19,11 +19,34 @@
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
+import { credentialShadowNote } from '../diagnostics.mjs';
 
 const KEY_FILENAME = ".midbrain-key";
 const MIDBRAIN_DIR = '.midbrain';
 const ENV_VAR = 'MIDBRAIN_API_KEY';
 const UNRESOLVED_TERMINAL_CWD = '${TERMINAL_CWD}';
+
+function projectContext(projectDir) {
+  const explicit = typeof projectDir === 'string' && projectDir.trim()
+    ? projectDir
+    : undefined;
+  const fromEnv = explicit ? undefined : process.env.MIDBRAIN_PROJECT_DIR;
+  return {
+    dir: explicit || (fromEnv === UNRESOLVED_TERMINAL_CWD ? undefined : fromEnv),
+    unresolved: fromEnv === UNRESOLVED_TERMINAL_CWD,
+  };
+}
+
+async function inspectScope(scope, reader, configured = true) {
+  if (!configured) return { scope, status: 'not configured' };
+  try {
+    const result = await reader();
+    return result ? { scope, status: 'present', ...result } : { scope, status: 'absent' };
+  } catch (err) {
+    const source = String(err?.message || '').split(': ').at(-1);
+    return { scope, status: 'error', source };
+  }
+}
 
 /**
  * Read a key file. Returns trimmed content, or null on ENOENT.
@@ -74,21 +97,16 @@ export class BaseClient {
    * @returns {Promise<{key: string, source: string, scope?: string} | null>}
    */
   async resolveKey(projectDir, { includeScope = false } = {}) {
-    const explicitProjectDir = typeof projectDir === 'string' && projectDir.trim()
-      ? projectDir
-      : undefined;
-    const envProjectDir = explicitProjectDir ? undefined : process.env.MIDBRAIN_PROJECT_DIR;
-    const unresolvedEnv = envProjectDir === UNRESOLVED_TERMINAL_CWD;
-    const projDir = explicitProjectDir || (unresolvedEnv ? undefined : envProjectDir);
-    if (unresolvedEnv) {
+    const project = projectContext(projectDir);
+    if (project.unresolved) {
       console.error(
         'WARN: MIDBRAIN_PROJECT_DIR TERMINAL_CWD placeholder is unresolved (${TERMINAL_CWD}); falling through to global key.',
       );
     }
-    if (projDir) {
-      const key = await this.#resolveProjectKey(projDir);
+    if (project.dir) {
+      const key = await this.#resolveProjectKey(project.dir);
       if (key) return includeScope ? { ...key, scope: 'project' } : key;
-      console.error(`WARN: no project key found in "${projDir}", falling through to global key.`);
+      console.error(`WARN: no project key found in "${project.dir}", falling through to global key.`);
     }
 
     const own = await this.resolveClientKey();
@@ -106,6 +124,32 @@ export class BaseClient {
     }
 
     return null;
+  }
+
+  /**
+   * Inspect credential presence after normal resolution without exposing key
+   * material. Lower-priority inspection errors never change the winner.
+   * @param {string} [projectDir]
+   * @param {{key: string, source: string, scope: string}} resolved
+   */
+  async inspectCredentialScopes(projectDir, resolved) {
+    const project = projectContext(projectDir);
+    const candidates = [
+      await inspectScope('project', () => this.#resolveProjectKey(project.dir), Boolean(project.dir)),
+      await inspectScope('client', () => this.resolveClientKey()),
+      await inspectScope('global', () => this.#resolveGlobalKey()),
+      await inspectScope('environment', async () => {
+        const key = process.env[ENV_VAR]?.trim();
+        return key ? { key, source: `env:${ENV_VAR}` } : null;
+      }),
+    ];
+    const globalKey = candidates.find((entry) => entry.scope === 'global')?.key;
+    const shadowNote = credentialShadowNote(resolved.scope, resolved.key, globalKey);
+    const entries = candidates.map(({ key: _key, ...entry }) => ({
+      ...entry,
+      winner: entry.scope === resolved.scope && entry.source === resolved.source,
+    }));
+    return { entries, shadowNote };
   }
 
   async #resolveProjectKey(projDir) {
