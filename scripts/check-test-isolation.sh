@@ -84,6 +84,9 @@ trap 'rm -rf "$TEMP_ROOT"' EXIT
 mkdir -p "$COPY_ROOT"
 
 while IFS= read -r -d '' source_file; do
+  if [[ "$source_file" == "node_modules" || "$source_file" == node_modules/* ]]; then
+    continue
+  fi
   mkdir -p "$COPY_ROOT/$(dirname "$source_file")"
   cp -Pp "$source_file" "$COPY_ROOT/$source_file"
 done < <(git ls-files -c -o --exclude-standard -z)
