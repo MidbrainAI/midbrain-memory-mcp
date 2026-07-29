@@ -126,6 +126,7 @@ export class MidbrainApi {
   get keyScope() { return this.#keyScope; }
   get credentialScopes() { return this.#credentialScopes; }
   get credentialShadowNote() { return this.#credentialShadowNote; }
+  get cacheScope() { return this.#cacheScope; }
 
   /** Effective API base and its resolution metadata. */
   get effectiveApiBase() { return this.#apiBase; }

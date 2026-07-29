@@ -210,9 +210,9 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP server tool listing", () => {
-  it("exposes exactly 7 tools", async () => {
+  it("exposes exactly 8 tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(8);
   });
 
   it("exposes the expected tool names", async () => {
@@ -223,10 +223,18 @@ describe("MCP server tool listing", () => {
       "get_episodic_memories_by_date",
       "grep",
       "list_files",
+      "memory_diagnostics",
       "memory_search",
       "memory_setup_project",
       "read_file",
     ]);
+  });
+
+  it("exposes optional probe control for memory_diagnostics", async () => {
+    const { tools } = await client.listTools();
+    const diagnostics = tools.find((tool) => tool.name === "memory_diagnostics");
+    expect(diagnostics).toBeDefined();
+    expect(diagnostics.inputSchema.properties.probe.type).toBe("boolean");
   });
 });
 

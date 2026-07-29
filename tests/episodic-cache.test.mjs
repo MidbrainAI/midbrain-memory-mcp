@@ -14,6 +14,7 @@ import {
   rewriteCache,
   hasCachedEntries,
   countCachedEntries,
+  inspectCachedEntries,
   _setCachePath,
 } from "../shared/episodic-cache.mjs";
 
@@ -330,5 +331,37 @@ describe("countCachedEntries", () => {
     const live = path.join(tmpDir, fs.readdirSync(tmpDir)[0]);
     fs.appendFileSync(live, "not-json\n{\"text\":42,\"role\":\"user\"}\n");
     expect(countCachedEntries("count-malformed")).toBe(1);
+  });
+});
+
+describe("inspectCachedEntries", () => {
+  it("distinguishes malformed-only files from an empty binding", () => {
+    appendToCache({ text: "seed", role: "user" }, "malformed-only");
+    const live = path.join(tmpDir, fs.readdirSync(tmpDir)[0]);
+    fs.writeFileSync(live, "not-json\n", "utf8");
+
+    expect(inspectCachedEntries("malformed-only")).toMatchObject({
+      count: 0,
+      filesPresent: true,
+      unparseable: true,
+      otherBindings: 0,
+      cacheDir: tmpDir,
+    });
+  });
+
+  it("counts other bindings once across live and processing files", () => {
+    appendToCache({ text: "current", role: "user" }, "current-binding");
+    appendToCache({ text: "other", role: "user" }, "other-binding");
+    const other = fs.readdirSync(tmpDir)
+      .map((name) => path.join(tmpDir, name))
+      .find((name) => fs.readFileSync(name, "utf8").includes("other"));
+    fs.copyFileSync(other, `${other}.processing`);
+
+    expect(inspectCachedEntries("current-binding")).toMatchObject({
+      count: 1,
+      filesPresent: true,
+      unparseable: false,
+      otherBindings: 1,
+    });
   });
 });

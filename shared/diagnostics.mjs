@@ -5,6 +5,9 @@
 import os from "os";
 import path from "path";
 import { createHash } from "crypto";
+import { inspectCachedEntries } from "./episodic-cache.mjs";
+import { logFile } from "./logger.mjs";
+import { PKG_VERSION } from "./clients/utils.mjs";
 
 const AUTH_STEP = "check the credential scope against the API host, then re-run the installer";
 const CACHE_STEP = "pending entries auto-flush on the next successful capture against this binding";
@@ -144,4 +147,53 @@ export function assembleResolutionFailureReport(state) {
   const install = detail === "no credential found" ? "run: npx midbrain-memory-mcp install" : FILE_STEP;
   lines.push(`  - ${install}`);
   return lines.join("\n");
+}
+
+/** Classify the optional authenticated diagnostics probe without throwing. */
+export async function probeApi(api, enabled = true) {
+  if (!enabled) return "skipped";
+  if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") return "network-error";
+  try {
+    await api.fetch(api.EPISODIC, { page: 1, limit: 1 });
+    return "ok";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = Number(message.match(/\bAPI\s+(\d{3})\b/)?.[1]);
+    if (status === 401) return "auth-failed (401)";
+    if (status >= 400 && status <= 599) return `http-${Math.floor(status / 100)}xx`;
+    return "network-error";
+  }
+}
+
+/** Collect diagnostics from the resolved API instance and return plain text. */
+export async function runMemoryDiagnostics(options) {
+  const state = {
+    version: options.version || PKG_VERSION,
+    clientId: options.clientId || "generic",
+    projectDir: options.projectDir,
+    homeDir: options.homeDir || os.homedir(),
+  };
+  let api;
+  try {
+    api = await options.createApi();
+  } catch (error) {
+    return assembleResolutionFailureReport({ ...state, error });
+  }
+  const cache = inspectCachedEntries(api.cacheScope);
+  return assembleDiagnosticsReport({
+    ...state,
+    apiBase: api.effectiveApiBase,
+    apiBaseScope: api.apiBaseScope,
+    apiBaseSource: api.apiBaseSource,
+    keyScope: api.keyScope,
+    keySource: api.keySource,
+    credentialScopes: api.credentialScopes,
+    shadowNote: api.credentialShadowNote,
+    probeStatus: await probeApi(api, options.probe !== false),
+    pendingEntries: cache.count,
+    cacheFilesPresent: cache.unparseable,
+    otherBindings: cache.otherBindings,
+    cacheDir: cache.cacheDir,
+    logPath: options.logPath || logFile(`midbrain-${state.clientId}.log`),
+  });
 }

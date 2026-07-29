@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import fs from "fs";
+import os from "os";
+import path from "path";
 
 import {
   assembleDiagnosticsReport,
@@ -6,7 +9,10 @@ import {
   credentialShadowNote,
   homeRelativePath,
   nextStepsFor,
+  probeApi,
+  runMemoryDiagnostics,
 } from "../shared/diagnostics.mjs";
+import { _setCachePath, appendToCache } from "../shared/episodic-cache.mjs";
 
 describe("homeRelativePath", () => {
   it("renders POSIX home paths without the username", () => {
@@ -148,6 +154,149 @@ describe("assembleResolutionFailureReport", () => {
       error: new Error("Key file is empty: /Users/alice/.codex/.midbrain-key"),
     });
     expect(report).toContain("credential_error: empty file ~/.codex/.midbrain-key");
+    expect(report).not.toContain("alice");
+  });
+});
+
+describe("probeApi", () => {
+  afterEach(() => { delete process.env.MIDBRAIN_SIMULATE_OFFLINE; });
+
+  it("classifies success, auth, network, HTTP classes, skipped, and simulated offline", async () => {
+    const api = { EPISODIC: "https://example.test/episodic", fetch: vi.fn() };
+    api.fetch.mockResolvedValueOnce({ items: [] });
+    await expect(probeApi(api, true)).resolves.toBe("ok");
+    api.fetch.mockRejectedValueOnce(new Error("API 401 (auth failed): host=x"));
+    await expect(probeApi(api, true)).resolves.toBe("auth-failed (401)");
+    api.fetch.mockRejectedValueOnce(new TypeError("fetch failed"));
+    await expect(probeApi(api, true)).resolves.toBe("network-error");
+    api.fetch.mockRejectedValueOnce(new Error("API 503: unavailable"));
+    await expect(probeApi(api, true)).resolves.toBe("http-5xx");
+    api.fetch.mockRejectedValueOnce(new Error("API 418: teapot"));
+    await expect(probeApi(api, true)).resolves.toBe("http-4xx");
+    await expect(probeApi(api, false)).resolves.toBe("skipped");
+    process.env.MIDBRAIN_SIMULATE_OFFLINE = "1";
+    await expect(probeApi(api, true)).resolves.toBe("network-error");
+  });
+});
+
+describe("runMemoryDiagnostics", () => {
+  const dirs = [];
+
+  afterEach(() => {
+    _setCachePath(null);
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function fakeApi(overrides = {}) {
+    return {
+      effectiveApiBase: "https://memory.midbrain.ai",
+      apiBaseScope: "default",
+      apiBaseSource: "default",
+      keyScope: "global",
+      keySource: "/Users/alice/.config/midbrain/.midbrain-key",
+      credentialScopes: BASE_STATE.credentialScopes,
+      credentialShadowNote: null,
+      cacheScope: "current-binding",
+      EPISODIC: "https://memory.midbrain.ai/api/v1/memories/episodic",
+      fetch: vi.fn().mockResolvedValue({ items: [] }),
+      ...overrides,
+    };
+  }
+
+  it.each(["opencode", "codex"])("reports B1 for %s", async (clientId) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));
+    dirs.push(dir);
+    _setCachePath(dir);
+    const report = await runMemoryDiagnostics({
+      probe: true,
+      createApi: async () => fakeApi(),
+      clientId,
+      projectDir: "/Users/alice/project",
+      homeDir: "/Users/alice",
+      version: "0.4.7",
+    });
+    expect(report).toContain(`client: ${clientId}`);
+    expect(report).toContain("probe: ok");
+    expect(report).toContain("pending_entries: 0");
+  });
+
+  it.each(["opencode", "codex"])("distinguishes B3 capture pending for %s", async (clientId) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));
+    dirs.push(dir);
+    _setCachePath(dir);
+    appendToCache({ text: "pending", role: "user" }, "current-binding");
+    const report = await runMemoryDiagnostics({
+      probe: true,
+      createApi: async () => fakeApi(),
+      clientId,
+      homeDir: "/Users/alice",
+      version: "0.4.7",
+    });
+    expect(report).toContain("probe: ok");
+    expect(report).toContain("pending_entries: 1");
+    expect(report).toContain("auto-flush");
+    expect(report).not.toContain("current-binding");
+  });
+
+  it("supports probe:false and reports B4 without credential fragments", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));
+    dirs.push(dir);
+    _setCachePath(dir);
+    const report = await runMemoryDiagnostics({
+      probe: false,
+      createApi: async () => fakeApi({
+        credentialShadowNote: "client credential shadows the global credential for this client",
+      }),
+      clientId: "codex",
+      homeDir: "/Users/alice",
+      version: "0.4.7",
+    });
+    expect(report).toContain("probe: skipped");
+    expect(report).toContain("client credential shadows the global credential for this client");
+    expect(report).not.toMatch(/secret|\.\.\.[A-Za-z0-9]{4}/i);
+  });
+
+  it("distinguishes B2 auth failure from B3 capture pending", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));
+    dirs.push(dir);
+    _setCachePath(dir);
+    const api = fakeApi();
+    api.fetch.mockRejectedValue(new Error("API 401 (auth failed): host=x"));
+    const report = await runMemoryDiagnostics({
+      probe: true,
+      createApi: async () => api,
+      clientId: "opencode",
+      homeDir: "/Users/alice",
+      version: "0.4.7",
+    });
+    expect(report).toContain("probe: auth-failed (401)");
+    expect(report).toContain("pending_entries: 0");
+    expect(report).toContain("credential scope");
+    expect(report).not.toContain("auto-flush");
+  });
+
+  it.each([
+    ["client", "/Users/alice/.config/midbrain/config.json"],
+    ["environment", "env:MIDBRAIN_API_URL"],
+  ])("reports custom-host scope %s and a safe source", async (scope, source) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));
+    dirs.push(dir);
+    _setCachePath(dir);
+    const report = await runMemoryDiagnostics({
+      probe: false,
+      createApi: async () => fakeApi({
+        effectiveApiBase: "https://staging.example.test",
+        apiBaseScope: scope,
+        apiBaseSource: source,
+      }),
+      clientId: "codex",
+      homeDir: "/Users/alice",
+      version: "0.4.7",
+    });
+    expect(report).toContain(`api_scope: ${scope}`);
+    expect(report).toContain(
+      `api_source: ${scope === "client" ? "~/.config/midbrain/config.json" : source}`,
+    );
     expect(report).not.toContain("alice");
   });
 });

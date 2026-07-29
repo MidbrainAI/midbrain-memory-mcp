@@ -54,6 +54,7 @@ describe("MidbrainApi instance API base", () => {
     expect(api.apiBaseScope).toBe("client");
     expect(api.apiBaseSource).toBe("/tmp/config.json");
     expect(api.keyScope).toBe("global");
+    expect(api.cacheScope).toMatch(/^[a-f0-9]{64}$/);
     expect(api.SEARCH_SEMANTIC).toBe(
       "http://127.0.0.1:43123/custom/api/v1/memories/search/semantic",
     );

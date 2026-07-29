@@ -306,6 +306,27 @@ function countEntriesInFile(filePath) {
   }
 }
 
+function inspectFile(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    return { count: validEntriesFromRaw(raw).length, hasContent: Boolean(raw.trim()) };
+  } catch {
+    return { count: 0, hasContent: false };
+  }
+}
+
+function cacheBindingFiles() {
+  try {
+    return fs.readdirSync(cacheDir)
+      .filter((name) => name === DEFAULT_CACHE_FILE ||
+        name.startsWith(SCOPED_CACHE_PREFIX) &&
+          (name.endsWith(CACHE_EXT) || name.endsWith(`${CACHE_EXT}${PROCESSING_EXT}`)))
+      .map((name) => name.endsWith(PROCESSING_EXT) ? name.slice(0, -PROCESSING_EXT.length) : name);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Count valid pending entries across the live and processing files for a
  * binding. Malformed lines are ignored and files are never mutated.
@@ -316,4 +337,32 @@ function countEntriesInFile(filePath) {
 export function countCachedEntries(scope) {
   return countEntriesInFile(cacheFileForScope(scope)) +
     countEntriesInFile(processingFileForScope(scope));
+}
+
+/**
+ * Inspect pending cache state without reading entry content into diagnostics.
+ * Binding filenames remain internal and are never returned.
+ * @param {string} [scope]
+ */
+export function inspectCachedEntries(scope) {
+  const liveFile = cacheFileForScope(scope);
+  const files = [liveFile, processingFileForScope(scope)].map(inspectFile);
+  const currentBase = path.basename(liveFile);
+  const otherBindings = new Set(cacheBindingFiles().filter((name) => name !== currentBase));
+  let otherPending = 0;
+  for (const name of otherBindings) {
+    const base = path.join(cacheDir, name);
+    if (inspectFile(base).count + inspectFile(`${base}${PROCESSING_EXT}`).count > 0) {
+      otherPending += 1;
+    }
+  }
+  const count = files.reduce((sum, file) => sum + file.count, 0);
+  const filesPresent = files.some((file) => file.hasContent);
+  return {
+    count,
+    filesPresent,
+    unparseable: filesPresent && count === 0,
+    otherBindings: otherPending,
+    cacheDir,
+  };
 }
