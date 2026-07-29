@@ -881,6 +881,15 @@ describe("main — per-client key writing", () => {
         key: "device-api-key",
         replaceApproved: true,
       });
+      const output = [
+        ...logSpy.mock.calls.flat(),
+        ...errSpy.mock.calls.flat(),
+        ...mocks.readlineQuestions,
+      ].join("\n");
+      expect(output).not.toContain("global-before-dummy");
+      expect(output).not.toContain("global-b");
+      expect(output).not.toContain("device-api-key");
+      expect(output).not.toContain("device-a");
     } finally {
       restoreTTY();
     }
