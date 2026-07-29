@@ -248,6 +248,36 @@ describe("BaseClient.inspectCredentialScopes", () => {
     const state = await client.inspectCredentialScopes(PROJECT_DIR, resolved);
     expect(state.shadowNote).toBeNull();
   });
+
+  it("reports a fixed reason label for read errors, never a raw path", async () => {
+    // Project read succeeds (winner); global read fails with an unexpected
+    // errno whose message embeds a username-bearing absolute path.
+    const ioError = Object.assign(
+      new Error(`EIO: i/o error, open '${globalKey}'`),
+      { code: "EIO" },
+    );
+    mocks.readFile.mockImplementation(async (filePath) => {
+      if (filePath === projectKey) return "project-key\n";
+      if (filePath === globalKey) throw ioError;
+      const err = new Error("ENOENT");
+      err.code = "ENOENT";
+      throw err;
+    });
+
+    const resolved = await client.resolveKey(PROJECT_DIR, { includeScope: true });
+    const state = await client.inspectCredentialScopes(PROJECT_DIR, resolved);
+
+    const globalEntry = state.entries.find((entry) => entry.scope === "global");
+    expect(globalEntry).toMatchObject({ status: "error", reason: "unreadable" });
+    expect(globalEntry).not.toHaveProperty("source");
+    // The error branch must never carry the raw fs message or the failing
+    // path. (The winner entry legitimately carries its own source, which the
+    // diagnostics report sanitizes at assembly time — not tested here.)
+    const errorEntry = JSON.stringify(globalEntry);
+    expect(errorEntry).not.toContain("testuser");
+    expect(errorEntry).not.toContain("i/o error");
+    expect(errorEntry).not.toContain(".midbrain-key");
+  });
 });
 
 // ===================================================================

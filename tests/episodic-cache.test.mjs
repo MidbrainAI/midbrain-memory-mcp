@@ -364,4 +364,20 @@ describe("inspectCachedEntries", () => {
       otherBindings: 1,
     });
   });
+
+  // AC-6: a malformed-only OTHER binding still holds unflushed content, so it
+  // must count as a pending other binding (was undercounted to 0).
+  it("counts a malformed-only other binding as pending", () => {
+    appendToCache({ text: "current", role: "user" }, "current-binding");
+    appendToCache({ text: "other", role: "user" }, "other-binding");
+    const other = fs.readdirSync(tmpDir)
+      .map((name) => path.join(tmpDir, name))
+      .find((name) => fs.readFileSync(name, "utf8").includes("other"));
+    fs.writeFileSync(other, "not-json\n", "utf8"); // malformed-only content
+
+    expect(inspectCachedEntries("current-binding")).toMatchObject({
+      count: 1,
+      otherBindings: 1,
+    });
+  });
 });

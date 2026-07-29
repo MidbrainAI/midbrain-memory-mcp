@@ -146,6 +146,34 @@ describe("MidbrainApi.fetch diagnostics", () => {
       "API 503: temporarily unavailable",
     );
   });
+
+  it("does not fall back to POST when allowPostFallback is false", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 405,
+      text: vi.fn().mockResolvedValue("method not allowed"),
+    });
+    const api = new MidbrainApi("test-key", "test-source");
+
+    await expect(
+      api.fetch(api.EPISODIC, {}, { allowPostFallback: false }),
+    ).rejects.toThrow("API 405: method not allowed");
+
+    // Exactly one call, and it must be a GET — never a POST to the write path.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][1]).toMatchObject({ method: "GET" });
+  });
+
+  it("still falls back to POST on 405 by default", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce({ ok: false, status: 405, text: vi.fn().mockResolvedValue("") })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ items: [] }) });
+    const api = new MidbrainApi("test-key", "test-source");
+
+    await api.fetch(api.EPISODIC, { page: 1 });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[1][1]).toMatchObject({ method: "POST" });
+  });
 });
 
 describe("MidbrainApi diagnostic output audit", () => {

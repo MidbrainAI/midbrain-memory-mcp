@@ -315,12 +315,20 @@ function inspectFile(filePath) {
   }
 }
 
+function isBindingFile(name) {
+  if (name === DEFAULT_CACHE_FILE || name === `${DEFAULT_CACHE_FILE}${PROCESSING_EXT}`) {
+    return true;
+  }
+  return (
+    name.startsWith(SCOPED_CACHE_PREFIX) &&
+    (name.endsWith(CACHE_EXT) || name.endsWith(`${CACHE_EXT}${PROCESSING_EXT}`))
+  );
+}
+
 function cacheBindingFiles() {
   try {
     return fs.readdirSync(cacheDir)
-      .filter((name) => name === DEFAULT_CACHE_FILE ||
-        name.startsWith(SCOPED_CACHE_PREFIX) &&
-          (name.endsWith(CACHE_EXT) || name.endsWith(`${CACHE_EXT}${PROCESSING_EXT}`)))
+      .filter(isBindingFile)
       .map((name) => name.endsWith(PROCESSING_EXT) ? name.slice(0, -PROCESSING_EXT.length) : name);
   } catch {
     return [];
@@ -352,7 +360,12 @@ export function inspectCachedEntries(scope) {
   let otherPending = 0;
   for (const name of otherBindings) {
     const base = path.join(cacheDir, name);
-    if (inspectFile(base).count + inspectFile(`${base}${PROCESSING_EXT}`).count > 0) {
+    const live = inspectFile(base);
+    const processing = inspectFile(`${base}${PROCESSING_EXT}`);
+    // A binding counts as pending when it holds any content — including a
+    // malformed-only file that yields zero parsed entries. This mirrors the
+    // current binding's `unparseable` semantics (AC-6).
+    if (live.hasContent || processing.hasContent) {
       otherPending += 1;
     }
   }

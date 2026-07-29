@@ -4,10 +4,11 @@
 
 import os from "os";
 import path from "path";
-import { createHash } from "crypto";
 import { inspectCachedEntries } from "./episodic-cache.mjs";
 import { logFile } from "./logger.mjs";
 import { PKG_VERSION } from "./clients/utils.mjs";
+
+export { credentialShadowNote } from "./credential-scope.mjs";
 
 const AUTH_STEP = "check the credential scope against the API host, then re-run the installer";
 const CACHE_STEP = "pending entries auto-flush on the next successful capture against this binding";
@@ -17,7 +18,10 @@ const FILE_STEP = "repair the credential file shown above, then re-run the insta
 
 /**
  * Render paths under the user's home with a leading `~` and portable
- * separators. Non-path source labels and paths outside home are unchanged.
+ * separators. Non-path source labels are returned unchanged. Absolute paths
+ * OUTSIDE the home directory are redacted to their trailing segments (which
+ * are non-identifying, e.g. `.midbrain/.midbrain-key`) so a project or network
+ * path never leaks a username-bearing prefix into diagnostics output.
  *
  * @param {string} value
  * @param {string} [homeDir]
@@ -33,24 +37,36 @@ export function homeRelativePath(
     return value;
   }
   const paths = platform === "win32" ? path.win32 : path.posix;
-  if (!paths.isAbsolute(value) || !paths.isAbsolute(homeDir)) return value;
-  const relative = paths.relative(homeDir, value);
-  if (relative === "") return "~";
-  if (relative === ".." || relative.startsWith(`..${paths.sep}`) || paths.isAbsolute(relative)) {
-    return value;
+  if (!paths.isAbsolute(value)) return value;
+  if (paths.isAbsolute(homeDir)) {
+    const relative = paths.relative(homeDir, value);
+    if (relative === "") return "~";
+    if (!(relative === ".." || relative.startsWith(`..${paths.sep}`) || paths.isAbsolute(relative))) {
+      return `~/${relative.replaceAll("\\", "/")}`;
+    }
   }
-  return `~/${relative.replaceAll("\\", "/")}`;
+  // Absolute path outside the current home. Redact only when it traverses a
+  // user-home-like directory (another user's home / network mount), which is
+  // where a username would leak. System paths (/opt, /srv, /usr, ...) are
+  // non-identifying and left intact.
+  return traversesUserHome(value) ? redactUserPath(value) : value;
 }
 
-function keyDigest(value) {
-  return createHash("sha256").update(value).digest("hex");
+const USER_HOME_SEGMENT = /^(?:users|home)$/i;
+
+/** True when an absolute path descends through a user-home-like segment. */
+function traversesUserHome(value) {
+  const segments = value.split(/[\\/]+/).filter(Boolean);
+  // Drop a leading drive letter (e.g. "C:") on win32-style paths.
+  const start = /^[a-z]:$/i.test(segments[0]) ? 1 : 0;
+  return segments.slice(start, -1).some((seg) => USER_HOME_SEGMENT.test(seg));
 }
 
-/** Compare credential contents internally and return only a safe finding. */
-export function credentialShadowNote(scope, winnerKey, globalKey) {
-  if (!winnerKey || !globalKey || !["project", "client"].includes(scope)) return null;
-  if (keyDigest(winnerKey) === keyDigest(globalKey)) return null;
-  return `${scope} credential shadows the global credential for this client`;
+/** Mask leading directories, keeping only trailing non-identifying segments. */
+function redactUserPath(value) {
+  const segments = value.split(/[\\/]+/).filter(Boolean);
+  const tail = segments.slice(-2).join("/");
+  return tail ? `<redacted>/${tail}` : "<redacted>";
 }
 
 /** Select deterministic remediation guidance from diagnostic findings. */
@@ -68,18 +84,26 @@ export function nextStepsFor(state) {
 
 function formatCredentialScope(entry, homeDir) {
   const winner = entry.winner ? " (winner)" : "";
-  const source = entry.source ? ` ${homeRelativePath(entry.source, homeDir)}` : "";
-  return `  ${entry.scope}: ${entry.status}${winner}${source}`;
+  // `reason` is a fixed path-free label for error status; `source` is a
+  // sanitized path for present entries. Never emit both.
+  const detail = entry.reason
+    ? ` (${entry.reason})`
+    : entry.source
+      ? ` ${homeRelativePath(entry.source, homeDir)}`
+      : "";
+  return `  ${entry.scope}: ${entry.status}${winner}${detail}`;
 }
 
 function credentialCategory(state) {
-  return state.keySource?.startsWith("env:")
+  // Derive from the authoritative resolution scope, not a keySource string
+  // prefix, so the category can never disagree with `credential_scope`.
+  return state.keyScope === "environment"
     ? "environment variable"
     : `${state.keyScope} key file`;
 }
 
 function pendingLabel(state) {
-  if (state.pendingEntries === 0 && state.cacheFilesPresent) {
+  if (state.pendingEntries === 0 && state.cacheUnparseable) {
     return "0 valid entries (cache files present but unparseable)";
   }
   return String(state.pendingEntries);
@@ -154,7 +178,9 @@ export async function probeApi(api, enabled = true) {
   if (!enabled) return "skipped";
   if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") return "network-error";
   try {
-    await api.fetch(api.EPISODIC, { page: 1, limit: 1 });
+    // Read-only probe: forbid the GET->POST fallback so the probe can never
+    // issue a write-method request against the episodic write endpoint.
+    await api.fetch(api.EPISODIC, { page: 1, limit: 1 }, { allowPostFallback: false });
     return "ok";
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -191,7 +217,7 @@ export async function runMemoryDiagnostics(options) {
     shadowNote: api.credentialShadowNote,
     probeStatus: await probeApi(api, options.probe !== false),
     pendingEntries: cache.count,
-    cacheFilesPresent: cache.unparseable,
+    cacheUnparseable: cache.unparseable,
     otherBindings: cache.otherBindings,
     cacheDir: cache.cacheDir,
     logPath: options.logPath || logFile(`midbrain-${state.clientId}.log`),

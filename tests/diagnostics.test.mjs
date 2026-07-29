@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { fileURLToPath } from "url";
 
 import {
   assembleDiagnosticsReport,
@@ -13,6 +14,9 @@ import {
   runMemoryDiagnostics,
 } from "../shared/diagnostics.mjs";
 import { _setCachePath, appendToCache } from "../shared/episodic-cache.mjs";
+import { MidbrainApi } from "../shared/midbrain-api.mjs";
+import { getClient } from "../shared/clients/registry.mjs";
+import { makeTestEnv } from "./helpers/test-env.mjs";
 
 describe("homeRelativePath", () => {
   it("renders POSIX home paths without the username", () => {
@@ -61,7 +65,7 @@ const BASE_STATE = {
   ],
   probeStatus: "ok",
   pendingEntries: 0,
-  cacheFilesPresent: false,
+  cacheUnparseable: false,
   otherBindings: 0,
   cacheDir: "/Users/alice/.cache/midbrain",
   logPath: "/Users/alice/Library/Logs/midbrain/midbrain-opencode.log",
@@ -117,7 +121,7 @@ describe("assembleDiagnosticsReport", () => {
     const report = assembleDiagnosticsReport({
       ...BASE_STATE,
       shadowNote: "client credential shadows the global credential for this client",
-      cacheFilesPresent: true,
+      cacheUnparseable: true,
     });
     expect(report).toContain(
       "note: client credential shadows the global credential for this client",
@@ -202,7 +206,7 @@ describe("runMemoryDiagnostics", () => {
   });
 
   it("has no output caller for credential fingerprint helpers", () => {
-    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const outputSources = [
       "mcp.mjs",
       "shared/diagnostics.mjs",
@@ -455,4 +459,38 @@ describe("runMemoryDiagnostics", () => {
       expect(report).not.toMatch(/A1b2|secret-A1b2|key=/i);
     }
   });
+
+  // AC-10: exercise the REAL MidbrainApi.create(getClient(id), …) path (not a
+  // fake api) so the adapter and credential resolution are actually covered.
+  it.each(["opencode", "codex"])(
+    "resolves through the real %s adapter and credential chain",
+    async (clientId) => {
+      const env = await makeTestEnv();
+      const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-real-"));
+      dirs.push(cacheDir);
+      _setCachePath(cacheDir);
+      try {
+        // Seed a real global credential inside the sandbox home.
+        await fs.promises.mkdir(path.dirname(env.paths.globalKey), { recursive: true });
+        await fs.promises.writeFile(env.paths.globalKey, "real-global-key\n", { mode: 0o600 });
+
+        const report = await runMemoryDiagnostics({
+          probe: false, // no network; verify resolution/report only
+          createApi: () => MidbrainApi.create(getClient(clientId), undefined),
+          clientId,
+          version: "0.4.7",
+        });
+
+        expect(report).toContain(`client: ${clientId}`);
+        expect(report).toContain("credential_scope: global");
+        expect(report).toContain("credential_source_category: global key file");
+        expect(report).toContain("probe: skipped");
+        // Privacy: no username-bearing real-home path and no key material.
+        expect(report).not.toContain("real-global-key");
+        expect(report).not.toContain(os.userInfo().username);
+      } finally {
+        await env.restore();
+      }
+    },
+  );
 });

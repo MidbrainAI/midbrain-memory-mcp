@@ -150,18 +150,24 @@ export class MidbrainApi {
   }
 
   /**
-   * Authenticated GET request with query params. Falls back to POST on 404/405.
+   * Authenticated GET request with query params. Falls back to POST on 404/405
+   * unless `allowPostFallback` is false (read-only callers such as the
+   * diagnostics probe must never let a GET escalate to a write-method request
+   * against a write endpoint).
    * @param {string} endpoint  Full URL.
    * @param {Record<string, string|number|undefined>} [params]
+   * @param {{allowPostFallback?: boolean}} [opts]
    * @returns {Promise<any>} Parsed JSON.
    */
-  async fetch(endpoint, params = {}) {
+  async fetch(endpoint, params = {}, { allowPostFallback = true } = {}) {
     const url = new URL(endpoint);
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
     }
 
-    console.error(`[API] url=${url} key_source=${this.#source}`);
+    // Never log the resolved key path (it can embed a username); the scope
+    // label is sufficient for debugging.
+    console.error(`[API] url=${url} key_scope=${this.#keyScope || "unknown"}`);
 
     let response = await fetch(url.toString(), {
       method: "GET",
@@ -169,7 +175,7 @@ export class MidbrainApi {
     });
 
     // GET->POST fallback: if GET endpoint not yet deployed, retry with legacy POST.
-    if (response.status === 404 || response.status === 405) {
+    if (allowPostFallback && (response.status === 404 || response.status === 405)) {
       console.error(`[API] GET ${url.toString()} returned ${response.status}, retrying with POST`);
       response = await fetch(endpoint, {
         method: "POST",

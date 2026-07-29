@@ -19,7 +19,7 @@
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
-import { credentialShadowNote } from '../diagnostics.mjs';
+import { classifyScopeError, credentialShadowNote } from '../credential-scope.mjs';
 
 const KEY_FILENAME = ".midbrain-key";
 const MIDBRAIN_DIR = '.midbrain';
@@ -43,8 +43,9 @@ async function inspectScope(scope, reader, configured = true) {
     const result = await reader();
     return result ? { scope, status: 'present', ...result } : { scope, status: 'absent' };
   } catch (err) {
-    const source = String(err?.message || '').split(': ').at(-1);
-    return { scope, status: 'error', source };
+    // Never surface raw fs-error text: it can embed a username-bearing absolute
+    // path. Emit a fixed, path-free reason label instead (privacy contract).
+    return { scope, status: 'error', reason: classifyScopeError(err) };
   }
 }
 
