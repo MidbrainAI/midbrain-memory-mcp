@@ -56,6 +56,11 @@ const {
 const TARGET      = "/tmp/test-project/AGENTS.md";
 const PROJECT_DIR = "/tmp/test-project";
 
+// These tests feed POSIX-style absolute paths and assert on the produced
+// paths. path.join() emits "\" on Windows, so normalize separators before
+// comparing (the separator is not what these tests are asserting).
+const slash = (p) => p.replaceAll("\\", "/");
+
 // ===================================================================
 // buildRulesBlock
 // ===================================================================
@@ -324,7 +329,7 @@ describe("writeGlobalRules", () => {
       nanoclawRoot: "/srv/nanoclaw",
     });
 
-    expect(results.map((r) => r.path).sort()).toEqual([
+    expect(results.map((r) => slash(r.path)).sort()).toEqual([
       "/home/tester/.claude/CLAUDE.md",
       "/home/tester/.codex/AGENTS.md",
       "/home/tester/.config/opencode/AGENTS.md",
@@ -343,7 +348,7 @@ describe("writeGlobalRules", () => {
       clients: ["nanoclaw"],
       nanoclawRoot: "/srv/nanoclaw",
     });
-    const paths = mocks.writeFile.mock.calls.map(([filePath]) => filePath);
+    const paths = mocks.writeFile.mock.calls.map(([filePath]) => slash(filePath));
     expect(paths).toContain("/srv/nanoclaw/container/CLAUDE.md");
     expect(paths).toContain("/srv/nanoclaw/groups/main/CLAUDE.local.md");
     expect(paths).not.toContain("/srv/nanoclaw/groups/main/CLAUDE.md");
@@ -356,7 +361,7 @@ describe("writeGlobalRules", () => {
       clients: ["nanoclaw"],
       nanoclawRoot: "/srv/nanoclaw",
     });
-    expect(results.map((r) => r.path)).toEqual([
+    expect(results.map((r) => slash(r.path))).toEqual([
       "/srv/nanoclaw/container/CLAUDE.md",
     ]);
   });

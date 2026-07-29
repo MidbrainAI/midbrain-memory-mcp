@@ -20,6 +20,7 @@ import { main } from "../install.mjs";
 import { collectHashes, diffHashes, tripwireSurfaces } from "./helpers/global-tripwire.mjs";
 import { assertSandboxed, makeTestEnv } from "./helpers/test-env.mjs";
 
+const IS_WIN = process.platform === "win32";
 const DUMMY_CREDENTIAL = "dummy-credential-for-isolation";
 const REAL_CREDENTIAL_SURFACES = tripwireSurfaces()
   .filter((filePath) => filePath.endsWith(".midbrain-key"));
@@ -37,7 +38,8 @@ async function expectIsolatedWrite({ clients = [], target, write }) {
     await write(env);
     const stat = await fs.stat(filePath);
     expect(stat.isFile()).toBe(true);
-    expect(stat.mode & 0o777).toBe(0o600);
+    // Windows does not enforce POSIX file modes; chmod(0o600) is a no-op there.
+    if (!IS_WIN) expect(stat.mode & 0o777).toBe(0o600);
     expect(diffHashes(before, collectHashes(REAL_CREDENTIAL_SURFACES))).toEqual([]);
   } finally {
     await env.restore();

@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref to save minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 24
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Report every OS; never let one failure mask the rest.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin bundle
+        run: npm run build:plugin
+
+      - name: Run tests
+        # Git Bash is available on Windows runners; use it everywhere for
+        # consistent behavior.
+        shell: bash
+        run: npm test
+
+  # Lint and the docs/isolation gate scripts (POSIX shell) run once. Keeping
+  # them off the full OS/Node matrix avoids redundant lint runs and Windows
+  # shell fragility while still gating every push and PR.
+  check:
+    name: lint + gates (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build, lint, test, and run gate scripts
+        run: npm run check
