@@ -70,7 +70,9 @@ describe("makeTestEnv isolation", () => {
     const env = await makeTestEnv();
     try {
       await expect(assertSandboxed(env, path.join(env.home, "inside.key"))).resolves.toBeUndefined();
-      await expect(assertSandboxed(env, path.relative(process.cwd(), env.paths.globalKey))).resolves.toBeUndefined();
+      await expect(
+        assertSandboxed(env, path.relative(path.resolve("."), env.paths.globalKey)),
+      ).resolves.toBeUndefined();
       await expect(assertSandboxed(env, path.join(path.dirname(env.root), "outside.key"))).rejects.toThrow(
         /outside test sandbox/,
       );
