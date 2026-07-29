@@ -87,6 +87,23 @@ describe('writeCredential guard and validation', () => {
       key: 'wrong-target-dummy',
     })).rejects.toBeInstanceOf(CredentialTargetError);
   });
+
+  // Regression: on Windows (and macOS via $TMPDIR) os.tmpdir() is itself nested
+  // under the real user profile, so a legitimate temp-based sandbox lives under
+  // the real home. The guard must NOT refuse that case — only a sandbox broad
+  // enough to encompass the real home is unsafe.
+  it('allows a sandbox nested under the real user home', async () => {
+    const { writeCredential } = await loadWriter();
+    const result = await writeCredential({
+      clientId: 'generic',
+      scope: 'global',
+      targetPath: globalKeyPath,
+      key: 'nested-sandbox-dummy',
+    });
+    expect(result.action).toBe('written');
+    expect(await fs.readFile(globalKeyPath, 'utf8')).toBe('nested-sandbox-dummy\n');
+    await fs.rm(globalKeyPath, { force: true });
+  });
 });
 
 describe('writeCredential atomic writes', () => {

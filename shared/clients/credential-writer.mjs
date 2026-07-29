@@ -15,7 +15,19 @@ const TEST_SANDBOX_ENV = 'MIDBRAIN_TEST_SANDBOX';
 const CLIENT_IDS = new Set(['opencode', 'claude', 'codex', 'nanoclaw', 'hermes']);
 const CORRUPT_KEY_RE = /[\0\uFFFD]/;
 const FILE_MODE = 0o600;
-const REAL_HOME = os.userInfo().homedir;
+
+// The real user home is resolved independently of HOME/USERPROFILE overrides so
+// the test guard can reject a sandbox that would encompass the developer's
+// actual credential locations. os.userInfo() can throw on passwd-less
+// containers/CI, so fall back to os.homedir() rather than crashing at import.
+function realHomeDir() {
+  try {
+    return os.userInfo().homedir;
+  } catch {
+    return os.homedir();
+  }
+}
+const REAL_HOME = realHomeDir();
 
 export class CredentialWriteError extends Error {
   constructor(message, { category, targetPath, cause } = {}) {
@@ -74,9 +86,15 @@ async function enforceTestGuard(targetPath) {
     prospectiveRealpath(targetPath),
     prospectiveRealpath(REAL_HOME),
   ]);
-  const unsafeRoot = isWithin(sandboxPath, realHome);
-  const unsafeTarget = isWithin(target, realHome) || !isWithin(target, sandboxPath);
-  if (unsafeRoot || unsafeTarget) {
+  // A sandbox is unsafe only when it is broad enough to encompass the real
+  // user home (sandbox === home, or home nested under it) — that is what would
+  // let a test reach real credentials. We must NOT reject a sandbox merely for
+  // living under the home tree: on Windows/macOS os.tmpdir() is itself nested
+  // in the user profile, so a legitimate temp sandbox is routinely under home.
+  const unsafeSandbox = isWithin(realHome, sandboxPath);
+  // The target must resolve inside the declared sandbox.
+  const unsafeTarget = !isWithin(target, sandboxPath);
+  if (unsafeSandbox || unsafeTarget) {
     throw new CredentialWriteRefusedError(
       `Credential write refused outside a safe test sandbox: ${targetPath}`,
       { category: 'test-sandbox-escape', targetPath },
