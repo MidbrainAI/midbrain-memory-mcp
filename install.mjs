@@ -653,8 +653,7 @@ function ambiguityError(candidates, clients) {
   return [
     'Distinct eligible credentials were found; no global credential was written:',
     found,
-    'Resolve by running interactively; setting MIDBRAIN_API_KEY to one shared value;',
-    'or passing --key-source <clientId>.',
+    'Resolve by running interactively or passing --key-source <clientId>.',
   ].join('\n');
 }
 

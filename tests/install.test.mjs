@@ -772,8 +772,8 @@ describe("main — per-client key writing", () => {
     expect(output).toContain("OpenCode (client");
     expect(output).toContain("Claude Code (client");
     expect(output).toContain("running interactively");
-    expect(output).toContain("MIDBRAIN_API_KEY");
     expect(output).toContain("--key-source <clientId>");
+    expect(output).not.toContain("MIDBRAIN_API_KEY");
     expect(output).not.toContain("oc-existing");
     expect(output).not.toContain("cc-existing");
   });
