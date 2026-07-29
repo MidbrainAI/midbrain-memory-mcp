@@ -233,6 +233,12 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
       .digest("hex");
   }
 
+  function cacheScopeForHost(host, key) {
+    return createHash("sha256")
+      .update(`${host}\0${key}`)
+      .digest("hex");
+  }
+
   beforeEach(() => {
     originalSimulateOffline = process.env.MIDBRAIN_SIMULATE_OFFLINE;
     delete process.env.MIDBRAIN_SIMULATE_OFFLINE;
@@ -346,6 +352,53 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
       authorization: "Bearer key-a",
       body: expect.objectContaining({ text: "cached under key A" }),
     }));
+  });
+
+  it("does not flush cached entries across API-host bindings", async () => {
+    const hostA = "http://127.0.0.1:43123";
+    const hostB = "http://127.0.0.1:43124";
+    const apiA = new MidbrainApi("shared-key", "source", { apiBase: hostA });
+    const apiB = new MidbrainApi("shared-key", "source", { apiBase: hostB });
+    const scopeA = cacheScopeForHost(hostA, "shared-key");
+    const scopeB = cacheScopeForHost(hostB, "shared-key");
+
+    fetchSpy.mockRejectedValueOnce(new Error("host A offline"));
+    await apiA.storeEpisodic("pending A", "user", log);
+    expect(hasCachedEntries(scopeA)).toBe(true);
+
+    fetchSpy.mockResolvedValue({ ok: true, status: 200 });
+    await apiB.storeEpisodic("write B", "user", log);
+    expect(hasCachedEntries(scopeA)).toBe(true);
+    expect(hasCachedEntries(scopeB)).toBe(false);
+    const hostBBodies = fetchSpy.mock.calls
+      .filter(([url]) => url === `${hostB}/api/v1/memories/episodic`)
+      .map(([, opts]) => JSON.parse(opts.body).text);
+    expect(hostBBodies).not.toContain("pending A");
+
+    await apiA.storeEpisodic("return A", "user", log);
+    expect(hasCachedEntries(scopeA)).toBe(false);
+    const flushed = fetchSpy.mock.calls.find(([, opts]) =>
+      JSON.parse(opts.body).text === "pending A");
+    expect(flushed[0]).toBe(`${hostA}/api/v1/memories/episodic`);
+  });
+
+  it("leaves a pre-normalization trailing-slash bucket orphaned", async () => {
+    const rawHost = "http://127.0.0.1:43123/";
+    const normalizedHost = "http://127.0.0.1:43123";
+    const oldScope = cacheScopeForHost(rawHost, "shared-key");
+    const newScope = cacheScopeForHost(normalizedHost, "shared-key");
+    appendToCache({ text: "old raw bucket", role: "user" }, oldScope);
+    const api = new MidbrainApi("shared-key", "source", {
+      apiBase: normalizedHost,
+    });
+
+    fetchSpy.mockResolvedValue({ ok: true, status: 200 });
+    await api.storeEpisodic("normalized write", "user", log);
+
+    expect(hasCachedEntries(oldScope)).toBe(true);
+    expect(hasCachedEntries(newScope)).toBe(false);
+    expect(readAndClearCache(oldScope).map((entry) => entry.text))
+      .toEqual(["old raw bucket"]);
   });
 
   it("re-caches entries that still fail during flush", async () => {
