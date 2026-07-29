@@ -1,7 +1,8 @@
 /**
  * Unit tests for shared/clients/codex.mjs
  *
- * All filesystem operations are mocked — no real files read or written.
+ * Production filesystem operations are mocked for call-shape assertions.
+ * The real sandbox fixture contains any fallback if a mock fails to attach.
  */
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vitest";

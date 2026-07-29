@@ -1,8 +1,9 @@
 /**
  * Unit tests for shared/clients/hermes.mjs
  *
- * All filesystem operations are mocked — no real files read or written.
- * The real `yaml` parser is used (mirrors client-codex.test.mjs using real TOML).
+ * Production filesystem operations are mocked for call-shape assertions.
+ * The real sandbox fixture contains fallback writes; the real `yaml` parser is
+ * used (mirrors client-codex.test.mjs using real TOML).
  */
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
