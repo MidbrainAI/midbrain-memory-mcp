@@ -160,6 +160,10 @@ function envObject(entry, envKey) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function isObjectRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 /** Pinned-entry warning for the reserved host env residual. */
 export function pinnedHostEnvLine(entry, envKey) {
   if (!Object.hasOwn(envObject(entry, envKey), 'MIDBRAIN_API_URL')) return null;
@@ -183,11 +187,10 @@ function hostMigrationTarget(clientId, projectDir) {
     read: (config) => config.clients?.[clientId]?.apiUrl,
     has: (config) => Object.hasOwn(config.clients?.[clientId] || {}, 'apiUrl'),
     write(config, value) {
-      config.clients = config.clients && typeof config.clients === 'object'
+      config.clients = isObjectRecord(config.clients)
         ? config.clients
         : {};
-      config.clients[clientId] = config.clients[clientId] &&
-        typeof config.clients[clientId] === 'object'
+      config.clients[clientId] = isObjectRecord(config.clients[clientId])
         ? config.clients[clientId]
         : {};
       config.clients[clientId].apiUrl = value;

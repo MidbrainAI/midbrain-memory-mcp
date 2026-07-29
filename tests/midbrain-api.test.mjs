@@ -96,6 +96,18 @@ describe("MidbrainApi instance API base", () => {
       "https://memory.midbrain.ai/api/v1/memories/procedural",
     );
   });
+
+  it("keeps compatibility base metadata bound to the import-time environment", () => {
+    process.env.MIDBRAIN_API_URL = "https://late-mutation.example";
+    try {
+      const api = new MidbrainApi("test-key", "test-source");
+      expect(api.effectiveApiBase).toBe("https://memory.midbrain.ai");
+      expect(api.apiBaseScope).toBe("default");
+      expect(api.apiBaseSource).toBe("default");
+    } finally {
+      delete process.env.MIDBRAIN_API_URL;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -77,6 +77,23 @@ describe("MIDBRAIN_API_URL reservation and migration", () => {
     warning.mockRestore();
   });
 
+  it.each([
+    ["clients array", { clients: [] }],
+    ["client entry array", { clients: { opencode: [] } }],
+  ])("repairs a malformed %s without dropping the migrated host", async (_label, initial) => {
+    const target = path.join(env.home, ".config", "midbrain", "config.json");
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, JSON.stringify(initial), "utf8");
+
+    const lines = await migrateReservedHostEnv(
+      { MIDBRAIN_API_URL: HOST },
+      { clientId: "opencode", source: "opencode.json" },
+    );
+
+    expect((await hostConfig(target)).clients.opencode.apiUrl).toBe(HOST);
+    expect(lines.join("\n")).toContain("MIDBRAIN_API_URL migrated");
+  });
+
   it("migrates both OpenCode rebuild sites scope-preservingly", async () => {
     await fs.writeFile(env.paths.opencodeConfig, JSON.stringify({
       mcp: {

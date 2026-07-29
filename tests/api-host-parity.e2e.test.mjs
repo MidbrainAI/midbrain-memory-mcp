@@ -19,6 +19,32 @@ const LOGGER_SOURCE = `({
   error() {},
 })`;
 
+function mcpScript() {
+  return `
+    import { createApi } from "./mcp.mjs";
+    const api = await createApi();
+    await api.fetch(api.SEARCH_SEMANTIC, { query: "mcp-read" });
+    await api.storeEpisodic("mcp-write", "user", ${LOGGER_SOURCE});
+    process.stdout.write(JSON.stringify({
+      host: api.effectiveApiBase,
+      scope: api.apiBaseScope,
+    }));
+  `;
+}
+
+function pluginScript(projectDir) {
+  return `
+    import { MidbrainApi, getClient } from "./dist/midbrain-shared.mjs";
+    const api = await MidbrainApi.create(getClient("opencode"), ${JSON.stringify(projectDir)});
+    await api.fetch(api.SEARCH_SEMANTIC, { query: "plugin-read" });
+    await api.storeEpisodic("plugin-write", "user", ${LOGGER_SOURCE});
+    process.stdout.write(JSON.stringify({
+      host: api.effectiveApiBase,
+      scope: api.apiBaseScope,
+    }));
+  `;
+}
+
 function runChild(script, env) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
@@ -101,30 +127,9 @@ describe("API-host MCP/capture parity", () => {
     });
     delete childEnv.MIDBRAIN_API_URL;
 
-    const mcpScript = `
-      import { createApi } from "./mcp.mjs";
-      const api = await createApi();
-      await api.fetch(api.SEARCH_SEMANTIC, { query: "mcp-read" });
-      await api.storeEpisodic("mcp-write", "user", ${LOGGER_SOURCE});
-      process.stdout.write(JSON.stringify({
-        host: api.effectiveApiBase,
-        scope: api.apiBaseScope,
-      }));
-    `;
-    const pluginScript = `
-      import { MidbrainApi, getClient } from "./dist/midbrain-shared.mjs";
-      const api = await MidbrainApi.create(getClient("opencode"), ${JSON.stringify(projectDir)});
-      await api.fetch(api.SEARCH_SEMANTIC, { query: "plugin-read" });
-      await api.storeEpisodic("plugin-write", "user", ${LOGGER_SOURCE});
-      process.stdout.write(JSON.stringify({
-        host: api.effectiveApiBase,
-        scope: api.apiBaseScope,
-      }));
-    `;
-
     const [mcp, plugin] = await Promise.all([
-      runChild(mcpScript, childEnv),
-      runChild(pluginScript, childEnv),
+      runChild(mcpScript(), childEnv),
+      runChild(pluginScript(projectDir), childEnv),
     ]);
     expect(JSON.parse(mcp.stdout)).toEqual({ host: apiBase, scope: "project" });
     expect(JSON.parse(plugin.stdout)).toEqual({ host: apiBase, scope: "project" });
@@ -140,6 +145,65 @@ describe("API-host MCP/capture parity", () => {
         "/api/v1/memories/episodic",
       ]));
   });
+
+  it.each([
+    ["unset", undefined],
+    ["an unresolved TERMINAL_CWD placeholder", "${TERMINAL_CWD}"],
+  ])(
+    "keeps B13 parity when the server project directory is %s and the plugin has a real directory",
+    async (_label, serverProjectDir) => {
+      const address = server.address();
+      const apiBase = `http://127.0.0.1:${address.port}`;
+      const globalDir = path.join(env.home, ".config", "midbrain");
+      await fs.rm(path.join(projectDir, ".midbrain", ".midbrain-key"));
+      await fs.mkdir(globalDir, { recursive: true });
+      await fs.writeFile(
+        path.join(globalDir, ".midbrain-key"),
+        "parity-global-key\n",
+        { mode: 0o600 },
+      );
+      await fs.writeFile(
+        path.join(globalDir, "config.json"),
+        JSON.stringify({ apiUrl: apiBase }),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(projectDir, ".midbrain", "config.json"),
+        JSON.stringify({ apiUrl: "https://project-host-must-be-skipped.invalid" }),
+        "utf8",
+      );
+
+      const baseEnv = env.childEnv({
+        MIDBRAIN_CLIENT: "opencode",
+        MIDBRAIN_API_URL: undefined,
+      });
+      delete baseEnv.MIDBRAIN_API_URL;
+      const serverEnv = { ...baseEnv };
+      if (serverProjectDir === undefined) {
+        delete serverEnv.MIDBRAIN_PROJECT_DIR;
+      } else {
+        serverEnv.MIDBRAIN_PROJECT_DIR = serverProjectDir;
+      }
+      const pluginEnv = { ...baseEnv };
+      delete pluginEnv.MIDBRAIN_PROJECT_DIR;
+
+      const [mcp, plugin] = await Promise.all([
+        runChild(mcpScript(), serverEnv),
+        runChild(pluginScript(projectDir), pluginEnv),
+      ]);
+      expect(JSON.parse(mcp.stdout)).toEqual({ host: apiBase, scope: "global" });
+      expect(JSON.parse(plugin.stdout)).toEqual({ host: apiBase, scope: "global" });
+      expect(plugin.stderr).toContain("project apiUrl ignored");
+      if (serverProjectDir) {
+        expect(mcp.stderr).toContain("TERMINAL_CWD");
+      }
+      expect(requests).toHaveLength(4);
+      expect(new Set(requests.map((request) => request.host)))
+        .toEqual(new Set([`127.0.0.1:${address.port}`]));
+      expect(requests.map((request) => request.method).sort())
+        .toEqual(["GET", "GET", "POST", "POST"]);
+    },
+  );
 
   it("records host and scope in the OpenCode INIT log", async () => {
     const source = await fs.readFile(

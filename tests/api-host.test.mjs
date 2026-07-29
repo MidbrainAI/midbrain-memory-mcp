@@ -119,6 +119,23 @@ describe("resolveApiHost", () => {
     });
   });
 
+  it("preserves explicit project-directory bytes when resolving config paths", async () => {
+    const spacedProjectDir = path.join(env.root, " project ");
+    const spacedConfig = path.join(spacedProjectDir, ".midbrain", "config.json");
+    await fs.mkdir(path.dirname(spacedConfig), { recursive: true });
+    await writeJson(spacedConfig, { apiUrl: "https://spaced-project.example" });
+
+    await expect(resolveApiHost({
+      clientId: "opencode",
+      projectDir: spacedProjectDir,
+      keyScope: "project",
+    })).resolves.toMatchObject({
+      url: "https://spaced-project.example",
+      source: spacedConfig,
+      scope: "project",
+    });
+  });
+
   it("skips an unresolved TERMINAL_CWD placeholder", async () => {
     process.env.MIDBRAIN_PROJECT_DIR = "${TERMINAL_CWD}";
     await writeJson(globalConfig, { apiUrl: "https://global.example" });
@@ -152,6 +169,31 @@ describe("resolveApiHost", () => {
     expect(warn.mock.calls[0][0]).toContain("env:MIDBRAIN_API_URL");
     expect(warn.mock.calls[1][0]).toContain(`${projectConfig} apiUrl`);
     expect(warn.mock.calls[1][0]).toContain("/api/v1");
+  });
+
+  it.each([
+    ["a nested /api/v1 suffix", "https://invalid.example/prefix/api/v1/"],
+    ["URL credentials", "https://user:password@invalid.example/path"],
+    ["query parameters", "https://invalid.example/path?token=do-not-print"],
+    ["a fragment", "https://invalid.example/path#secret"],
+  ])("rejects %s without exposing the configured value", async (_label, value) => {
+    await writeJson(projectConfig, { apiUrl: value });
+    await writeJson(globalConfig, { apiUrl: "https://global.example" });
+
+    await expect(resolveApiHost({
+      clientId: "opencode",
+      projectDir,
+      keyScope: "project",
+    })).resolves.toMatchObject({
+      url: "https://global.example",
+      scope: "global",
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain(`${projectConfig} apiUrl`);
+    expect(warn.mock.calls[0][0]).not.toContain(value);
+    expect(warn.mock.calls[0][0]).not.toContain("password");
+    expect(warn.mock.calls[0][0]).not.toContain("do-not-print");
+    expect(warn.mock.calls[0][0]).not.toContain("secret");
   });
 
   it("warns once for a non-string field without exposing its contents", async () => {

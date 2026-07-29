@@ -46,7 +46,16 @@ export function normalizeApiBase(value) {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return { error: `unsupported ${parsed.protocol || "unknown"} protocol` };
   }
-  if (parsed.pathname.replace(/\/+$/, "") === "/api/v1") {
+  if (parsed.username || parsed.password) {
+    return { error: "must not contain URL credentials" };
+  }
+  if (parsed.search) {
+    return { error: "must not contain query parameters" };
+  }
+  if (parsed.hash) {
+    return { error: "must not contain a fragment" };
+  }
+  if (parsed.pathname.replace(/\/+$/, "").endsWith("/api/v1")) {
     return { error: "must not end in /api/v1" };
   }
   return { url: normalized };
@@ -80,9 +89,10 @@ function selectCandidate(value, { source, field, scope }) {
 
 function resolveProjectDir(projectDir) {
   const explicit = typeof projectDir === "string" && projectDir.trim()
-    ? projectDir.trim()
+    ? projectDir
     : undefined;
-  const candidate = explicit || process.env.MIDBRAIN_PROJECT_DIR?.trim();
+  const envProjectDir = explicit ? undefined : process.env.MIDBRAIN_PROJECT_DIR;
+  const candidate = explicit || envProjectDir;
   if (candidate === TERMINAL_CWD_PLACEHOLDER) {
     warn(
       "MIDBRAIN_PROJECT_DIR TERMINAL_CWD placeholder is unresolved " +

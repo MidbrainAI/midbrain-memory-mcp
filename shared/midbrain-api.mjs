@@ -23,7 +23,10 @@ import { createHash } from "crypto";
 import { appendToCache, beginCacheFlush, finishCacheFlush, hasCachedEntries } from "./episodic-cache.mjs";
 import { DEFAULT_API_BASE, resolveApiHost } from "./api-host.mjs";
 
+const API_BASE_FROM_ENV = Boolean(process.env.MIDBRAIN_API_URL);
 const API_BASE = process.env.MIDBRAIN_API_URL || DEFAULT_API_BASE;
+const API_BASE_SCOPE = API_BASE_FROM_ENV ? "environment" : "default";
+const API_BASE_SOURCE = API_BASE_FROM_ENV ? "env:MIDBRAIN_API_URL" : "default";
 
 function buildEndpoints(apiBase) {
   const apiV1 = `${apiBase}/api/v1`;
@@ -67,10 +70,8 @@ export class MidbrainApi {
     this.#key = key;
     this.#source = source;
     this.#apiBase = options.apiBase || API_BASE;
-    this.#apiBaseScope = options.apiBaseScope ||
-      (process.env.MIDBRAIN_API_URL ? "environment" : "default");
-    this.#apiBaseSource = options.apiBaseSource ||
-      (process.env.MIDBRAIN_API_URL ? "env:MIDBRAIN_API_URL" : "default");
+    this.#apiBaseScope = options.apiBaseScope || API_BASE_SCOPE;
+    this.#apiBaseSource = options.apiBaseSource || API_BASE_SOURCE;
     this.#keyScope = options.keyScope;
     this.#endpoints = buildEndpoints(this.#apiBase);
     this.#cacheScope = createHash("sha256")
