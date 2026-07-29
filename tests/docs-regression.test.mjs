@@ -149,6 +149,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       expect(names).toContain("plugins/hermes/common.mjs");
       expect(names).toContain("plugins/hermes/capture-user.mjs");
       expect(names).toContain("skills/nanoclaw/SKILL.md");
+      expect(names).toContain("shared/diagnostics.mjs");
       expect(names).not.toContain("tests/codex-hooks.test.mjs");
       expect(names.some((name) => name.startsWith("tasks/"))).toBe(false);
       expect(names.some((name) => name.includes(".midbrain-key"))).toBe(false);
@@ -157,15 +158,23 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     }
   }, 90000);
 
-  it("D-9: README MCP tool table matches the seven-tool server surface", async () => {
+  it("D-9: README MCP tool table matches the eight-tool server surface", async () => {
     const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
     const mcp = await fs.readFile(path.join(REPO_ROOT, "mcp.mjs"), "utf8");
     const readmeTools = toolNamesFromReadme(readme).sort();
     const serverTools = toolNamesFromMcp(mcp).sort();
 
-    expect(serverTools).toHaveLength(7);
+    expect(serverTools).toHaveLength(8);
     expect(readmeTools).toEqual(serverTools);
     expect(readmeTools).not.toContain("procedural_knowledge");
+  });
+
+  it("D-24: diagnostics privacy contract is documented", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+    expect(readme).toMatch(/memory_diagnostics[\s\S]*never includes\s+credential contents, hashes, fingerprints, or last-four fragments/i);
+    expect(readme).toMatch(/paths under the user's home are\s+rendered with `~\/`/i);
+    expect(agents).toMatch(/memory_diagnostics[\s\S]*MidbrainApi`?\s+instance getters/i);
   });
 
   it("D-10: memory rules do not instruct agents to call removed procedural_knowledge", async () => {
