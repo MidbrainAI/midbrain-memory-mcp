@@ -9,23 +9,25 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NODE_VERSION: 24
+
 jobs:
   test:
-    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
-      # Report every OS/Node combination; never let one failure mask the rest.
+      # Report every OS; never let one failure mask the rest.
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node.js ${{ matrix.node }}
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
@@ -44,15 +46,15 @@ jobs:
   # them off the full OS/Node matrix avoids redundant lint runs and Windows
   # shell fragility while still gating every push and PR.
   check:
-    name: lint + gates (ubuntu, node 22)
+    name: lint + gates (ubuntu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node.js 22
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
