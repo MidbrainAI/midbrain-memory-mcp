@@ -20,7 +20,13 @@ export const MCP_KEY = 'midbrain-memory';
 // MIDBRAIN_DEV is the dev-install marker (PRD-034 S3): reserved so
 // extractCustomEnv never carries it into rebuilt entries — an explicit
 // non-dev install therefore drops the marker and restores canonical.
-export const RESERVED_ENV_KEYS = new Set(['MIDBRAIN_CONFIG_DIR', 'MIDBRAIN_PROJECT_DIR', 'MIDBRAIN_CLIENT', 'MIDBRAIN_DEV']);
+export const RESERVED_ENV_KEYS = new Set([
+  'MIDBRAIN_CONFIG_DIR',
+  'MIDBRAIN_PROJECT_DIR',
+  'MIDBRAIN_CLIENT',
+  'MIDBRAIN_DEV',
+  'MIDBRAIN_API_URL',
+]);
 export const DEV_ENV_MARKER = 'MIDBRAIN_DEV';
 export const PINNED_RE = /midbrain-memory-mcp@\d+\.\d+\.\d+/;
 
@@ -147,6 +153,78 @@ export function formatMigrationLine(label, exists, pinned) {
   return exists
     ? `${label}: midbrain-memory updated`
     : `${label}: midbrain-memory entry added`;
+}
+
+function envObject(entry, envKey) {
+  const value = entry && typeof entry === 'object' ? entry[envKey] : null;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function isObjectRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Pinned-entry warning for the reserved host env residual. */
+export function pinnedHostEnvLine(entry, envKey) {
+  if (!Object.hasOwn(envObject(entry, envKey), 'MIDBRAIN_API_URL')) return null;
+  return '! pinned entry retains MIDBRAIN_API_URL; unpin (remove @x.y.z) and re-run install to migrate';
+}
+
+function hostMigrationTarget(clientId, projectDir) {
+  if (projectDir) {
+    return {
+      filePath: path.join(projectDir, MIDBRAIN_DIR, 'config.json'),
+      field: 'apiUrl',
+      read: (config) => config.apiUrl,
+      has: (config) => Object.hasOwn(config, 'apiUrl'),
+      write(config, value) { config.apiUrl = value; },
+    };
+  }
+  const filePath = path.join(home(), '.config', 'midbrain', 'config.json');
+  return {
+    filePath,
+    field: `clients.${clientId}.apiUrl`,
+    read: (config) => config.clients?.[clientId]?.apiUrl,
+    has: (config) => Object.hasOwn(config.clients?.[clientId] || {}, 'apiUrl'),
+    write(config, value) {
+      config.clients = isObjectRecord(config.clients)
+        ? config.clients
+        : {};
+      config.clients[clientId] = isObjectRecord(config.clients[clientId])
+        ? config.clients[clientId]
+        : {};
+      config.clients[clientId].apiUrl = value;
+    },
+  };
+}
+
+/**
+ * Move a legacy entry-local MIDBRAIN_API_URL into shared host configuration.
+ * The existing file value always wins.
+ *
+ * @param {object} extraEnv Existing MCP entry environment.
+ * @param {{clientId: string, projectDir?: string, source: string}} options
+ * @returns {Promise<string[]>} Installer summary lines.
+ */
+export async function migrateReservedHostEnv(extraEnv, { clientId, projectDir, source }) {
+  if (!Object.hasOwn(extraEnv || {}, 'MIDBRAIN_API_URL')) return [];
+  const target = hostMigrationTarget(clientId, projectDir);
+  const parsed = (await readJson(target.filePath)) || {};
+  const config = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed
+    : {};
+  if (target.has(config)) {
+    if (target.read(config) !== extraEnv.MIDBRAIN_API_URL) {
+      const message =
+        `${source} MIDBRAIN_API_URL conflicts with ${target.filePath} ${target.field}; file value wins`;
+      console.error(`WARN: ${message}`);
+      return [`  ! ${message}`];
+    }
+    return [`  ~ MIDBRAIN_API_URL already configured at ${target.filePath} ${target.field}`];
+  }
+  target.write(config, extraEnv.MIDBRAIN_API_URL);
+  await writeJsonIfChanged(target.filePath, config);
+  return [`  ~ MIDBRAIN_API_URL migrated from ${source} to ${target.filePath} ${target.field}`];
 }
 
 // --- Key resolution helper ---

@@ -16,10 +16,15 @@ import { setupProject } from "./install.mjs";
 
 const EPISODIC_PAGE_LIMIT = 1000;
 const PEEK_TTL_MS = 60_000; // 1 minute cache
+const TERMINAL_CWD_PLACEHOLDER = "${TERMINAL_CWD}";
 
 /** Creates a MidbrainApi instance for the current environment. */
-async function createApi() {
-  return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT));
+export async function createApi() {
+  const configuredProjectDir = process.env.MIDBRAIN_PROJECT_DIR;
+  const projectDir = configuredProjectDir === TERMINAL_CWD_PLACEHOLDER
+    ? undefined
+    : configuredProjectDir;
+  return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT), projectDir);
 }
 
 /**
@@ -52,7 +57,7 @@ export function createServer(version) {
       lastPeekTime = now;
 
       const a = await createApi();
-      const result = await a.fetch(MidbrainApi.EPISODIC, { page: 1, limit: 1 });
+      const result = await a.fetch(a.EPISODIC, { page: 1, limit: 1 });
       const items = result?.items || [];
       if (items.length === 0) { cachedHint = null; return null; }
 
@@ -116,7 +121,7 @@ use get_episodic_memories_by_date with today's date to retrieve recent context.`
         const a = await createApi();
         const dflt = MidbrainApi.DEFAULT_SEARCH_LIMIT;
         const fetchK = memory_type !== "all" ? (limit ?? dflt) * 3 : (limit ?? dflt);
-        const results = await a.fetch(MidbrainApi.SEARCH_SEMANTIC, { query, limit: fetchK });
+        const results = await a.fetch(a.SEARCH_SEMANTIC, { query, limit: fetchK });
 
         if (!Array.isArray(results) || results.length === 0) {
           const hint = await peekRecency();
@@ -172,7 +177,7 @@ Use for exact or pattern-based matches (names, IDs, code, URLs).`,
     async ({ pattern, source, limit }) => {
       try {
         const a = await createApi();
-        const results = await a.fetch(MidbrainApi.SEARCH_LEXICAL, { pattern, source, limit });
+        const results = await a.fetch(a.SEARCH_LEXICAL, { pattern, source, limit });
 
         if (!Array.isArray(results) || results.length === 0) {
           const hint = await peekRecency();
@@ -218,7 +223,7 @@ when continuing previous work.`,
         end.setDate(end.getDate() + Math.max(offset_days ?? 1, 1));
 
         const a = await createApi();
-        const result = await a.fetch(MidbrainApi.EPISODIC, {
+        const result = await a.fetch(a.EPISODIC, {
           page: 1,
           limit: EPISODIC_PAGE_LIMIT,
           start_date: start.toISOString(),
@@ -264,7 +269,7 @@ Use this to discover what knowledge files are available.`,
     async () => {
       try {
         const a = await createApi();
-        const docs = await a.fetch(MidbrainApi.SEMANTIC_FILES);
+        const docs = await a.fetch(a.SEMANTIC_FILES);
 
         if (!Array.isArray(docs) || docs.length === 0) {
           const hint = await peekRecency();
@@ -301,7 +306,7 @@ after memory_search to read context around a search hit.`,
     async ({ file_path, start_line, num_lines }) => {
       try {
         const a = await createApi();
-        const url = `${MidbrainApi.SEMANTIC_FILES}/${encodeURIComponent(file_path).replace(/%2F/g, "/")}`;
+        const url = `${a.SEMANTIC_FILES}/${encodeURIComponent(file_path).replace(/%2F/g, "/")}`;
         const result = await a.fetch(url, { start_line, num_lines });
 
         const hint = await peekRecency();
@@ -329,7 +334,7 @@ full context if needed.`,
     async () => {
       try {
         const a = await createApi();
-        const result = await a.fetch(MidbrainApi.EPISODIC, { page: 1, limit: 1 });
+        const result = await a.fetch(a.EPISODIC, { page: 1, limit: 1 });
         const items = result?.items || [];
 
         if (items.length === 0) {
