@@ -16,23 +16,34 @@ import os from "os";
 import { enoent, makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
 import { makeTestEnv, assertSandboxed } from "./helpers/test-env.mjs";
 
-const mocks = vi.hoisted(() => ({
-  readFile:   vi.fn(),
-  writeFile:  vi.fn().mockResolvedValue(undefined),
-  mkdir:      vi.fn().mockResolvedValue(undefined),
-  chmod:      vi.fn().mockResolvedValue(undefined),
-  stat:       vi.fn(),
-  realpath:   vi.fn(),
-  copyFile:   vi.fn().mockResolvedValue(undefined),
-  readdir:    vi.fn().mockResolvedValue([]),
-  rm:         vi.fn().mockResolvedValue(undefined),
-  access:     vi.fn().mockResolvedValue(undefined),
-  existsSync: vi.fn(() => false),
-  deviceCodeLogin: vi.fn(),
-  readlineAnswers: [],
-  readlineQuestions: [],
-  createReadlineInterface: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+  const state = {
+    readFile:   vi.fn(),
+    writeFile:  vi.fn().mockResolvedValue(undefined),
+    mkdir:      vi.fn().mockResolvedValue(undefined),
+    chmod:      vi.fn().mockResolvedValue(undefined),
+    stat:       vi.fn(),
+    realpath:   vi.fn(),
+    copyFile:   vi.fn().mockResolvedValue(undefined),
+    readdir:    vi.fn().mockResolvedValue([]),
+    rm:         vi.fn().mockResolvedValue(undefined),
+    access:     vi.fn().mockResolvedValue(undefined),
+    existsSync: vi.fn(() => false),
+    writeCredential: vi.fn(),
+    deviceCodeLogin: vi.fn(),
+    readlineAnswers: [],
+    readlineQuestions: [],
+    createReadlineInterface: vi.fn(),
+  };
+  state.writeCredential.mockImplementation(async ({ targetPath, key }) => {
+    const slash = Math.max(targetPath.lastIndexOf('/'), targetPath.lastIndexOf('\\'));
+    await state.mkdir(targetPath.slice(0, slash), { recursive: true });
+    await state.writeFile(targetPath, `${key}\n`, 'utf8');
+    await state.chmod(targetPath, 0o600);
+    return { action: 'written', backupPath: null };
+  });
+  return state;
+});
 
 mocks.createReadlineInterface.mockImplementation(() => ({
   question(question, cb) {
@@ -59,6 +70,9 @@ vi.mock("readline", () => ({
 }));
 vi.mock("../shared/device-auth.mjs", () => ({
   deviceCodeLogin: mocks.deviceCodeLogin,
+}));
+vi.mock("../shared/clients/credential-writer.mjs", () => ({
+  writeCredential: mocks.writeCredential,
 }));
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,

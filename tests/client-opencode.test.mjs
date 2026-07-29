@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   realpath:   vi.fn(),
   copyFile:   vi.fn().mockResolvedValue(undefined),
   existsSync: vi.fn(() => false),
+  writeCredential: vi.fn().mockResolvedValue({ action: "written", backupPath: null }),
 }));
 
 vi.mock("fs/promises", () => ({
@@ -30,6 +31,9 @@ vi.mock("fs", async (importOriginal) => {
   const orig = await importOriginal();
   return { ...orig, existsSync: mocks.existsSync, realpathSync: orig.realpathSync };
 });
+vi.mock("../shared/clients/credential-writer.mjs", () => ({
+  writeCredential: mocks.writeCredential,
+}));
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
              chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile };
@@ -128,6 +132,24 @@ describe("OpenCode.resolveClientKey", () => {
     mocks.readFile.mockRejectedValue(fileError("EIO", PATHS.opencodeKey));
 
     await expect(oc.resolveClientKey()).rejects.toThrow(/EIO/);
+  });
+});
+
+describe("OpenCode.writeKey", () => {
+  const oc = new OpenCode();
+  beforeEach(resetMocks);
+
+  it("delegates the client credential and preserves the summary", async () => {
+    const line = await oc.writeKey("opencode-dummy");
+
+    expect(mocks.writeCredential).toHaveBeenCalledWith({
+      clientId: "opencode",
+      scope: "client",
+      targetPath: PATHS.opencodeKey,
+      key: "opencode-dummy",
+      replaceApproved: false,
+    });
+    expect(line).toBe("Key: ~/.config/opencode/.midbrain-key (chmod 600)");
   });
 });
 

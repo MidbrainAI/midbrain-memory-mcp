@@ -9,9 +9,10 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
+import { writeCredential } from './credential-writer.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT,
-  home, readJson, writeJsonIfChanged, backup, writeSecure,
+  home, readJson, writeJsonIfChanged, backup,
   classifyEntry, formatMigrationLine,
 } from './utils.mjs';
 import {
@@ -159,9 +160,15 @@ export class Codex extends BaseClient {
     return key ? { key, source } : null;
   }
 
-  async writeKey(key) {
+  async writeKey(key, { replaceApproved = false } = {}) {
     const kfp = keyFilePath();
-    await writeSecure(kfp, key);
+    await writeCredential({
+      clientId: this.id,
+      scope: 'client',
+      targetPath: kfp,
+      key,
+      replaceApproved,
+    });
     return `Key: ~/.config/codex/${KEY_FILENAME} (chmod 600)`;
   }
 

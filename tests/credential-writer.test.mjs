@@ -273,3 +273,34 @@ describe('credential replacement backups', () => {
     expect(entries.filter((entry) => entry.startsWith('.midbrain-key.bak-'))).toEqual([]);
   });
 });
+
+describe('credential writer delegation regression', () => {
+  it('routes every production key writer through writeCredential', async () => {
+    const adapterFiles = [
+      'generic.mjs',
+      'opencode.mjs',
+      'claude.mjs',
+      'codex.mjs',
+      'nanoclaw.mjs',
+      'hermes.mjs',
+    ];
+    const sources = await Promise.all(adapterFiles.map(async (fileName) => ({
+      fileName,
+      source: await fs.readFile(new URL(`../shared/clients/${fileName}`, import.meta.url), 'utf8'),
+    })));
+
+    for (const { fileName, source } of sources) {
+      expect(source, fileName).toContain('writeCredential');
+      expect(source, fileName).not.toMatch(/\bwriteSecure\s*\(/);
+      expect(source, fileName).not.toMatch(/writeFile\([^)]*\bkey\b/);
+    }
+    expect(sources.find(({ fileName }) => fileName === 'generic.mjs').source)
+      .toMatch(/setProjectKey[\s\S]*writeCredential/);
+
+    const utilsSource = await fs.readFile(
+      new URL('../shared/clients/utils.mjs', import.meta.url),
+      'utf8',
+    );
+    expect(utilsSource).not.toMatch(/\bwriteSecure\s*\(/);
+  });
+});

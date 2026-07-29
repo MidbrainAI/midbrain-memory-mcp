@@ -163,10 +163,27 @@ let client;
 let clientTransport;
 let serverTransport;
 let tmpKeyDir;
+let mcpTestSandbox;
 let fetchSpy;
 const savedEnv = {};
 
 beforeAll(async () => {
+  for (const k of [
+    "MIDBRAIN_API_KEY",
+    "MIDBRAIN_PROJECT_DIR",
+    "MIDBRAIN_TEST_SANDBOX",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+  ]) {
+    savedEnv[k] = process.env[k];
+  }
+  mcpTestSandbox = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-suite-sandbox-"));
+  process.env.MIDBRAIN_TEST_SANDBOX = mcpTestSandbox;
+  process.env.TMPDIR = mcpTestSandbox;
+  process.env.TEMP = mcpTestSandbox;
+  process.env.TMP = mcpTestSandbox;
+
   // Mock fetch before any tool calls
   fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(mockFetch);
 
@@ -177,9 +194,6 @@ beforeAll(async () => {
   fs.chmodSync(keyPath, 0o600);
 
   // Set env vars for the in-process server
-  for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
-    savedEnv[k] = process.env[k];
-  }
   process.env.MIDBRAIN_API_KEY = "test-key-for-mcp-tests";
   process.env.MIDBRAIN_PROJECT_DIR = "";
 
@@ -197,6 +211,7 @@ afterAll(async () => {
   try { await clientTransport?.close(); } catch { /* ignore */ }
   try { await serverTransport?.close(); } catch { /* ignore */ }
   try { fs.rmSync(tmpKeyDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { fs.rmSync(mcpTestSandbox, { recursive: true, force: true }); } catch { /* ignore */ }
   fetchSpy?.mockRestore();
 
   for (const [k, v] of Object.entries(savedEnv)) {

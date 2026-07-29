@@ -100,13 +100,6 @@ export async function writeJsonIfChanged(filePath, data, { backupFirst = false }
   return true;
 }
 
-/** Write a key file with chmod 600 (creates parent dirs). */
-export async function writeSecure(filePath, key) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, key + '\n', 'utf8');
-  await fs.chmod(filePath, 0o600);
-}
-
 // --- MCP entry helpers ---
 
 /**
