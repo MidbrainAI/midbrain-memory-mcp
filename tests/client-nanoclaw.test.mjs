@@ -4,11 +4,11 @@
  * All filesystem operations are mocked — no real files read or written.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import path from "path";
-import os from "os";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { makeTestEnv, assertSandboxed } from "./helpers/test-env.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -41,12 +41,26 @@ const { BaseClient } = await import("../shared/clients/base.mjs");
 const { REPO_ROOT } = await import("../shared/clients/utils.mjs");
 const { NanoClaw } = await import("../shared/clients/nanoclaw.mjs");
 
-const HOME = os.homedir();
-const ENV_ROOT = "/private/tmp/test-nanoclaw";
-const INVALID_ROOT = "/private/tmp/not-nanoclaw";
-const COMMON_ROOT = path.join(HOME, "nanoclaw-v2");
-const KEY_PATH = path.join(HOME, ".config", "nanoclaw", ".midbrain-key");
 const SKILL_SRC = path.join(REPO_ROOT, "skills", "nanoclaw", "SKILL.md");
+let testEnv;
+let ENV_ROOT;
+let INVALID_ROOT;
+let COMMON_ROOT;
+let KEY_PATH;
+
+// One sandbox per file redirects both common-home and explicit NanoClaw
+// fixtures, containing any real-fs fallback while retaining mock assertions.
+beforeAll(async () => {
+  testEnv = await makeTestEnv();
+  ENV_ROOT = path.join(testEnv.root, "nanoclaw-explicit");
+  INVALID_ROOT = path.join(testEnv.root, "not-nanoclaw");
+  COMMON_ROOT = path.join(testEnv.home, "nanoclaw-v2");
+  KEY_PATH = path.join(testEnv.home, ".config", "nanoclaw", ".midbrain-key");
+});
+
+afterAll(async () => {
+  await testEnv?.restore();
+});
 
 function markerPaths(root) {
   return [
@@ -137,6 +151,7 @@ describe("NanoClaw key handling", () => {
   });
 
   it("writes the per-client key with chmod 600", async () => {
+    await assertSandboxed(testEnv, KEY_PATH);
     const line = await nanoclaw.writeKey("nanoclaw-secret");
 
     expect(fs.mkdir).toHaveBeenCalledWith(path.dirname(KEY_PATH), { recursive: true });

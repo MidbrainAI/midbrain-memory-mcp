@@ -12,10 +12,14 @@
  * tests do not self-skip when the suite runs on a real CI runner.
  */
 
-import fs from 'fs/promises';
 import { createHash } from 'crypto';
+import { createRequire } from 'module';
 import os from 'os';
 import path from 'path';
+
+// Load the real builtin through CJS so Vitest ESM mocks in adapter tests cannot
+// replace the sandbox fixture's own filesystem operations.
+const fs = createRequire(import.meta.url)('node:fs/promises');
 
 /** Env vars that influence where midbrain code reads/writes. All managed. */
 const MANAGED_ENV_KEYS = [
