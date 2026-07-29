@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createHash } from 'crypto';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -212,4 +213,63 @@ describe('writeCredential atomic writes', () => {
       expect(await fs.readlink(`${targetPath}.tmp`)).toBe(unrelated);
     },
   );
+});
+
+describe('credential replacement backups', () => {
+  it('backs up the prior credential at mode 0600 before approved replacement', async () => {
+    const { writeCredential } = await loadWriter();
+    const targetPath = path.join(testEnv.home, '.config', 'midbrain', '.midbrain-key');
+    const prior = 'prior-global-dummy\n';
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, prior, { mode: 0o600 });
+
+    const result = await writeCredential({
+      clientId: 'generic',
+      scope: 'global',
+      targetPath,
+      key: 'next-global-dummy',
+      replaceApproved: true,
+    });
+
+    expect(result.action).toBe('written');
+    expect(result.backupPath).toMatch(/\.midbrain-key\.bak-\d{8}T\d{6}Z$/);
+    if (process.platform !== 'win32') {
+      expect((await fs.stat(result.backupPath)).mode & 0o777).toBe(0o600);
+    }
+    const digest = (value) => createHash('sha256').update(value).digest('hex');
+    expect(digest(await fs.readFile(result.backupPath))).toBe(digest(prior));
+    expect(await fs.readFile(targetPath, 'utf8')).toBe('next-global-dummy\n');
+  });
+
+  it('uses a deterministic -2 suffix for a same-second backup collision', async () => {
+    const { backupCredential } = await loadWriter();
+    const targetPath = path.join(testEnv.home, '.config', 'claude', '.midbrain-key');
+    const now = new Date('2026-07-29T04:00:05.000Z');
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, 'collision-dummy\n', { mode: 0o600 });
+
+    const first = await backupCredential(targetPath, { now });
+    const second = await backupCredential(targetPath, { now });
+
+    expect(first).toBe(`${targetPath}.bak-20260729T040005Z`);
+    expect(second).toBe(`${targetPath}.bak-20260729T040005Z-2`);
+    expect(await fs.readFile(first, 'utf8')).toBe('collision-dummy\n');
+    expect(await fs.readFile(second, 'utf8')).toBe('collision-dummy\n');
+  });
+
+  it('does not create a backup for an unapproved replacement', async () => {
+    const { writeCredential } = await loadWriter();
+    const targetPath = path.join(testEnv.home, '.config', 'codex', '.midbrain-key');
+    await fs.chmod(targetPath, 0o600);
+    await fs.writeFile(targetPath, 'keep-dummy\n');
+
+    await expect(writeCredential({
+      clientId: 'codex',
+      scope: 'client',
+      targetPath,
+      key: 'reject-dummy',
+    })).rejects.toMatchObject({ category: 'replacement-not-approved' });
+    const entries = await fs.readdir(path.dirname(targetPath));
+    expect(entries.filter((entry) => entry.startsWith('.midbrain-key.bak-'))).toEqual([]);
+  });
 });

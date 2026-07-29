@@ -5,6 +5,7 @@
  */
 
 import fs from 'fs/promises';
+import { constants as FS_CONSTANTS } from 'fs';
 import os from 'os';
 import path from 'path';
 import { readKeyFile } from './base.mjs';
@@ -149,6 +150,39 @@ async function atomicWrite(targetPath, key) {
   }
 }
 
+function backupTimestamp(now) {
+  return new Date(now).toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Copy a credential to a collision-safe timestamped mode-0600 backup.
+ *
+ * @param {string} targetPath
+ * @param {{now?: Date|number|string}} [opts]
+ * @returns {Promise<string>}
+ */
+export async function backupCredential(targetPath, { now = Date.now() } = {}) {
+  const basePath = `${targetPath}.bak-${backupTimestamp(now)}`;
+  for (let suffix = 1; ; suffix += 1) {
+    const backupPath = suffix === 1 ? basePath : `${basePath}-${suffix}`;
+    try {
+      await fs.copyFile(targetPath, backupPath, FS_CONSTANTS.COPYFILE_EXCL);
+      await fs.chmod(backupPath, FILE_MODE);
+      return backupPath;
+    } catch (err) {
+      if (err.code === 'EEXIST') continue;
+      await fs.rm(backupPath, { force: true }).catch(() => {});
+      throw new CredentialWriteError(`Failed to back up credential file: ${targetPath}`, {
+        category: 'backup-failed',
+        targetPath,
+        cause: err,
+      });
+    }
+  }
+}
+
 /**
  * Persist one API key through scope validation, replacement approval, and an
  * atomic mode-0600 rename.
@@ -189,6 +223,7 @@ export async function writeCredential({
     );
   }
 
+  const backupPath = existing === null ? null : await backupCredential(targetPath);
   await atomicWrite(targetPath, normalizedKey);
-  return { action: 'written', backupPath: null };
+  return { action: 'written', backupPath };
 }
