@@ -57,23 +57,60 @@ fi
 
 REAL_HOME="$(node -p 'require("os").homedir()')"
 SURFACE_HOME="${MIDBRAIN_ISOLATION_HOME:-$REAL_HOME}"
+SENTINEL_PATH=""
 
 if [[ -n "${MIDBRAIN_ISOLATION_HOME:-}" ]]; then
-  node --input-type=module - "$SURFACE_HOME" "$REAL_HOME" <<'NODE'
+  SENTINEL_PATH="$(node --input-type=module - "$SURFACE_HOME" "$REAL_HOME" <<'NODE'
 import fs from 'node:fs';
 import path from 'node:path';
 
 const [override, realHome] = process.argv.slice(2);
-const canonical = (value) => fs.realpathSync.native(path.resolve(value));
-if (canonical(override) === canonical(realHome)) {
-  console.error("ERROR: MIDBRAIN_ISOLATION_HOME resolves to the real home; refusing negative self-test.");
+const fail = (message) => {
+  console.error(`ERROR: ${message}`);
   process.exit(1);
+};
+const canonical = (value, label) => {
+  try {
+    return fs.realpathSync.native(path.resolve(value));
+  } catch {
+    fail(`${label} must name an existing path.`);
+  }
+};
+const isContained = (root, candidate) => {
+  const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  return root === candidate || candidate.startsWith(prefix);
+};
+
+const canonicalOverride = canonical(override, "MIDBRAIN_ISOLATION_HOME");
+const canonicalRealHome = canonical(realHome, "real home");
+if (!fs.statSync(canonicalOverride).isDirectory()) {
+  fail("MIDBRAIN_ISOLATION_HOME must name an existing directory.");
 }
-if (!fs.statSync(override).isDirectory()) {
-  console.error("ERROR: MIDBRAIN_ISOLATION_HOME must name an existing directory.");
-  process.exit(1);
+if (isContained(canonicalRealHome, canonicalOverride)) {
+  fail("MIDBRAIN_ISOLATION_HOME resolves to or inside the real home; refusing negative self-test.");
 }
+
+const sentinel = path.join(canonicalOverride, ".config", "midbrain", ".midbrain-key");
+let existingAncestor = sentinel;
+while (!fs.existsSync(existingAncestor)) {
+  const parent = path.dirname(existingAncestor);
+  if (parent === existingAncestor) {
+    fail("could not resolve an existing ancestor for the isolation sentinel.");
+  }
+  existingAncestor = parent;
+}
+const canonicalAncestor = canonical(existingAncestor, "isolation sentinel ancestor");
+if (!isContained(canonicalOverride, canonicalAncestor)) {
+  fail("isolation sentinel resolves outside MIDBRAIN_ISOLATION_HOME; refusing negative self-test.");
+}
+
+const resolvedSentinel = path.join(
+  canonicalAncestor,
+  path.relative(existingAncestor, sentinel),
+);
+process.stdout.write(resolvedSentinel);
 NODE
+)"
 fi
 
 TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/midbrain-test-isolation.XXXXXX")"
@@ -140,10 +177,9 @@ NODE
 snapshot_surfaces "$BEFORE_HASHES" "$SURFACE_HOME"
 
 if [[ -n "${MIDBRAIN_ISOLATION_HOME:-}" ]]; then
-  sentinel="$SURFACE_HOME/.config/midbrain/.midbrain-key"
-  mkdir -p "$(dirname "$sentinel")"
-  printf '%s\n' 'dummy-isolation-sentinel' > "$sentinel"
-  chmod 600 "$sentinel"
+  mkdir -p "$(dirname "$SENTINEL_PATH")"
+  printf '%s\n' 'dummy-isolation-sentinel' > "$SENTINEL_PATH"
+  chmod 600 "$SENTINEL_PATH"
 fi
 
 set +e
