@@ -154,6 +154,7 @@ beforeAll(async () => {
     PATHS.codexKey,
     PATHS.nanoclawKey,
     PATHS.hermesKey,
+    path.join(PROJECT_DIR, ".midbrain", ".midbrain-key"),
   ]) {
     await assertSandboxed(testEnv, target);
   }
