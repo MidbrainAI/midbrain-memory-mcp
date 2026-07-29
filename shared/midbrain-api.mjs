@@ -141,7 +141,10 @@ export class MidbrainApi {
   get SEMANTIC_FILES() { return this.#endpoints.SEMANTIC_FILES; }
   get PROCEDURAL() { return this.#endpoints.PROCEDURAL; }
 
-  /** Last 4 chars of the key (for safe logging). */
+  /**
+   * @deprecated Retained for compatibility only. Credential fragments must
+   * never be written to user-facing output or shipped logs.
+   */
   get keyFingerprint() {
     return this.#key.length >= 4 ? `...${this.#key.slice(-4)}` : '****';
   }
@@ -181,6 +184,11 @@ export class MidbrainApi {
     console.error(`[API] status=${response.status}`);
 
     if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error(
+          `API 401 (auth failed): host=${this.#apiBase} key_scope=${this.#keyScope || "unknown"} — run memory_diagnostics for details`,
+        );
+      }
       const body = await response.text().catch(() => "(no body)");
       throw new Error(`API ${response.status}: ${body}`);
     }
@@ -221,8 +229,9 @@ export class MidbrainApi {
    * Never throws.
    */
   async #postEpisodic(text, role, memoryMetadata, logger) {
+    const binding = `host=${this.#apiBase} key_scope=${this.#keyScope || "unknown"}`;
     if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") {
-      logger.warn("STORE ERROR: simulated offline (MIDBRAIN_SIMULATE_OFFLINE=1)");
+      logger.warn(`STORE ERROR: ${binding} simulated offline (MIDBRAIN_SIMULATE_OFFLINE=1)`);
       return false;
     }
     try {
@@ -236,14 +245,14 @@ export class MidbrainApi {
         body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
       });
       if (!response.ok) {
-        const body = await response.text().catch(() => "(no body)");
-        logger.error(`STORE ERROR: status=${response.status} body=${body}`);
+        await response.text().catch(() => undefined);
+        logger.error(`STORE ERROR: status=${response.status} ${binding}`);
         return false;
       }
       logger.debug(`STORED: status=${response.status}`);
       return true;
-    } catch (err) {
-      logger.error(`STORE ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    } catch {
+      logger.error(`STORE ERROR: ${binding} network-error`);
       return false;
     }
   }

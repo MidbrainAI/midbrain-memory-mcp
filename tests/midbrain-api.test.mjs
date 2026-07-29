@@ -111,6 +111,43 @@ describe("MidbrainApi instance API base", () => {
   });
 });
 
+describe("MidbrainApi.fetch diagnostics", () => {
+  let fetchSpy;
+
+  afterEach(() => fetchSpy?.mockRestore());
+
+  it("enriches 401 with host, key scope, and the diagnostics pointer only", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: vi.fn().mockResolvedValue("credential ending A1b2 rejected"),
+    });
+    const api = new MidbrainApi("secret-A1b2", "/Users/alice/.midbrain-key", {
+      apiBase: "https://staging.example.test",
+      apiBaseScope: "client",
+      apiBaseSource: "/Users/alice/.config/midbrain/config.json",
+      keyScope: "client",
+    });
+
+    await expect(api.fetch(api.EPISODIC)).rejects.toThrow(
+      "API 401 (auth failed): host=https://staging.example.test key_scope=client — run memory_diagnostics for details",
+    );
+    await expect(api.fetch(api.EPISODIC)).rejects.not.toThrow(/alice|A1b2|config\.json/);
+  });
+
+  it("leaves non-401 error behavior unchanged", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: vi.fn().mockResolvedValue("temporarily unavailable"),
+    });
+    const api = new MidbrainApi("test-key", "test-source");
+    await expect(api.fetch(api.EPISODIC)).rejects.toThrow(
+      "API 503: temporarily unavailable",
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // storeEpisodic
 // ---------------------------------------------------------------------------
@@ -209,23 +246,29 @@ describe("MidbrainApi.storeEpisodic", () => {
   });
 
   it("returns false and logs when fetch fails", async () => {
-    fetchSpy.mockRejectedValueOnce(new Error("network down"));
+    fetchSpy.mockRejectedValueOnce(new Error("network down with credential A1b2"));
     const log = makeLog();
 
     await expect(api.storeEpisodic("msg", "user", log)).resolves.toBe(false);
-    expect(log.error).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR"));
+    expect(log.error).toHaveBeenCalledWith(
+      "STORE ERROR: host=https://memory.midbrain.ai key_scope=unknown network-error",
+    );
+    expect(log.error.mock.calls.flat().join("\n")).not.toContain("A1b2");
   });
 
   it("returns false and logs when the API returns a non-2xx status", async () => {
     fetchSpy.mockResolvedValueOnce({
       ok: false,
       status: 503,
-      text: vi.fn().mockResolvedValue("temporarily unavailable"),
+      text: vi.fn().mockResolvedValue("credential ending A1b2 rejected"),
     });
     const log = makeLog();
 
     await expect(api.storeEpisodic("msg", "user", log)).resolves.toBe(false);
-    expect(log.error).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR: status=503"));
+    expect(log.error).toHaveBeenCalledWith(
+      "STORE ERROR: status=503 host=https://memory.midbrain.ai key_scope=unknown",
+    );
+    expect(log.error.mock.calls.flat().join("\n")).not.toContain("A1b2");
   });
 });
 

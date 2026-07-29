@@ -187,6 +187,19 @@ describe("runMemoryDiagnostics", () => {
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("has no output caller for credential fingerprint helpers", () => {
+    const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+    const outputSources = [
+      "mcp.mjs",
+      "shared/diagnostics.mjs",
+      "shared/midbrain-api.mjs",
+      "plugins/opencode/midbrain-memory.ts",
+    ].map((name) => fs.readFileSync(path.join(repoRoot, name), "utf8"));
+    const callers = outputSources.join("\n");
+    expect(callers).not.toContain("api.keyFingerprint");
+    expect(callers).not.toContain("BaseClient.maskKey");
+  });
+
   function fakeApi(overrides = {}) {
     return {
       effectiveApiBase: "https://memory.midbrain.ai",
@@ -238,7 +251,9 @@ describe("runMemoryDiagnostics", () => {
     expect(report).not.toContain("current-binding");
   });
 
-  it("supports probe:false and reports B4 without credential fragments", async () => {
+  it.each(["opencode", "codex"])(
+    "supports probe:false and reports B4 for %s without credential fragments",
+    async (clientId) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));
     dirs.push(dir);
     _setCachePath(dir);
@@ -247,14 +262,15 @@ describe("runMemoryDiagnostics", () => {
       createApi: async () => fakeApi({
         credentialShadowNote: "client credential shadows the global credential for this client",
       }),
-      clientId: "codex",
+      clientId,
       homeDir: "/Users/alice",
       version: "0.4.7",
     });
     expect(report).toContain("probe: skipped");
     expect(report).toContain("client credential shadows the global credential for this client");
     expect(report).not.toMatch(/secret|\.\.\.[A-Za-z0-9]{4}/i);
-  });
+    },
+  );
 
   it("distinguishes B2 auth failure from B3 capture pending", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));

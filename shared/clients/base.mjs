@@ -170,6 +170,7 @@ export class BaseClient {
     return key ? { key, source: globalPath } : null;
   }
 
+  /** @deprecated Credential fragments must not be included in output. */
   static maskKey(key) {
     if (!key || key.length < 4) return '****';
     return `...${key.slice(-4)}`;

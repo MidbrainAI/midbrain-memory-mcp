@@ -80,7 +80,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
   try {
     api = await MidbrainApi.create(getClient("opencode"), directory);
     log.info(
-      `INIT: dir=${directory} src=${api.keySource} key=${api.keyFingerprint} ` +
+      `INIT: dir=${directory} src=${api.keySource} ` +
       `host=${api.effectiveApiBase} scope=${api.apiBaseScope}`,
     );
   } catch (err: unknown) {
