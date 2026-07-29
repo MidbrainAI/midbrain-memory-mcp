@@ -171,14 +171,14 @@ and are never edited directly.
 For automation, `--non-interactive` uses one eligible credential only when the
 choice is unambiguous. If detected client credentials differ and no global
 credential exists, the installer exits without writing anything and tells you
-to choose one of these paths:
+to choose one of two effective paths:
+
+- run the installer interactively and select the credential source;
+- pass `--key-source <clientId>` in automation:
 
 ```sh
 # Select one detected client's resolved credential explicitly
 npx midbrain-memory-mcp install --non-interactive --key-source opencode
-
-# Or provide one shared value through the environment
-MIDBRAIN_API_KEY="<credential>" npx midbrain-memory-mcp install --non-interactive
 ```
 
 Project-scoped credentials are never eligible for global promotion. An existing
