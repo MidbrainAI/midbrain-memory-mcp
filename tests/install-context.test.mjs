@@ -18,8 +18,15 @@ import { classifyInstallContext } from "../shared/install-context.mjs";
 const NO_ENV = { env: {} };
 const roots = [];
 
-async function makeDir(structure = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "midbrain-ctx-"));
+// Default fixtures live under os.tmpdir(). Tests that assert the DURABLE
+// (non-tmp) classification must pass a base outside any tmp root, otherwise
+// on Linux (os.tmpdir() === /tmp) the classifier's literal /tmp check wins
+// regardless of the injected tmpdir.
+const NON_TMP_BASE = path.join(process.cwd(), ".tmp-test-fixtures");
+
+async function makeDir(structure = {}, { base = os.tmpdir() } = {}) {
+  await fs.mkdir(base, { recursive: true });
+  const root = await fs.mkdtemp(path.join(base, "midbrain-ctx-"));
   roots.push(root);
   for (const [rel, content] of Object.entries(structure)) {
     const full = path.join(root, rel);
@@ -35,6 +42,8 @@ async function makeDir(structure = {}) {
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((r) => fs.rm(r, { recursive: true, force: true })));
+  // Remove the non-tmp fixture base if it was created, leaving no cwd litter.
+  await fs.rm(NON_TMP_BASE, { recursive: true, force: true }).catch(() => {});
 });
 
 describe("classifyInstallContext — kinds (AC-2)", () => {
@@ -59,12 +68,18 @@ describe("classifyInstallContext — kinds (AC-2)", () => {
   });
 
   it("classifies a directory whose .git is a FILE as worktree", async () => {
-    const dir = await makeDir({ ".git": "gitdir: /somewhere/.git/worktrees/x\n" });
+    const dir = await makeDir(
+      { ".git": "gitdir: /somewhere/.git/worktrees/x\n" },
+      { base: NON_TMP_BASE },
+    );
     expect(classifyInstallContext(dir, { env: {}, tmpdir: "/nonexistent-tmp" }).kind).toBe("worktree");
   });
 
   it("does not classify a .git DIRECTORY as worktree (real checkout → durable)", async () => {
-    const dir = await makeDir({ ".git/HEAD": "ref: refs/heads/main\n" });
+    const dir = await makeDir(
+      { ".git/HEAD": "ref: refs/heads/main\n" },
+      { base: NON_TMP_BASE },
+    );
     expect(classifyInstallContext(dir, { env: {}, tmpdir: "/nonexistent-tmp" }).kind).toBe("durable");
   });
 

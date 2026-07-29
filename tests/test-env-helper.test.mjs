@@ -9,11 +9,31 @@
 
 import { describe, it, expect } from "vitest";
 import fs from "fs/promises";
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from "fs";
 import os from "os";
 import path from "path";
 
 import { makeTestEnv, assertSandboxed, diffSnapshots } from "./helpers/test-env.mjs";
 import { tripwireSurfaces, collectHashes, diffHashes, ABSENT } from "./helpers/global-tripwire.mjs";
+
+// Creating directory symlinks needs privilege on Windows (Developer Mode or an
+// elevated shell). Probe the real capability once so symlink-dependent tests
+// run where supported (Linux, macOS, CI Windows) and skip only where the OS
+// refuses — rather than blanket-skipping on all of win32.
+const CAN_SYMLINK = (() => {
+  let dir;
+  try {
+    dir = mkdtempSync(path.join(os.tmpdir(), "midbrain-symlink-probe-"));
+    const target = path.join(dir, "t");
+    mkdirSync(target);
+    symlinkSync(target, path.join(dir, "l"), "dir");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } }
+  }
+})();
 
 describe("makeTestEnv isolation", () => {
   it("points HOME and adapter env at the sandbox and restores the prior env exactly", async () => {
@@ -81,7 +101,7 @@ describe("makeTestEnv isolation", () => {
     }
   });
 
-  it("assertSandboxed resolves symlinked parents before checking containment", async () => {
+  it.skipIf(!CAN_SYMLINK)("assertSandboxed resolves symlinked parents before checking containment", async () => {
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), "midbrain-prd035-outside-"));
     const env = await makeTestEnv();
     try {

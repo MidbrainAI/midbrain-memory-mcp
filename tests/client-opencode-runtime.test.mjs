@@ -25,6 +25,11 @@ const SHIM_PATH = path.join(REPO_ROOT, "plugins", "opencode", "midbrain-shared.m
 const PLUGIN_PATH = path.join(REPO_ROOT, "plugins", "opencode", "midbrain-memory.ts");
 const PK_ENV = "MIDBRAIN_ENABLE_PK_INJECTION";
 
+function restoreEnv(name, value) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 async function pluginImportedSymbols() {
   const source = await fs.readFile(PLUGIN_PATH, "utf8");
   const match = source.match(/import\s*\{([^}]+)\}\s*from\s*["']\.\/midbrain-shared\.mjs["']/);
@@ -114,18 +119,23 @@ describe("OpenCode plugin bundle", () => {
 
 describe("OpenCode plugin PK delivery helpers", () => {
   let originalHome;
+  let originalUserProfile;
   let originalPkEnv;
   let tempHome;
   let fetchSpy;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
     originalPkEnv = process.env[PK_ENV];
     tempHome = fsSync.mkdtempSync(path.join(os.tmpdir(), "opencode-plugin-home-"));
     const keyDir = path.join(tempHome, ".config", "midbrain");
     fsSync.mkdirSync(keyDir, { recursive: true });
     fsSync.writeFileSync(path.join(keyDir, ".midbrain-key"), "test-key\n", { mode: 0o600 });
+    // os.homedir() reads USERPROFILE on Windows and HOME on POSIX; set both so
+    // the key resolves to the sandbox home on every platform.
     process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
     delete process.env[PK_ENV];
     fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const text = String(url);
@@ -143,7 +153,8 @@ describe("OpenCode plugin PK delivery helpers", () => {
 
   afterEach(() => {
     fetchSpy.mockRestore();
-    process.env.HOME = originalHome;
+    restoreEnv("HOME", originalHome);
+    restoreEnv("USERPROFILE", originalUserProfile);
     if (originalPkEnv === undefined) delete process.env[PK_ENV];
     else process.env[PK_ENV] = originalPkEnv;
     fsSync.rmSync(tempHome, { recursive: true, force: true });

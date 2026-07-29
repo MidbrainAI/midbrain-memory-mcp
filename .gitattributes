@@ -1,0 +1,22 @@
+# Normalize line endings to LF for all text files on checkout and commit.
+# The docs-regression suite byte-compares shipped instruction files against
+# LF-generated rule blocks, so CRLF checkouts (Windows autocrlf) must not leak
+# into the working tree.
+* text=auto eol=lf
+
+# Explicitly force LF for the file types the suite and runtime read verbatim.
+*.md    text eol=lf
+*.mjs   text eol=lf
+*.js    text eol=lf
+*.ts    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+*.toml  text eol=lf
+
+# Binary/generated artifacts: leave untouched.
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.ico   binary
