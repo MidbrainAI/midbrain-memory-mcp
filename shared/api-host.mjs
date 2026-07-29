@@ -44,7 +44,7 @@ export function normalizeApiBase(value) {
     return { error: "invalid URL string" };
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return { error: `unsupported ${parsed.protocol || "unknown"} protocol` };
+    return { error: "unsupported protocol (only http/https)" };
   }
   if (parsed.username || parsed.password) {
     return { error: "must not contain URL credentials" };

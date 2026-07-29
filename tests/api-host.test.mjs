@@ -9,6 +9,7 @@ import path from "node:path";
 import { makeTestEnv } from "./helpers/test-env.mjs";
 import {
   DEFAULT_API_BASE,
+  normalizeApiBase,
   resolveApiHost,
 } from "../shared/api-host.mjs";
 
@@ -48,6 +49,40 @@ describe("resolveApiHost", () => {
       source: "default",
       scope: "default",
     });
+  });
+
+  it("uses a constant error for an unsupported credential-shaped protocol", () => {
+    expect(normalizeApiBase("sk-fake-credential-material:payload")).toEqual({
+      error: "unsupported protocol (only http/https)",
+    });
+  });
+
+  it("never echoes credential-shaped values in emitted source warnings", async () => {
+    const configuredValue = "sk-fake-credential-material:payload";
+
+    process.env.MIDBRAIN_API_URL = configuredValue;
+    await expect(resolveApiHost({
+      clientId: "opencode",
+      projectDir,
+      keyScope: "project",
+    })).resolves.toMatchObject({ scope: "default" });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain(
+      "env:MIDBRAIN_API_URL MIDBRAIN_API_URL",
+    );
+    expect(warn.mock.calls[0][0]).not.toContain("sk-fake");
+
+    delete process.env.MIDBRAIN_API_URL;
+    warn.mockClear();
+    await writeJson(projectConfig, { apiUrl: configuredValue });
+    await expect(resolveApiHost({
+      clientId: "opencode",
+      projectDir,
+      keyScope: "project",
+    })).resolves.toMatchObject({ scope: "default" });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain(`${projectConfig} apiUrl`);
+    expect(warn.mock.calls[0][0]).not.toContain("sk-fake");
   });
 
   it("applies environment > project > client > global precedence", async () => {
