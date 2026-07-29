@@ -4,11 +4,12 @@
  * All filesystem operations are mocked — no real files read or written.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import path from "path";
 import os from "os";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { makeTestEnv } from "./helpers/test-env.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -41,6 +42,7 @@ const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
+const testEnv = await makeTestEnv();
 const { OpenCode, resolveOpencodeConfig } = await import("../shared/clients/opencode.mjs");
 const { PKG_NAME, PKG_VERSION } = await import("../shared/clients/utils.mjs");
 
@@ -58,6 +60,10 @@ const PATHS = {
   opencodeBundle:  path.join(HOME, ".config", "opencode", "plugins", "midbrain-shared.mjs"),
   opencodeMarker:  path.join(HOME, ".config", "opencode", "plugins", ".midbrain-repo-root"),
 };
+
+afterAll(async () => {
+  await testEnv.restore();
+});
 
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);

@@ -4,7 +4,7 @@
  * All filesystem operations are mocked — no real files read or written.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import fsSync from "node:fs";
 import path from "path";
@@ -12,6 +12,7 @@ import os from "os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { makeTestEnv } from "./helpers/test-env.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
 
 const mocks = vi.hoisted(() => ({
@@ -45,6 +46,7 @@ const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
+const testEnv = await makeTestEnv();
 const { Claude } = await import("../shared/clients/claude.mjs");
 const { shimFilename, buildShimBody } = await import("../shared/clients/shim.mjs");
 
@@ -61,6 +63,10 @@ const PATHS = {
   claudeJson:     path.join(HOME, ".claude.json"),
   claudeSettings: path.join(HOME, ".claude", "settings.json"),
 };
+
+afterAll(async () => {
+  await testEnv.restore();
+});
 
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);
