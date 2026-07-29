@@ -21,6 +21,7 @@ import { BaseClient, readKeyFile } from './base.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT,
   home, backup, writeSecure, extractCustomEnv, PINNED_RE, writeFileIfChanged,
+  migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
 import {
   shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
@@ -166,12 +167,23 @@ function isMidbrainHookCommand(command) {
  * Rewrite the mcp_servers.midbrain-memory node in-place on a Document.
  * Preserves a pinned entry and any custom env keys. Returns status.
  */
-function patchMcpEntry(doc, opts) {
+async function patchMcpEntry(doc, opts) {
   const existing = doc.getIn(['mcp_servers', MCP_KEY]);
   const existingJs = existing && typeof existing.toJSON === 'function' ? existing.toJSON() : existing;
   const exists = existingJs != null;
   const pinned = mcpEntryPinned(existingJs);
   const extraEnv = extractCustomEnv(existingJs, 'env');
+  const existingEnv = existingJs?.env;
+  const hostLines = pinned
+    ? [pinnedHostEnvLine(existingJs, 'env')].filter(Boolean)
+    : await migrateReservedHostEnv(existingEnv, {
+        clientId: 'hermes',
+        projectDir: opts.projectDir,
+        source: opts.source,
+      });
+  if (pinned && Object.hasOwn(existingEnv || {}, 'MIDBRAIN_API_URL')) {
+    extraEnv.MIDBRAIN_API_URL = existingEnv.MIDBRAIN_API_URL;
+  }
   const desiredEnv = buildMcpEntry({ ...opts, extraEnv }).env;
   const envChanged = !isDeepStrictEqual(existingJs?.env, desiredEnv);
   if (pinned) {
@@ -181,7 +193,7 @@ function patchMcpEntry(doc, opts) {
   } else {
     doc.setIn(['mcp_servers', MCP_KEY], buildMcpEntry({ ...opts, extraEnv }));
   }
-  return { exists, pinned, envChanged };
+  return { exists, pinned, envChanged, hostLines };
 }
 
 /**
@@ -241,13 +253,17 @@ export class Hermes extends BaseClient {
 
     validateShimPaths({ isDev });
     const doc = await readYamlDoc(cfp);
-    const { exists, pinned, envChanged } = patchMcpEntry(doc, { isDev });
+    const { exists, pinned, envChanged, hostLines } = await patchMcpEntry(doc, {
+      isDev,
+      source: cfp,
+    });
     await patchHooks(doc);
 
     await installShim('hermes', { mode: 'install', isDev });
     await writeYamlDocIfChanged(cfp, doc, { backupFirst: true });
 
     summary.push(formatLine(cfp, exists, pinned, envChanged));
+    summary.push(...hostLines);
     summary.push(`${cfp}: MidBrain capture hooks written (pre_llm_call, post_llm_call)`);
     summary.push(`${stableHookPath()}: stable Hermes hook shim written`);
     summary.push(RESTART_WARNING);
@@ -260,9 +276,13 @@ export class Hermes extends BaseClient {
     const cfp = configPath();
     validateShimPaths({ isDev });
     const doc = await readYamlDoc(cfp);
-    const { exists, pinned, envChanged } = patchMcpEntry(doc, { isDev });
+    const { exists, pinned, envChanged, hostLines } = await patchMcpEntry(doc, {
+      isDev,
+      projectDir: _projectDir,
+      source: cfp,
+    });
     await writeYamlDocIfChanged(cfp, doc, { backupFirst: true });
-    return [formatLine(cfp, exists, pinned, envChanged), RESTART_WARNING];
+    return [formatLine(cfp, exists, pinned, envChanged), ...hostLines, RESTART_WARNING];
   }
 
   projectConfigFiles(_projectDir) {
