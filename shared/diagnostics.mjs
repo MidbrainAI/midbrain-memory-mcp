@@ -58,7 +58,7 @@ export function nextStepsFor(state) {
   const steps = [];
   if (state.probeStatus === "auth-failed (401)") steps.push(AUTH_STEP);
   if (state.pendingEntries > 0) steps.push(CACHE_STEP);
-  if (state.apiBaseScope && !["default", "environment"].includes(state.apiBaseScope)) {
+  if (state.apiBaseScope && state.apiBaseScope !== "default") {
     steps.push(HOST_STEP);
   }
   if (state.shadowNote) steps.push(SHADOW_STEP);

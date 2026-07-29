@@ -148,6 +148,68 @@ describe("MidbrainApi.fetch diagnostics", () => {
   });
 });
 
+describe("MidbrainApi diagnostic output audit", () => {
+  let fetchSpy;
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-output-audit-"));
+    _setCachePath(tmpDir);
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    _setCachePath(null);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("audits the enriched 401 and both capture log-label lines together", async () => {
+    const api = new MidbrainApi("secret-A1b2", "/Users/alice/.midbrain-key", {
+      apiBase: "https://staging.example.test",
+      apiBaseScope: "client",
+      apiBaseSource: "/Users/alice/.config/midbrain/config.json",
+      keyScope: "client",
+    });
+
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: vi.fn().mockResolvedValue("credential ending A1b2 rejected"),
+    });
+    let authError;
+    try {
+      await api.fetch(api.EPISODIC);
+    } catch (error) {
+      authError = error;
+    }
+
+    const networkLog = makeLog();
+    fetchSpy.mockRejectedValueOnce(new Error("network down with credential A1b2"));
+    await api.storeEpisodic("network case", "user", networkLog);
+
+    const statusLog = makeLog();
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: vi.fn().mockResolvedValue("credential ending A1b2 rejected"),
+    });
+    await api.storeEpisodic("status case", "user", statusLog);
+
+    const surfaces = [
+      authError?.message,
+      networkLog.error.mock.calls[0]?.[0],
+      statusLog.error.mock.calls[0]?.[0],
+    ];
+    expect(surfaces).toEqual([
+      "API 401 (auth failed): host=https://staging.example.test key_scope=client — run memory_diagnostics for details",
+      "STORE ERROR: host=https://staging.example.test key_scope=client network-error",
+      "STORE ERROR: status=503 host=https://staging.example.test key_scope=client",
+    ]);
+    expect(surfaces.join("\n")).not.toMatch(/\/Users\/|alice|A1b2|secret-A1b2|key=/i);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // storeEpisodic
 // ---------------------------------------------------------------------------

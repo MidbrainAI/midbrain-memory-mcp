@@ -156,6 +156,20 @@ describe("assembleResolutionFailureReport", () => {
     expect(report).toContain("credential_error: empty file ~/.codex/.midbrain-key");
     expect(report).not.toContain("alice");
   });
+
+  it("sanitizes an unreadable credential file error", () => {
+    const report = assembleResolutionFailureReport({
+      version: "0.4.7",
+      clientId: "codex",
+      homeDir: "/Users/alice",
+      error: new Error(
+        "Permission denied reading key file: /Users/alice/.codex/.midbrain-key",
+      ),
+    });
+    expect(report).toContain("credential_error: unreadable file ~/.codex/.midbrain-key");
+    expect(report).toContain("repair the credential file shown above");
+    expect(report).not.toContain("alice");
+  });
 });
 
 describe("probeApi", () => {
@@ -292,19 +306,28 @@ describe("runMemoryDiagnostics", () => {
   });
 
   it.each([
-    ["client", "/Users/alice/.config/midbrain/config.json"],
-    ["environment", "env:MIDBRAIN_API_URL"],
-  ])("reports custom-host scope %s and a safe source", async (scope, source) => {
+    ["B5", "client", "/Users/alice/.config/midbrain/config.json", "http-4xx"],
+    ["B6", "environment", "env:MIDBRAIN_API_URL", "network-error"],
+  ])("reports %s custom-host scope %s with actionable guidance", async (
+    _scenario,
+    scope,
+    source,
+    expectedProbe,
+  ) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));
     dirs.push(dir);
     _setCachePath(dir);
+    const api = fakeApi({
+      effectiveApiBase: "https://staging.example.test",
+      apiBaseScope: scope,
+      apiBaseSource: source,
+    });
+    api.fetch.mockRejectedValue(
+      expectedProbe === "http-4xx" ? new Error("API 404: not found") : new TypeError("fetch failed"),
+    );
     const report = await runMemoryDiagnostics({
-      probe: false,
-      createApi: async () => fakeApi({
-        effectiveApiBase: "https://staging.example.test",
-        apiBaseScope: scope,
-        apiBaseSource: source,
-      }),
+      probe: true,
+      createApi: async () => api,
       clientId: "codex",
       homeDir: "/Users/alice",
       version: "0.4.7",
@@ -313,6 +336,123 @@ describe("runMemoryDiagnostics", () => {
     expect(report).toContain(
       `api_source: ${scope === "client" ? "~/.config/midbrain/config.json" : source}`,
     );
+    expect(report).toContain(`probe: ${expectedProbe}`);
+    expect(report).toContain("verify the non-default host source shown above is intentional");
     expect(report).not.toContain("alice");
+  });
+
+  it.each([
+    [
+      "B7 no key configured",
+      new Error("No API key configured. Run: npx midbrain-memory-mcp install"),
+      "credential_error: no credential found",
+    ],
+    [
+      "B8 unreadable source",
+      new Error(
+        "Permission denied reading key file: /Users/alice/.config/codex/.midbrain-key",
+      ),
+      "credential_error: unreadable file ~/.config/codex/.midbrain-key",
+    ],
+  ])("reports %s through the diagnostics runner", async (_scenario, error, expected) => {
+    const report = await runMemoryDiagnostics({
+      createApi: async () => { throw error; },
+      clientId: "codex",
+      projectDir: "/Users/alice/project",
+      homeDir: "/Users/alice",
+      version: "0.4.7",
+    });
+    expect(report).toContain(expected);
+    expect(report).toContain("project: ~/project");
+    expect(report).not.toContain("alice");
+  });
+
+  it("reports B9 probe:false with the remaining static diagnostics", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));
+    dirs.push(dir);
+    _setCachePath(dir);
+    const api = fakeApi();
+    const report = await runMemoryDiagnostics({
+      probe: false,
+      createApi: async () => api,
+      clientId: "opencode",
+      projectDir: "/Users/alice/project",
+      homeDir: "/Users/alice",
+      version: "0.4.7",
+    });
+    expect(report).toContain("probe: skipped");
+    expect(report).toContain("api_host: https://memory.midbrain.ai");
+    expect(report).toContain("credential_scope: global");
+    expect(api.fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports B10 with no project directory or placeholder leakage", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-run-"));
+    dirs.push(dir);
+    _setCachePath(dir);
+    const report = await runMemoryDiagnostics({
+      probe: false,
+      createApi: async () => fakeApi(),
+      clientId: "codex",
+      homeDir: "/Users/alice",
+      version: "0.4.7",
+    });
+    expect(report).toContain("project: not configured");
+    expect(report).not.toMatch(/undefined|placeholder/i);
+  });
+
+  it("audits B1-B10 reports together for paths and credential fragments", async () => {
+    const reports = [];
+    const run = async (options = {}) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-audit-"));
+      dirs.push(dir);
+      _setCachePath(dir);
+      if (options.pending) appendToCache({ text: "pending", role: "user" }, "current-binding");
+      const api = fakeApi(options.api);
+      if (options.probeError) api.fetch.mockRejectedValue(options.probeError);
+      reports.push(await runMemoryDiagnostics({
+        probe: options.probe,
+        createApi: options.createApi || (async () => api),
+        clientId: options.clientId || "codex",
+        projectDir: options.projectDir,
+        homeDir: "/Users/alice",
+        logPath: "/Users/alice/Library/Logs/midbrain/midbrain-codex.log",
+        version: "0.4.7",
+      }));
+    };
+
+    await run({ projectDir: "/Users/alice/project" }); // B1
+    await run({ probeError: new Error("API 401 (auth failed): host=x") }); // B2
+    await run({ pending: true }); // B3
+    await run({ api: {
+      credentialShadowNote: "client credential shadows the global credential for this client",
+    } }); // B4
+    await run({ api: {
+      effectiveApiBase: "https://client.example.test",
+      apiBaseScope: "client",
+      apiBaseSource: "/Users/alice/.config/midbrain/config.json",
+    } }); // B5
+    await run({ api: {
+      effectiveApiBase: "https://environment.example.test",
+      apiBaseScope: "environment",
+      apiBaseSource: "env:MIDBRAIN_API_URL",
+    } }); // B6
+    await run({ createApi: async () => {
+      throw new Error("No API key configured. Run: npx midbrain-memory-mcp install");
+    } }); // B7
+    await run({ createApi: async () => {
+      throw new Error(
+        "Permission denied reading key file: /Users/alice/.config/codex/.midbrain-key",
+      );
+    } }); // B8
+    await run({ probe: false }); // B9
+    await run({ projectDir: undefined }); // B10
+
+    expect(reports).toHaveLength(10);
+    for (const report of reports) {
+      expect(report).not.toMatch(/\/Users\/[^/\s]+/);
+      expect(report).not.toMatch(/\b[a-f0-9]{64}\b/i);
+      expect(report).not.toMatch(/A1b2|secret-A1b2|key=/i);
+    }
   });
 });
