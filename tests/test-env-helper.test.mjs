@@ -12,7 +12,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 
-import { makeTestEnv, diffSnapshots } from "./helpers/test-env.mjs";
+import { makeTestEnv, assertSandboxed, diffSnapshots } from "./helpers/test-env.mjs";
 import { tripwireSurfaces, collectHashes, diffHashes, ABSENT } from "./helpers/global-tripwire.mjs";
 
 describe("makeTestEnv isolation", () => {
@@ -46,6 +46,55 @@ describe("makeTestEnv isolation", () => {
     try {
       expect(process.env.CI).toBe("1");
     } finally {
+      await env.restore();
+    }
+  });
+
+  it("manages and restores the test sandbox marker and API URL exactly", async () => {
+    process.env.MIDBRAIN_TEST_SANDBOX = "prior-sandbox";
+    process.env.MIDBRAIN_API_URL = "https://prior.invalid";
+    const env = await makeTestEnv();
+    try {
+      expect(process.env.MIDBRAIN_TEST_SANDBOX).toBe(env.root);
+      expect(process.env.MIDBRAIN_API_URL).toBeUndefined();
+    } finally {
+      await env.restore();
+    }
+    expect(process.env.MIDBRAIN_TEST_SANDBOX).toBe("prior-sandbox");
+    expect(process.env.MIDBRAIN_API_URL).toBe("https://prior.invalid");
+    delete process.env.MIDBRAIN_TEST_SANDBOX;
+    delete process.env.MIDBRAIN_API_URL;
+  });
+
+  it("assertSandboxed accepts inside and relative targets but rejects outside targets", async () => {
+    const env = await makeTestEnv();
+    try {
+      await expect(assertSandboxed(env, path.join(env.home, "inside.key"))).resolves.toBeUndefined();
+      await expect(
+        assertSandboxed(env, path.relative(path.resolve("."), env.paths.globalKey)),
+      ).resolves.toBeUndefined();
+      await expect(assertSandboxed(env, path.join(path.dirname(env.root), "outside.key"))).rejects.toThrow(
+        /outside test sandbox/,
+      );
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it("assertSandboxed resolves symlinked parents before checking containment", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "midbrain-prd035-outside-"));
+    const env = await makeTestEnv();
+    try {
+      const insideLink = path.join(env.root, "inside-link");
+      const outsideLink = path.join(env.root, "outside-link");
+      await fs.symlink(env.home, insideLink, "dir");
+      await fs.symlink(outside, outsideLink, "dir");
+      await expect(assertSandboxed(env, path.join(insideLink, "key"))).resolves.toBeUndefined();
+      await expect(assertSandboxed(env, path.join(outsideLink, "key"))).rejects.toThrow(
+        /outside test sandbox/,
+      );
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
       await env.restore();
     }
   });

@@ -1,15 +1,17 @@
 /**
  * Unit tests for shared/clients/hermes.mjs
  *
- * All filesystem operations are mocked — no real files read or written.
- * The real `yaml` parser is used (mirrors client-codex.test.mjs using real TOML).
+ * Production filesystem operations are mocked for call-shape assertions.
+ * The real sandbox fixture contains fallback writes; the real `yaml` parser is
+ * used (mirrors client-codex.test.mjs using real TOML).
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import path from "path";
 import os from "os";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
+import { makeTestEnv, assertSandboxed } from "./helpers/test-env.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -42,23 +44,36 @@ const { Hermes } = await import("../shared/clients/hermes.mjs");
 const { buildShimBody } = await import("../shared/clients/shim.mjs");
 const YAML = await import("yaml");
 
-const HOME = os.homedir();
 const IS_WIN = process.platform === "win32";
 const HERMES_SHIM_FILE = IS_WIN ? "hermes-hook.cmd" : "hermes-hook";
 const ORIGINAL_HERMES_HOME = process.env.HERMES_HOME;
 const ORIGINAL_LOCALAPPDATA = process.env.LOCALAPPDATA;
-
-const PATHS = {
-  hermesHome:   path.join(HOME, ".hermes"),
-  hermesConfig: path.join(HOME, ".hermes", "config.yaml"),
-  hermesShim:   path.join(HOME, ".midbrain", "bin", HERMES_SHIM_FILE),
-  hermesKey:    path.join(HOME, ".config", "hermes", ".midbrain-key"),
-};
+let testEnv;
+let HOME;
+let PATHS;
 
 // hermesHome() resolves to %LOCALAPPDATA%/hermes on win32 by default; pin
 // HERMES_HOME to ~/.hermes so the adapter and PATHS agree on every platform.
 // Tests that exercise the fallback logic set their own HERMES_HOME/LOCALAPPDATA.
-const PINNED_HERMES_HOME = PATHS.hermesHome;
+let PINNED_HERMES_HOME;
+
+// One sandbox per file keeps mutable env resolution under a throwaway root;
+// mocked fs calls remain available for the adapter's call-shape assertions.
+beforeAll(async () => {
+  testEnv = await makeTestEnv();
+  HOME = testEnv.home;
+  PATHS = {
+    hermesHome: path.join(HOME, ".hermes"),
+    hermesConfig: path.join(HOME, ".hermes", "config.yaml"),
+    hermesShim: path.join(HOME, ".midbrain", "bin", HERMES_SHIM_FILE),
+    hermesKey: path.join(HOME, ".config", "hermes", ".midbrain-key"),
+  };
+  PINNED_HERMES_HOME = PATHS.hermesHome;
+});
+
+afterAll(async () => {
+  await testEnv?.restore();
+});
 
 /** Return the parsed YAML object written to config.yaml (last write). */
 function lastConfigWrite() {
@@ -189,6 +204,7 @@ describe("Hermes.writeKey", () => {
   beforeEach(resetMocks);
 
   it("writes the key with chmod 600", async () => {
+    await assertSandboxed(testEnv, PATHS.hermesKey);
     const msg = await hermes.writeKey("sk-abc");
     expect(mocks.writeFile).toHaveBeenCalledWith(PATHS.hermesKey, "sk-abc\n", "utf8");
     expect(mocks.chmod).toHaveBeenCalledWith(PATHS.hermesKey, 0o600);
@@ -409,8 +425,13 @@ describe("Hermes.installProject", () => {
   const hermes = new Hermes();
   beforeEach(resetMocks);
 
-  const projectDir = path.join(HOME, "work", "acme");
-  const projectConfig = path.join(projectDir, ".hermes", "config.yaml");
+  let projectDir;
+  let projectConfig;
+
+  beforeAll(() => {
+    projectDir = path.join(HOME, "work", "acme");
+    projectConfig = path.join(projectDir, ".hermes", "config.yaml");
+  });
 
   it("patches the active Hermes config with dynamic project scope", async () => {
     const summary = await hermes.installProject(projectDir);
@@ -502,7 +523,7 @@ describe("Hermes.isFresh / repairHooks", () => {
     const savedHermesHome = process.env.HERMES_HOME;
     try {
       process.env.HERMES_HOME = path.join(HOME, "hermes-win-fixture");
-      const shim = path.join(os.homedir(), ".midbrain", "bin", "hermes-hook.cmd");
+      const shim = path.join(HOME, ".midbrain", "bin", "hermes-hook.cmd");
       // Serialize with the real YAML writer so backslashes in the Windows shim
       // path are escaped exactly as the adapter writes them (a hand-written
       // double-quoted scalar would mis-escape \U, \b, etc. and not round-trip).

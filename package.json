@@ -53,7 +53,7 @@
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run build:plugin && eslint . && vitest run && bash scripts/check-pinned-spec.sh",
+    "check": "npm run build:plugin && eslint . && vitest run && bash scripts/check-pinned-spec.sh && bash scripts/check-test-isolation.sh",
     "prepublishOnly": "npm run build:plugin && node -e \"JSON.parse(require('fs').readFileSync('package.json','utf8'))\""
   },
   "lint-staged": {

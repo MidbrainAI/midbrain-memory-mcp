@@ -12,10 +12,14 @@
  * tests do not self-skip when the suite runs on a real CI runner.
  */
 
-import fs from 'fs/promises';
 import { createHash } from 'crypto';
+import { createRequire } from 'module';
 import os from 'os';
 import path from 'path';
+
+// Load the real builtin through CJS so Vitest ESM mocks in adapter tests cannot
+// replace the sandbox fixture's own filesystem operations.
+const fs = createRequire(import.meta.url)('node:fs/promises');
 
 /** Env vars that influence where midbrain code reads/writes. All managed. */
 const MANAGED_ENV_KEYS = [
@@ -38,6 +42,8 @@ const MANAGED_ENV_KEYS = [
   'MIDBRAIN_CLIENT',
   'MIDBRAIN_CONFIG_DIR',
   'MIDBRAIN_API_KEY',
+  'MIDBRAIN_API_URL',
+  'MIDBRAIN_TEST_SANDBOX',
   'MIDBRAIN_ENABLE_PK_INJECTION',
   'MIDBRAIN_DEV',
   'CI',
@@ -89,6 +95,8 @@ export async function makeTestEnv(opts = {}) {
     MIDBRAIN_CLIENT: undefined,
     MIDBRAIN_CONFIG_DIR: undefined,
     MIDBRAIN_API_KEY: undefined,
+    MIDBRAIN_API_URL: undefined,
+    MIDBRAIN_TEST_SANDBOX: root,
     MIDBRAIN_ENABLE_PK_INJECTION: undefined,
     MIDBRAIN_DEV: undefined,
     CI: undefined,
@@ -136,6 +144,39 @@ export async function makeTestEnv(opts = {}) {
       await fs.rm(root, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Fail unless a path resolves inside a test sandbox.
+ *
+ * @param {TestEnv} env
+ * @param {string} filePath
+ */
+export async function assertSandboxed(env, filePath) {
+  const canonicalRoot = normalizePathCase(await fs.realpath(env.root));
+  const canonicalTarget = normalizePathCase(await resolveRealTarget(path.resolve(filePath)));
+  const relative = path.relative(canonicalRoot, canonicalTarget);
+  const escaped = relative === '..' ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative);
+  if (escaped) {
+    throw new Error(`Credential target resolves outside test sandbox: ${filePath}`);
+  }
+}
+
+async function resolveRealTarget(target) {
+  try {
+    return await fs.realpath(target);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    const parent = path.dirname(target);
+    if (parent === target) return target;
+    return path.join(await resolveRealTarget(parent), path.basename(target));
+  }
+}
+
+function normalizePathCase(value) {
+  return process.platform === 'win32' ? value.toLowerCase() : value;
 }
 
 /** Well-known sandbox file locations, mirroring each adapter's resolution. */
