@@ -240,7 +240,7 @@ describe("memory_setup_project — Codex project config", () => {
     savedHome = process.env.HOME;
     savedUserProfile = process.env.USERPROFILE;
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-home-"));
-    projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-project-")));
+    projectDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-codex-project-")));
     fs.mkdirSync(path.join(fakeHome, ".codex"), { recursive: true });
     process.env.HOME = fakeHome;
     // os.homedir() honors USERPROFILE on Windows, HOME on POSIX; set both so
@@ -525,7 +525,7 @@ describe("memory_setup_project — config file integration", () => {
   let fakeHome;
 
   beforeEach(() => {
-    tmpProjectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-project-test-")));
+    tmpProjectDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-project-test-")));
     savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
 
     // Isolate HOME so tests never touch the real ~/.claude.json or ~/.config/opencode.
@@ -1105,7 +1105,7 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
   let fakeHome;
 
   beforeEach(() => {
-    tmpProjectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-migrate-")));
+    tmpProjectDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-migrate-")));
     savedConfigDir = process.env.MIDBRAIN_CONFIG_DIR;
     savedHome = process.env.HOME;
     savedUserProfile = process.env.USERPROFILE;
