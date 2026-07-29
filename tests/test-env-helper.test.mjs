@@ -9,11 +9,31 @@
 
 import { describe, it, expect } from "vitest";
 import fs from "fs/promises";
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from "fs";
 import os from "os";
 import path from "path";
 
-import { makeTestEnv, diffSnapshots } from "./helpers/test-env.mjs";
+import { makeTestEnv, assertSandboxed, diffSnapshots } from "./helpers/test-env.mjs";
 import { tripwireSurfaces, collectHashes, diffHashes, ABSENT } from "./helpers/global-tripwire.mjs";
+
+// Creating directory symlinks needs privilege on Windows (Developer Mode or an
+// elevated shell). Probe the real capability once so symlink-dependent tests
+// run where supported (Linux, macOS, CI Windows) and skip only where the OS
+// refuses — rather than blanket-skipping on all of win32.
+const CAN_SYMLINK = (() => {
+  let dir;
+  try {
+    dir = mkdtempSync(path.join(os.tmpdir(), "midbrain-symlink-probe-"));
+    const target = path.join(dir, "t");
+    mkdirSync(target);
+    symlinkSync(target, path.join(dir, "l"), "dir");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } }
+  }
+})();
 
 describe("makeTestEnv isolation", () => {
   it("points HOME and adapter env at the sandbox and restores the prior env exactly", async () => {
@@ -46,6 +66,55 @@ describe("makeTestEnv isolation", () => {
     try {
       expect(process.env.CI).toBe("1");
     } finally {
+      await env.restore();
+    }
+  });
+
+  it("manages and restores the test sandbox marker and API URL exactly", async () => {
+    process.env.MIDBRAIN_TEST_SANDBOX = "prior-sandbox";
+    process.env.MIDBRAIN_API_URL = "https://prior.invalid";
+    const env = await makeTestEnv();
+    try {
+      expect(process.env.MIDBRAIN_TEST_SANDBOX).toBe(env.root);
+      expect(process.env.MIDBRAIN_API_URL).toBeUndefined();
+    } finally {
+      await env.restore();
+    }
+    expect(process.env.MIDBRAIN_TEST_SANDBOX).toBe("prior-sandbox");
+    expect(process.env.MIDBRAIN_API_URL).toBe("https://prior.invalid");
+    delete process.env.MIDBRAIN_TEST_SANDBOX;
+    delete process.env.MIDBRAIN_API_URL;
+  });
+
+  it("assertSandboxed accepts inside and relative targets but rejects outside targets", async () => {
+    const env = await makeTestEnv();
+    try {
+      await expect(assertSandboxed(env, path.join(env.home, "inside.key"))).resolves.toBeUndefined();
+      await expect(
+        assertSandboxed(env, path.relative(path.resolve("."), env.paths.globalKey)),
+      ).resolves.toBeUndefined();
+      await expect(assertSandboxed(env, path.join(path.dirname(env.root), "outside.key"))).rejects.toThrow(
+        /outside test sandbox/,
+      );
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it.skipIf(!CAN_SYMLINK)("assertSandboxed resolves symlinked parents before checking containment", async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "midbrain-prd035-outside-"));
+    const env = await makeTestEnv();
+    try {
+      const insideLink = path.join(env.root, "inside-link");
+      const outsideLink = path.join(env.root, "outside-link");
+      await fs.symlink(env.home, insideLink, "dir");
+      await fs.symlink(outside, outsideLink, "dir");
+      await expect(assertSandboxed(env, path.join(insideLink, "key"))).resolves.toBeUndefined();
+      await expect(assertSandboxed(env, path.join(outsideLink, "key"))).rejects.toThrow(
+        /outside test sandbox/,
+      );
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
       await env.restore();
     }
   });

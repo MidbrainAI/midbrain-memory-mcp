@@ -124,6 +124,23 @@ Rules:
 - Reroll the user key via `midbrain-memory-mcp@latest user-key set` (stderr
   prompt) or `set_user_api_key`.
 
+## API Host Resolution
+
+The normative host precedence and security contract lives in
+`shared/api-host.mjs`:
+
+1. `MIDBRAIN_API_URL`
+2. `<projectDir>/.midbrain/config.json` `apiUrl`
+3. `~/.config/midbrain/config.json` `clients.<clientId>.apiUrl`
+4. `~/.config/midbrain/config.json` `apiUrl`
+5. `https://memory.midbrain.ai`
+
+`MidbrainApi.create()` resolves the credential first, then the host. A project
+host is valid only with a project-scope credential. Consumers use the instance
+endpoint/getter surface; compatibility statics are not authoritative for a
+live binding. `MIDBRAIN_API_URL` is reserved in rebuilt MCP entry env blocks
+and migrates scope-preservingly to the files above.
+
 Key-write policy at install time:
 
 - Global install writes only `~/.config/midbrain/.midbrain-key` by default and

@@ -1,1 +1,1 @@
-npx lint-staged && npm test
+npx lint-staged && bash scripts/check-test-isolation.sh --static-only && npm test

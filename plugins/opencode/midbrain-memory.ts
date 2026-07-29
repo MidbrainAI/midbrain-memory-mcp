@@ -79,7 +79,10 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
   let api: InstanceType<typeof MidbrainApi>;
   try {
     api = await MidbrainApi.create(getClient("opencode"), directory);
-    log.info(`INIT: dir=${directory} src=${api.keySource} key=${api.keyFingerprint}`);
+    log.info(
+      `INIT: dir=${directory} src=${api.keySource} key=${api.keyFingerprint} ` +
+      `host=${api.effectiveApiBase} scope=${api.apiBaseScope}`,
+    );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error(`INIT ERROR: ${msg}`);

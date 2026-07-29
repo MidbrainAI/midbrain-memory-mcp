@@ -56,6 +56,11 @@ const {
 const TARGET      = "/tmp/test-project/AGENTS.md";
 const PROJECT_DIR = "/tmp/test-project";
 
+// These tests feed POSIX-style absolute paths and assert on the produced
+// paths. path.join() emits "\" on Windows, so normalize separators before
+// comparing (the separator is not what these tests are asserting).
+const slash = (p) => p.replaceAll("\\", "/");
+
 // ===================================================================
 // buildRulesBlock
 // ===================================================================
@@ -324,14 +329,14 @@ describe("writeGlobalRules", () => {
       nanoclawRoot: "/srv/nanoclaw",
     });
 
-    expect(results.map((r) => r.path).sort()).toEqual([
-      path.join("/home/tester", ".claude", "CLAUDE.md"),
-      path.join("/home/tester", ".codex", "AGENTS.md"),
-      path.join("/home/tester", ".config", "opencode", "AGENTS.md"),
-      path.join("/profiles/hermes", "SOUL.md"),
-      path.join("/srv/nanoclaw", "container", "CLAUDE.md"),
-      path.join("/srv/nanoclaw", "groups", "main", "CLAUDE.local.md"),
-      path.join("/srv/nanoclaw", "groups", "worker", "CLAUDE.local.md"),
+    expect(results.map((r) => slash(r.path)).sort()).toEqual([
+      "/home/tester/.claude/CLAUDE.md",
+      "/home/tester/.codex/AGENTS.md",
+      "/home/tester/.config/opencode/AGENTS.md",
+      "/profiles/hermes/SOUL.md",
+      "/srv/nanoclaw/container/CLAUDE.md",
+      "/srv/nanoclaw/groups/main/CLAUDE.local.md",
+      "/srv/nanoclaw/groups/worker/CLAUDE.local.md",
     ].sort());
   });
 
@@ -343,10 +348,10 @@ describe("writeGlobalRules", () => {
       clients: ["nanoclaw"],
       nanoclawRoot: "/srv/nanoclaw",
     });
-    const paths = mocks.writeFile.mock.calls.map(([filePath]) => filePath);
-    expect(paths).toContain(path.join("/srv/nanoclaw", "container", "CLAUDE.md"));
-    expect(paths).toContain(path.join("/srv/nanoclaw", "groups", "main", "CLAUDE.local.md"));
-    expect(paths).not.toContain(path.join("/srv/nanoclaw", "groups", "main", "CLAUDE.md"));
+    const paths = mocks.writeFile.mock.calls.map(([filePath]) => slash(filePath));
+    expect(paths).toContain("/srv/nanoclaw/container/CLAUDE.md");
+    expect(paths).toContain("/srv/nanoclaw/groups/main/CLAUDE.local.md");
+    expect(paths).not.toContain("/srv/nanoclaw/groups/main/CLAUDE.md");
   });
 
   it("T-19c: missing NanoClaw groups directory still updates shared rules", async () => {
@@ -356,8 +361,8 @@ describe("writeGlobalRules", () => {
       clients: ["nanoclaw"],
       nanoclawRoot: "/srv/nanoclaw",
     });
-    expect(results.map((r) => r.path)).toEqual([
-      path.join("/srv/nanoclaw", "container", "CLAUDE.md"),
+    expect(results.map((r) => slash(r.path))).toEqual([
+      "/srv/nanoclaw/container/CLAUDE.md",
     ]);
   });
 });

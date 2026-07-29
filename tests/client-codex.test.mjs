@@ -1,14 +1,15 @@
 /**
  * Unit tests for shared/clients/codex.mjs
  *
- * All filesystem operations are mocked — no real files read or written.
+ * Production filesystem operations are mocked for call-shape assertions.
+ * The real sandbox fixture contains any fallback if a mock fails to attach.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vitest";
 import path from "path";
-import os from "os";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
+import { makeTestEnv, assertSandboxed } from "./helpers/test-env.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -43,16 +44,26 @@ const { Codex } = await import("../shared/clients/codex.mjs");
 const { buildShimBody } = await import("../shared/clients/shim.mjs");
 const TOML = await import("smol-toml");
 
-const HOME = os.homedir();
 const IS_WIN = process.platform === "win32";
+let testEnv;
+let PATHS;
 
-const PATHS = {
-  codexDir:    path.join(HOME, ".codex"),
-  codexConfig: path.join(HOME, ".codex", "config.toml"),
-  codexHooks:  path.join(HOME, ".codex", "hooks.json"),
-  codexShim:   path.join(HOME, ".midbrain", "bin", "codex-hook"),
-  codexKey:    path.join(HOME, ".config", "codex", ".midbrain-key"),
-};
+// One sandbox per file is sufficient: filesystem behavior remains mocked for
+// call-shape assertions, while HOME redirection protects any real-fs fallback.
+beforeAll(async () => {
+  testEnv = await makeTestEnv();
+  PATHS = {
+    codexDir: path.join(testEnv.home, ".codex"),
+    codexConfig: path.join(testEnv.home, ".codex", "config.toml"),
+    codexHooks: path.join(testEnv.home, ".codex", "hooks.json"),
+    codexShim: path.join(testEnv.home, ".midbrain", "bin", "codex-hook"),
+    codexKey: path.join(testEnv.home, ".config", "codex", ".midbrain-key"),
+  };
+});
+
+afterAll(async () => {
+  await testEnv?.restore();
+});
 
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);
@@ -135,6 +146,7 @@ describe("Codex.writeKey", () => {
   beforeEach(resetMocks);
 
   it("writes the per-client key with chmod 600", async () => {
+    await assertSandboxed(testEnv, PATHS.codexKey);
     const line = await codex.writeKey("codex-secret");
 
     expect(fs.mkdir).toHaveBeenCalledWith(path.dirname(PATHS.codexKey), { recursive: true });
