@@ -43,6 +43,29 @@ export async function writeGlobalKeystore(ks) {
   await writeKeystore(globalKeystorePath(), ks);
 }
 
+// In-process serialization for read-modify-write cycles so concurrent updates
+// (e.g. two account tool calls) cannot clobber each other by interleaving a
+// read against a stale copy. Cross-process safety still relies on the atomic
+// rename in the guarded writer.
+let keystoreMutation = Promise.resolve();
+
+/**
+ * Atomically read-modify-write the global keystore under an in-process lock.
+ * @param {(ks: object) => object|Promise<object>} mutate  Returns the new keystore.
+ * @returns {Promise<object>} The written keystore.
+ */
+export async function mutateGlobalKeystore(mutate) {
+  const run = keystoreMutation.then(async () => {
+    const current = await readGlobalKeystore();
+    const next = await mutate(current);
+    await writeGlobalKeystore(next);
+    return next;
+  });
+  // Keep the chain alive even if this mutation rejects.
+  keystoreMutation = run.catch(() => {});
+  return run;
+}
+
 /** An empty, well-formed keystore object. */
 export function emptyKeystore() {
   return { version: KEYSTORE_VERSION, agents: {} };
@@ -75,15 +98,17 @@ export async function readKeystore(filePath) {
 }
 
 /**
- * Write a keystore object with chmod 600 (creates parent dirs).
+ * Write a keystore object through the guarded writer (symlink-reject, 0700
+ * parent dir, atomic mode-0600 write, backup-before-replace, test-sandbox
+ * guard). The guarded writer is imported lazily to avoid a module-eval import
+ * cycle (base.mjs -> keystore.mjs), since it transitively imports base.mjs.
  * @param {string} filePath
  * @param {object} data
  */
 export async function writeKeystore(filePath, data) {
   const normalized = normalize(data);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(normalized, null, 2) + '\n', 'utf8');
-  await fs.chmod(filePath, 0o600);
+  const { writeKeystoreFile } = await import('./clients/credential-writer.mjs');
+  await writeKeystoreFile(filePath, normalized);
 }
 
 /** Ensure required shape (version + agents object) without dropping unknown keys. */

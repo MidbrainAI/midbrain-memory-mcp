@@ -2379,7 +2379,7 @@ describe("account management tools", () => {
     expect(res.content[0].text).toContain("Work (agent_1)");
   });
 
-  it("create_agent creates agent + key, catalogs masked, never echoes secret", async () => {
+  it("create_agent creates agent + key, catalogs it, and never echoes any secret fragment", async () => {
     mockAccountFetch(async (url, opts) => {
       if (url.endsWith("/api/v1/account/agents") && opts.method === "POST") {
         return { ok: true, status: 201, json: async () => ({ agent_id: "agent_9", name: "New" }), text: async () => "" };
@@ -2397,8 +2397,10 @@ describe("account management tools", () => {
     });
     const text = res.content[0].text;
     expect(text).toContain("agent_9");
-    expect(text).toContain("...abcd");            // masked
-    expect(text).not.toContain("sk-supersecret");  // never echoed
+    // Privacy contract: no key material, no fragment, no last-four suffix.
+    expect(text).not.toContain("sk-supersecret");
+    expect(text).not.toContain("abcd");
+    expect(text).not.toContain("...");
     // Both agent + its key cataloged locally.
     const ks = readKeystore();
     expect(ks.agents.agent_9.agent_key).toBe("sk-supersecret-abcd");
@@ -2406,6 +2408,50 @@ describe("account management tools", () => {
     // Never a selector: no active/default pointer written.
     expect(ks.active_agent_id).toBeUndefined();
     expect(ks.default_agent_id).toBeUndefined();
+  });
+
+  it("create_agent preflights the keystore and never mints when it is corrupt", async () => {
+    // Seed a corrupt keystore so the preflight read throws BEFORE any network
+    // call — proving no agent/key is minted (and thus never orphaned).
+    fs.mkdirSync(path.dirname(keystoreFile()), { recursive: true });
+    fs.writeFileSync(keystoreFile(), "{ not valid json ");
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const res = await acClient.callTool({ name: "create_agent", arguments: { name: "New" } });
+    expect(fetchSpy).not.toHaveBeenCalled(); // no mint attempted
+    expect(res.content[0].text).toMatch(/Failed to create agent/i);
+    fetchSpy.mockRestore();
+  });
+
+  it("set_agent refuses to overwrite an existing project key with a different agent without replace", async () => {
+    fs.mkdirSync(path.dirname(keystoreFile()), { recursive: true });
+    fs.writeFileSync(keystoreFile(), JSON.stringify({
+      version: 1,
+      agents: {
+        agent_1: { agent_key: "sk-1", alias: "Work", key_provider: "midbrain" },
+        agent_2: { agent_key: "sk-2", alias: "Personal", key_provider: "midbrain" },
+      },
+    }));
+    const projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mcp-setagent-replace-")));
+    try {
+      // First set succeeds (no prior key).
+      await acClient.callTool({ name: "set_agent", arguments: { agent: "work", project_dir: projectDir } });
+      // Switching to a DIFFERENT agent without replace must be refused.
+      const refused = await acClient.callTool({ name: "set_agent", arguments: { agent: "personal", project_dir: projectDir } });
+      expect(refused.content[0].text).toMatch(/replace: true/i);
+      // Existing key unchanged after refusal.
+      let projKey = fs.readFileSync(path.join(projectDir, ".midbrain", ".midbrain-key"), "utf8").trim();
+      expect(projKey).toBe("sk-1");
+      // With replace: true it goes through.
+      const ok = await acClient.callTool({
+        name: "set_agent",
+        arguments: { agent: "personal", project_dir: projectDir, replace: true },
+      });
+      expect(ok.content[0].text).toContain("agent_2");
+      projKey = fs.readFileSync(path.join(projectDir, ".midbrain", ".midbrain-key"), "utf8").trim();
+      expect(projKey).toBe("sk-2");
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
   });
 
   it("set_agent writes a PROJECT .midbrain-key and never the global one", async () => {
@@ -2456,7 +2502,7 @@ describe("account management tools", () => {
     expect(res.content[0].text).toContain("agent_2");
   });
 
-  it("set_user_api_key persists masked without any network validation", async () => {
+  it("set_user_api_key persists the key without network validation or echoing a fragment", async () => {
     delete process.env.MIDBRAIN_USER_API_KEY; // force keystore-only resolution afterwards
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const res = await acClient.callTool({
@@ -2464,7 +2510,12 @@ describe("account management tools", () => {
       arguments: { user_api_key: "sk-new-user-wxyz" },
     });
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(res.content[0].text).toContain("...wxyz");
+    // Privacy contract: confirmation must not contain the key or any fragment.
+    const text = res.content[0].text;
+    expect(text).not.toContain("sk-new-user-wxyz");
+    expect(text).not.toContain("wxyz");
+    expect(text).not.toContain("...");
+    expect(text).toContain("User API key saved");
     expect(readKeystore().user_key).toBe("sk-new-user-wxyz");
     fetchSpy.mockRestore();
   });

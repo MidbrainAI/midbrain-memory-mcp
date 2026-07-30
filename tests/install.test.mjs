@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => {
     access:     vi.fn().mockResolvedValue(undefined),
     existsSync: vi.fn(() => false),
     writeCredential: vi.fn(),
+    writeKeystoreFile: vi.fn(),
     deviceCodeLogin: vi.fn(),
     readlineAnswers: [],
     readlineQuestions: [],
@@ -40,6 +41,12 @@ const mocks = vi.hoisted(() => {
     await state.mkdir(targetPath.slice(0, slash), { recursive: true });
     await state.writeFile(targetPath, `${key}\n`, 'utf8');
     await state.chmod(targetPath, 0o600);
+    return { action: 'written', backupPath: null };
+  });
+  // Guarded keystore writer: record the JSON payload via the mocked writeFile
+  // so unit tests can inspect what was persisted.
+  state.writeKeystoreFile.mockImplementation(async (targetPath, data) => {
+    await state.writeFile(targetPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
     return { action: 'written', backupPath: null };
   });
   return state;
@@ -73,6 +80,7 @@ vi.mock("../shared/device-auth.mjs", () => ({
 }));
 vi.mock("../shared/clients/credential-writer.mjs", () => ({
   writeCredential: mocks.writeCredential,
+  writeKeystoreFile: mocks.writeKeystoreFile,
 }));
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
@@ -1672,9 +1680,12 @@ describe("runUserKeyCli — user-key set", () => {
     const ksWrite = fs.writeFile.mock.calls.find(([p]) => String(p).endsWith(".midbrain-keystore.json"));
     expect(ksWrite).toBeDefined();
     expect(JSON.parse(ksWrite[1]).user_key).toBe("sk-user-1234");
-    // Never prints the full secret; only masked.
-    expect(errSpy.mock.calls.flat().join(" ")).toContain("...1234");
-    expect(errSpy.mock.calls.flat().join(" ")).not.toContain("sk-user-1234");
+    // Privacy contract: the confirmation must not echo the key or any fragment.
+    const stderr = errSpy.mock.calls.flat().join(" ");
+    expect(stderr).not.toContain("sk-user-1234");
+    expect(stderr).not.toContain("1234");
+    expect(stderr).not.toContain("...");
+    expect(stderr).toContain("User API key saved");
   });
 
   it("does not make any network call when storing the key", async () => {

@@ -15,6 +15,8 @@ const TEST_SANDBOX_ENV = 'MIDBRAIN_TEST_SANDBOX';
 const CLIENT_IDS = new Set(['opencode', 'claude', 'codex', 'nanoclaw', 'hermes']);
 const CORRUPT_KEY_RE = /[\0\uFFFD]/;
 const FILE_MODE = 0o600;
+const DIR_MODE = 0o700;
+const KEYSTORE_FILENAME = '.midbrain-keystore.json';
 
 // The real user home is resolved independently of HOME/USERPROFILE overrides so
 // the test guard can reject a sandbox that would encompass the developer's
@@ -151,13 +153,19 @@ async function readExisting(targetPath) {
   }
 }
 
-async function atomicWrite(targetPath, key) {
+/**
+ * Atomically write exact bytes to `targetPath` with mode 0600 from the first
+ * byte, creating the parent directory (0700), via a temp file + rename.
+ * @param {string} targetPath
+ * @param {string} contents
+ */
+async function atomicWriteBytes(targetPath, contents) {
   const tempPath = `${targetPath}.tmp`;
   let handle;
   try {
-    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.mkdir(path.dirname(targetPath), { recursive: true, mode: DIR_MODE });
     handle = await fs.open(tempPath, 'wx', FILE_MODE);
-    await handle.writeFile(`${key}\n`, 'utf8');
+    await handle.writeFile(contents, 'utf8');
     await handle.chmod(FILE_MODE);
     await handle.close();
     handle = null;
@@ -172,6 +180,10 @@ async function atomicWrite(targetPath, key) {
       cause: err,
     });
   }
+}
+
+async function atomicWrite(targetPath, key) {
+  await atomicWriteBytes(targetPath, `${key}\n`);
 }
 
 function backupTimestamp(now) {
@@ -249,5 +261,74 @@ export async function writeCredential({
 
   const backupPath = existing === null ? null : await backupCredential(targetPath);
   await atomicWrite(targetPath, normalizedKey);
+  return { action: 'written', backupPath };
+}
+
+/** The only permitted keystore target: the global keystore path. */
+function expectedKeystorePath() {
+  return path.join(os.homedir(), '.config', 'midbrain', KEYSTORE_FILENAME);
+}
+
+/**
+ * Reject a target that is itself a symlink (an attacker-planted
+ * `.midbrain-keystore.json` symlink must not redirect a 0600 write onto an
+ * unrelated file). Missing target is fine (first write).
+ */
+async function rejectSymlinkTarget(targetPath) {
+  let stat;
+  try {
+    stat = await fs.lstat(targetPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw new CredentialWriteError(`Cannot stat keystore target: ${targetPath}`, {
+      category: 'path-resolution-failed', targetPath, cause: err,
+    });
+  }
+  if (stat.isSymbolicLink()) {
+    throw new CredentialTargetError(`Keystore target is a symlink (refused): ${targetPath}`, {
+      category: 'symlink-target', targetPath,
+    });
+  }
+}
+
+/**
+ * Persist a structured keystore object through the same guarded path as key
+ * files: test-sandbox guard, canonical-target validation, symlink rejection,
+ * 0700 parent dir, atomic mode-0600 write, and a backup before replacement.
+ *
+ * Unlike writeCredential (single-line key files), this always overwrites in
+ * place — a keystore is a mutable structured document — but still backs up the
+ * previous file first. Callers should read-modify-write to avoid clobbering.
+ *
+ * @param {string} targetPath  Must equal the global keystore path.
+ * @param {object} data        Keystore object (serialized as pretty JSON).
+ * @returns {Promise<{action: 'written', backupPath: string|null}>}
+ */
+export async function writeKeystoreFile(targetPath, data) {
+  await enforceTestGuard(targetPath);
+
+  const expected = expectedKeystorePath();
+  if (await prospectiveRealpath(expected) !== await prospectiveRealpath(targetPath)) {
+    throw new CredentialTargetError(
+      `Keystore target does not match the global keystore path: ${targetPath}`,
+      { category: 'invalid-target', targetPath },
+    );
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new CredentialWriteError(`Keystore payload must be a JSON object: ${targetPath}`, {
+      category: 'invalid-keystore', targetPath,
+    });
+  }
+
+  await rejectSymlinkTarget(targetPath);
+
+  let existed = true;
+  try {
+    await fs.access(targetPath);
+  } catch {
+    existed = false;
+  }
+  const backupPath = existed ? await backupCredential(targetPath) : null;
+  await atomicWriteBytes(targetPath, `${JSON.stringify(data, null, 2)}\n`);
   return { action: 'written', backupPath };
 }

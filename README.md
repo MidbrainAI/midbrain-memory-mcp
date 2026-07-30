@@ -493,10 +493,11 @@ stderr so the secret stays out of shell history and any assistant transcript.
 (Passing the key inline as `user-key set <key>` works for scripts/CI but records
 it in shell history.) The `set_user_api_key` MCP tool is also available.
 
-Typical flow: `create_agent` (creates an agent, mints its key, catalogs both in
-the keystore masked — the raw key is never echoed) → `set_agent` (writes the
-chosen agent's key into a project's `.midbrain-key`, never the global one). This
-gives each project its own agent without cross-project interference.
+Typical flow: `create_agent` (creates an agent, mints its key, and catalogs both
+in the keystore — the raw key is stored at rest under chmod 600 and is never
+echoed in tool output) → `set_agent` (writes the chosen agent's key into a
+project's `.midbrain-key`, never the global one). This gives each project its
+own agent without cross-project interference.
 
 By default the installer writes a single global key at
 `~/.config/midbrain/.midbrain-key` and relies on the resolution chain above —

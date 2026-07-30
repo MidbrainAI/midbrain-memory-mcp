@@ -30,10 +30,6 @@ const API_BASE = process.env.MIDBRAIN_API_URL || DEFAULT_API_BASE;
 const API_BASE_SCOPE = API_BASE_FROM_ENV ? "environment" : "default";
 const API_BASE_SOURCE = API_BASE_FROM_ENV ? "env:MIDBRAIN_API_URL" : "default";
 
-// Account endpoints (PR #37) — user-key scoped, derived from the resolved base.
-const API_V1 = `${API_BASE}/api/v1`;
-const API_ACCOUNT = `${API_V1}/account`;
-
 function buildEndpoints(apiBase) {
   const apiV1 = `${apiBase}/api/v1`;
   return {
@@ -55,6 +51,26 @@ const PK_DEFAULT_TIMEOUT_MS = 2000;
 
 const DEFAULT_SEARCH_LIMIT = 10;
 const PRODUCT_USER_AGENT = "midbrain-memory-mcp";
+const ERROR_BODY_MAX = 200;
+
+/**
+ * Bound and sanitize an account-API error body before surfacing it: cap the
+ * length and strip bearer tokens / sk-style secrets so a server error can never
+ * echo a credential fragment through MCP output.
+ * @param {string} text
+ * @returns {string} A short, safe `: <detail>` suffix, or "".
+ */
+function sanitizeErrorBody(text) {
+  if (!text) return "";
+  let clean = String(text)
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
+    .replace(/\b(sk|mb|pk)[-_][A-Za-z0-9._-]{6,}/gi, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return "";
+  if (clean.length > ERROR_BODY_MAX) clean = `${clean.slice(0, ERROR_BODY_MAX)}…`;
+  return `: ${clean}`;
+}
 
 async function inspectCredentialScopes(client, projectDir, result) {
   if (typeof client.inspectCredentialScopes !== "function") {
@@ -141,7 +157,17 @@ export class MidbrainApi {
         "or `npx midbrain-memory-mcp@latest user-key set`.",
       );
     }
-    return new MidbrainApi(result.key, result.source);
+    // The user key is a global credential, so resolve the host at global scope
+    // (never a project host). Binding the host here means account requests go
+    // to the user's configured origin instead of the default, so a self-hosted
+    // or pinned user never leaks their account credential to memory.midbrain.ai.
+    const host = await resolveApiHost({ clientId: client.id, keyScope: "global" });
+    return new MidbrainApi(result.key, result.source, {
+      apiBase: host.url,
+      apiBaseScope: host.scope,
+      apiBaseSource: host.source,
+      keyScope: "global",
+    });
   }
 
   /** Key source label (for debug logging). */
@@ -359,6 +385,11 @@ export class MidbrainApi {
   // account USER API key (see MidbrainApi.createForUser). They let the caller
   // manage agents and agent API keys.
 
+  /** Account surface (/api/v1/account) derived from THIS instance's base. */
+  get #accountBase() {
+    return `${this.#apiBase}/api/v1/account`;
+  }
+
   /**
    * Authenticated JSON request against the account surface.
    * @param {string} method   HTTP method.
@@ -373,15 +404,17 @@ export class MidbrainApi {
     };
     if (body !== undefined) headers["Content-Type"] = "application/json";
 
-    const response = await fetch(`${API_ACCOUNT}${suffix}`, {
+    // Build the URL from the instance base (resolved per user-key scope), never
+    // a module-level default — a self-hosted user must not hit memory.midbrain.ai.
+    const response = await fetch(`${this.#accountBase}${suffix}`, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
 
     if (!response.ok) {
-      const text = await response.text().catch(() => "(no body)");
-      throw new Error(`Account API ${response.status}: ${text}`);
+      const text = await response.text().catch(() => "");
+      throw new Error(`Account API ${response.status}${sanitizeErrorBody(text)}`);
     }
     if (response.status === 204) return null;
     return response.json().catch(() => null);

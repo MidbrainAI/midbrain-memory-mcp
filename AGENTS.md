@@ -114,17 +114,25 @@ Rules:
 - `MidbrainApi` (in `shared/midbrain-api.mjs`) also exposes the account surface
   (`/api/v1/account/agents` and `/api/v1/account/keys`) via account methods on
   instances built with `MidbrainApi.createForUser(client)` (resolves the user
-  key). All API HTTP — memory and account — lives in this one module.
+  key AND the API host at global scope). Account requests derive their URL from
+  the instance base, never a module-level default, so a self-hosted/pinned user
+  never leaks their account credential to the default origin. All API HTTP —
+  memory and account — lives in this one module.
 - Account MCP tools (`list_agents`, `create_agent`, `set_agent`,
   `set_user_api_key`) are unprefixed by convention (name by action) and must be
   called only on explicit user request — never to autonomously provision storage.
 - `create_agent` creates an agent AND mints its key in one step, cataloging both
-  in the keystore masked; the raw secret is never returned in tool output.
+  in the keystore (stored at rest under chmod 600); the raw secret is never
+  returned in tool output, and a keystore-write failure reports the orphaned
+  agent id rather than echoing the key. Keystore writes go through the guarded
+  credential writer (symlink-reject, atomic mode-0600, backup-before-replace).
 - `set_agent` selects an agent for a project by writing that agent's key into
-  `<project_dir>/.midbrain/.midbrain-key` (via `Generic.setProjectKey`). It
-  resolves a free-form name/alias (or exact id) via `resolveAgentRef`; on an
-  ambiguous or unknown reference it lists candidates instead of guessing. It
-  NEVER writes the global `.midbrain-key`.
+  `<project_dir>/.midbrain/.midbrain-key` (via `Generic.setProjectKey`, through
+  the guarded writer). It resolves a free-form name/alias (or exact id) via
+  `resolveAgentRef`; on an ambiguous or unknown reference it lists candidates
+  instead of guessing. Overwriting an existing project key requires an explicit
+  `replace: true` (a timestamped backup is kept). It NEVER writes the global
+  `.midbrain-key`.
 - Reroll the user key via `midbrain-memory-mcp@latest user-key set` (stderr
   prompt) or `set_user_api_key`.
 

@@ -17,12 +17,13 @@ import { getClient } from "./shared/clients/registry.mjs";
 import { setupProject } from "./install.mjs";
 import {
   readGlobalKeystore,
-  writeGlobalKeystore,
+  mutateGlobalKeystore,
   listAgents as ksListAgents,
   upsertAgent,
   resolveAgentRef,
 } from "./shared/keystore.mjs";
 import { runMemoryDiagnostics } from "./shared/diagnostics.mjs";
+import { CredentialReplaceNotApprovedError } from "./shared/clients/credential-writer.mjs";
 
 const EPISODIC_PAGE_LIMIT = 1000;
 const PEEK_TTL_MS = 60_000; // 1 minute cache
@@ -41,12 +42,6 @@ function currentProjectDir() {
 /** Creates a user-key authenticated MidbrainApi for account operations. */
 async function createAccountApi() {
   return MidbrainApi.createForUser(getClient(process.env.MIDBRAIN_CLIENT));
-}
-
-/** Mask a secret, showing only the last 4 characters. */
-function maskSecret(s) {
-  if (!s || s.length < 4) return "****";
-  return `...${s.slice(-4)}`;
 }
 
 /** Format an agent record as a human-readable line. */
@@ -485,9 +480,9 @@ user API key. Read-only; safe to call whenever the user asks which agents exist.
     `Create a new MidBrain agent AND mint its API key in one step, storing both
 in the local keystore catalog. ONLY call this when the user has EXPLICITLY asked
 to create a new agent. Do NOT create agents on your own initiative or to
-organize memory. The raw key is NEVER returned — a masked confirmation is shown.
-After creating, use set_agent to point a project at this agent. Requires a user
-API key.`,
+organize memory. The raw key is NEVER returned — it is stored in the keystore
+only. After creating, use set_agent to point a project at this agent. Requires a
+user API key.`,
     {
       name: z.string().describe("Human-readable name for the new agent."),
       description: z.string().optional().describe("Optional description."),
@@ -495,6 +490,13 @@ API key.`,
     async ({ name, description }) => {
       try {
         const account = await createAccountApi();
+
+        // Preflight: prove the keystore is readable/parseable BEFORE minting a
+        // one-time secret, so the common "unwritable keystore" failure cannot
+        // orphan an agent or lose a key. readGlobalKeystore throws (fail-closed)
+        // on a corrupt keystore.
+        await readGlobalKeystore();
+
         const agent = await account.createAgent({ name, description });
         const keyRes = await account.createKey({
           agent_id: agent.agent_id,
@@ -502,21 +504,35 @@ API key.`,
         });
 
         // Catalog the agent + its key locally; never echo the raw secret.
-        let ks = await readGlobalKeystore();
-        ks = upsertAgent(ks, {
-          agent_id: agent.agent_id,
-          key_provider: "midbrain",
-          agent_key: keyRes.key,
-          alias: name,
-        });
-        await writeGlobalKeystore(ks);
+        // Serialized read-modify-write so a concurrent tool call can't clobber.
+        try {
+          await mutateGlobalKeystore((ks) => upsertAgent(ks, {
+            agent_id: agent.agent_id,
+            key_provider: "midbrain",
+            agent_key: keyRes.key,
+            alias: name,
+          }));
+        } catch (writeErr) {
+          // Post-mint durable-store failure: the key exists remotely but could
+          // not be saved. Report the orphaned agent id so it can be reconciled;
+          // NEVER return the raw secret as a fallback.
+          const detail = writeErr instanceof Error ? writeErr.message : String(writeErr);
+          return {
+            content: [{
+              type: "text",
+              text: `Agent "${name}" (${agent.agent_id}) was created and its key minted, ` +
+                `but the key could NOT be stored in the keystore (${detail}). ` +
+                `The key was not saved and is not recoverable here — delete agent ` +
+                `${agent.agent_id} in the MidBrain dashboard and retry after fixing the keystore.`,
+            }],
+          };
+        }
 
         return {
           content: [{
             type: "text",
             text: `Created agent "${name}" (${agent.agent_id}) and minted its key ` +
-              `(secret ${maskSecret(keyRes.key)}, stored in keystore). ` +
-              `Use set_agent to point a project at it.`,
+              `(stored in the keystore). Use set_agent to point a project at it.`,
           }],
         };
       } catch (err) {
@@ -539,8 +555,12 @@ available agents are listed instead of guessing.`,
     {
       agent: z.string().describe("Agent name, alias, or id to use for this project."),
       project_dir: z.string().describe("Absolute path to the project root directory."),
+      replace: z.boolean().optional().describe(
+        "Set true to overwrite an existing project key. Required when the project " +
+        "already has a .midbrain-key (guards against clobbering a different agent).",
+      ),
     },
-    async ({ agent, project_dir }) => {
+    async ({ agent, project_dir, replace = false }) => {
       try {
         const ks = await readGlobalKeystore();
         const local = ksListAgents(ks);
@@ -557,8 +577,25 @@ available agents are listed instead of guessing.`,
               }],
             };
           }
-          const keyPath = await getClient("generic").setProjectKey(project_dir, key);
           const label = match.agent.alias || match.agent.name || match.agent.agent_id;
+          let keyPath;
+          try {
+            keyPath = await getClient("generic").setProjectKey(project_dir, key, {
+              replaceApproved: replace,
+            });
+          } catch (writeErr) {
+            if (writeErr instanceof CredentialReplaceNotApprovedError) {
+              return {
+                content: [{
+                  type: "text",
+                  text: `Project "${project_dir}" already has a .midbrain-key (possibly a ` +
+                    `different agent). Re-run set_agent with replace: true to overwrite it ` +
+                    `(a timestamped backup is kept).`,
+                }],
+              };
+            }
+            throw writeErr;
+          }
           return {
             content: [{
               type: "text",
@@ -601,13 +638,13 @@ server error when you next use them.`,
       try {
         // Store unconditionally — validity is checked by the account tools that
         // use the key, which surface the real server error at that point.
-        let ks = await readGlobalKeystore();
-        ks = { ...ks, user_key: user_api_key };
-        await writeGlobalKeystore(ks);
+        // Serialized read-modify-write via the guarded writer.
+        await mutateGlobalKeystore((ks) => ({ ...ks, user_key: user_api_key }));
         return {
           content: [{
             type: "text",
-            text: `User API key saved (${maskSecret(user_api_key)}). Account tools are now available.`,
+            // Privacy contract: never echo the key or any fragment.
+            text: `User API key saved. Account tools are now available.`,
           }],
         };
       } catch (err) {

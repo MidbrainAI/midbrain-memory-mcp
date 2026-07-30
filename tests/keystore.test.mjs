@@ -11,6 +11,7 @@ import {
   emptyKeystore,
   readKeystore,
   writeKeystore,
+  globalKeystorePath,
   getUserKey,
   setUserKey,
   getAgent,
@@ -18,8 +19,60 @@ import {
   upsertAgent,
   resolveAgentRef,
 } from "../shared/keystore.mjs";
+import { makeTestEnv } from "./helpers/test-env.mjs";
 
-describe("keystore file I/O", () => {
+// Guarded writes (writeKeystore) only land at the global keystore path inside a
+// declared MIDBRAIN_TEST_SANDBOX; reads accept any path.
+describe("keystore guarded writes", () => {
+  let env;
+
+  beforeEach(async () => {
+    env = await makeTestEnv();
+  });
+
+  afterEach(async () => {
+    await env.restore();
+  });
+
+  it("writeKeystore then readKeystore round-trips (global path)", async () => {
+    const ks = upsertAgent(emptyKeystore(), {
+      agent_id: "agent_a", key_provider: "midbrain", agent_key: "sk-a", alias: "Alpha",
+    });
+    await writeKeystore(globalKeystorePath(), ks);
+    const read = await readKeystore(globalKeystorePath());
+    expect(read.version).toBe(KEYSTORE_VERSION);
+    expect(read.agents.agent_a.agent_key).toBe("sk-a");
+  });
+
+  it("writeKeystore sets 0600 permissions (POSIX only)", async () => {
+    if (process.platform === "win32") return;
+    await writeKeystore(globalKeystorePath(), emptyKeystore());
+    const mode = fs.statSync(globalKeystorePath()).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
+  it("creates the ~/.config/midbrain directory on first write", async () => {
+    await writeKeystore(globalKeystorePath(), emptyKeystore());
+    expect(fs.existsSync(globalKeystorePath())).toBe(true);
+  });
+
+  it("refuses a target that is not the global keystore path", async () => {
+    const bogus = path.join(env.home, "elsewhere", ".midbrain-keystore.json");
+    await expect(writeKeystore(bogus, emptyKeystore())).rejects.toThrow(/does not match the global keystore/);
+  });
+
+  it("refuses a symlinked keystore target", async () => {
+    if (process.platform === "win32") return; // symlink privilege varies
+    const target = globalKeystorePath();
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const decoy = path.join(env.home, "decoy.json");
+    fs.writeFileSync(decoy, "{}");
+    fs.symlinkSync(decoy, target);
+    await expect(writeKeystore(target, emptyKeystore())).rejects.toThrow(/symlink/);
+  });
+});
+
+describe("keystore file reads", () => {
   let tmpDir;
   let ksPath;
 
@@ -34,29 +87,6 @@ describe("keystore file I/O", () => {
 
   it("readKeystore returns null for a missing file", async () => {
     await expect(readKeystore(ksPath)).resolves.toBeNull();
-  });
-
-  it("writeKeystore then readKeystore round-trips", async () => {
-    const ks = upsertAgent(emptyKeystore(), {
-      agent_id: "agent_a", key_provider: "midbrain", agent_key: "sk-a", alias: "Alpha",
-    });
-    await writeKeystore(ksPath, ks);
-    const read = await readKeystore(ksPath);
-    expect(read.version).toBe(KEYSTORE_VERSION);
-    expect(read.agents.agent_a.agent_key).toBe("sk-a");
-  });
-
-  it("writeKeystore sets 0600 permissions (POSIX only)", async () => {
-    if (process.platform === "win32") return;
-    await writeKeystore(ksPath, emptyKeystore());
-    const mode = fs.statSync(ksPath).mode & 0o777;
-    expect(mode).toBe(0o600);
-  });
-
-  it("creates parent directories on write", async () => {
-    const nested = path.join(tmpDir, "a", "b", ".midbrain-keystore.json");
-    await writeKeystore(nested, emptyKeystore());
-    expect(fs.existsSync(nested)).toBe(true);
   });
 
   it("fails closed on unparseable JSON (throws, never resets)", async () => {

@@ -1012,12 +1012,6 @@ async function runInstallerCli(argv) {
 // user-key subcommand: set/reroll the account-level user API key
 // ---------------------------------------------------------------------------
 
-/** Mask a secret, showing only the last 4 characters. */
-function maskSecret(s) {
-  if (!s || s.length < 4) return '****';
-  return `...${s.slice(-4)}`;
-}
-
 /** Prompt for a line of input, echoing the prompt to stderr (keeps stdout clean). */
 async function promptStderr(question) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
@@ -1051,7 +1045,8 @@ async function runUserKeyCli(argv) {
     // with the real server error at the point they are invoked.
     const ks = await readGlobalKeystore();
     await writeGlobalKeystore({ ...ks, user_key: key });
-    console.error(`User API key saved (${maskSecret(key)}) to ${globalKeystorePath()}`);
+    // Never echo any part of the secret (privacy contract).
+    console.error(`User API key saved to ${globalKeystorePath()}`);
     return;
   }
 

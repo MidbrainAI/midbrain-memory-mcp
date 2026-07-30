@@ -11,7 +11,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import os from "os";
 import path from "path";
-import os from "os";
 
 import { makeResetMocks, makeReadFileReturns } from "./fs-mock.mjs";
 
@@ -495,6 +494,14 @@ describe("Generic credential writes", () => {
       targetPath,
       projectDir,
       key: "project-dummy",
+      replaceApproved: false,
     });
+  });
+
+  it("passes replaceApproved through to the guarded writer", async () => {
+    await client.setProjectKey(projectDir, "project-dummy", { replaceApproved: true });
+    expect(mocks.writeCredential).toHaveBeenCalledWith(
+      expect.objectContaining({ replaceApproved: true }),
+    );
   });
 });

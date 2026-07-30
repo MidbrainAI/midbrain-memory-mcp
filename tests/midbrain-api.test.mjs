@@ -889,4 +889,56 @@ describe("MidbrainApi account operations", () => {
     await expect(api.createKey({ agent_id: "x", key_alias: "k" }))
       .rejects.toThrow(/Account API 404: Agent not found/);
   });
+
+  it("bounds and redacts secret-like tokens in account error bodies", async () => {
+    const leaky = "denied for Bearer sk-user-abcdef and key mb_deadbeefcafe " + "x".repeat(400);
+    fetchSpy.mockResolvedValue({ ok: false, status: 403, text: async () => leaky });
+    const api = new MidbrainApi("sk-user", "test");
+    let msg = "";
+    try { await api.listAgents(); } catch (e) { msg = e.message; }
+    expect(msg).toContain("Account API 403");
+    expect(msg).not.toContain("sk-user-abcdef");
+    expect(msg).not.toContain("mb_deadbeefcafe");
+    expect(msg).toContain("[redacted]");
+    expect(msg.length).toBeLessThan(260); // bounded
+  });
+
+  // Blocker #1 regression: an instance bound to a non-default (self-hosted)
+  // base must NEVER contact the default origin with the account credential.
+  it("sends account requests to the instance base, never the default origin", async () => {
+    fetchSpy.mockResolvedValue(jsonResponse(200, []));
+    const api = new MidbrainApi("sk-user", "ks", {
+      apiBase: "https://self-host.invalid",
+      apiBaseScope: "environment",
+      apiBaseSource: "env:MIDBRAIN_API_URL",
+      keyScope: "global",
+    });
+    await api.listAgents();
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toBe("https://self-host.invalid/api/v1/account/agents");
+    for (const [calledUrl] of fetchSpy.mock.calls) {
+      expect(String(calledUrl)).not.toContain("memory.midbrain.ai");
+    }
+  });
+
+  it("createForUser binds the account host from resolveApiHost (not default)", async () => {
+    // With MIDBRAIN_API_URL set, the resolved host is the env origin; the
+    // account request must target it.
+    const prev = process.env.MIDBRAIN_API_URL;
+    process.env.MIDBRAIN_API_URL = "https://self-host.invalid";
+    try {
+      fetchSpy.mockResolvedValue(jsonResponse(200, []));
+      const client = {
+        id: "opencode",
+        resolveUserKey: vi.fn().mockResolvedValue({ key: "sk-user", source: "ks" }),
+      };
+      const api = await MidbrainApi.createForUser(client);
+      await api.listAgents();
+      const [url] = fetchSpy.mock.calls[0];
+      expect(url).toBe("https://self-host.invalid/api/v1/account/agents");
+    } finally {
+      if (prev === undefined) delete process.env.MIDBRAIN_API_URL;
+      else process.env.MIDBRAIN_API_URL = prev;
+    }
+  });
 });
