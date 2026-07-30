@@ -120,6 +120,7 @@ describe("OpenCode plugin bundle", () => {
 describe("OpenCode plugin PK delivery helpers", () => {
   let originalHome;
   let originalUserProfile;
+  let originalLogDir;
   let originalPkEnv;
   let tempHome;
   let fetchSpy;
@@ -127,6 +128,7 @@ describe("OpenCode plugin PK delivery helpers", () => {
   beforeEach(() => {
     originalHome = process.env.HOME;
     originalUserProfile = process.env.USERPROFILE;
+    originalLogDir = process.env.MIDBRAIN_LOG_DIR;
     originalPkEnv = process.env[PK_ENV];
     tempHome = fsSync.mkdtempSync(path.join(os.tmpdir(), "opencode-plugin-home-"));
     const keyDir = path.join(tempHome, ".config", "midbrain");
@@ -136,6 +138,7 @@ describe("OpenCode plugin PK delivery helpers", () => {
     // the key resolves to the sandbox home on every platform.
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
+    process.env.MIDBRAIN_LOG_DIR = path.join(tempHome, "logs");
     delete process.env[PK_ENV];
     fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const text = String(url);
@@ -155,9 +158,46 @@ describe("OpenCode plugin PK delivery helpers", () => {
     fetchSpy.mockRestore();
     restoreEnv("HOME", originalHome);
     restoreEnv("USERPROFILE", originalUserProfile);
+    restoreEnv("MIDBRAIN_LOG_DIR", originalLogDir);
     if (originalPkEnv === undefined) delete process.env[PK_ENV];
     else process.env[PK_ENV] = originalPkEnv;
     fsSync.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  it("keeps plugin initialization diagnostics privacy-safe", async () => {
+    const privacyHome = path.join(tempHome, "Users", "privacy-test-user");
+    const keyDir = path.join(privacyHome, ".config", "midbrain");
+    const credentialPath = path.join(keyDir, ".midbrain-key");
+    const projectDir = path.join(privacyHome, "project");
+    fsSync.mkdirSync(keyDir, { recursive: true });
+    fsSync.writeFileSync(credentialPath, "test-key\n", { mode: 0o600 });
+    fsSync.mkdirSync(projectDir);
+    process.env.HOME = privacyHome;
+    process.env.USERPROFILE = privacyHome;
+
+    const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+
+    await MidBrainMemoryPlugin({
+      client: { session: { messages: vi.fn().mockResolvedValue([]) } },
+      directory: projectDir,
+    });
+
+    const logText = fsSync.readFileSync(
+      path.join(process.env.MIDBRAIN_LOG_DIR, "midbrain-opencode.log"),
+      "utf8",
+    );
+    const initLine = logText.split("\n").find((line) => line.includes("INIT:"));
+
+    expect(initLine).toContain("INIT: dir=~/project");
+    expect(initLine).toContain("credential_scope=global");
+    expect(initLine).toContain("host=https://memory.midbrain.ai");
+    expect(initLine).toContain("host_scope=default");
+    expect(initLine).not.toContain(privacyHome);
+    expect(initLine).not.toContain(credentialPath);
+    expect(initLine).not.toContain("privacy-test-user");
+    expect(initLine).not.toContain("src=");
+    expect(initLine).not.toContain("key=");
+    expect(initLine).not.toContain("test-key");
   });
 
   it("stores user text without procedural search or message mutation by default", async () => {
