@@ -11,5 +11,6 @@
 export { MidbrainApi } from './midbrain-api.mjs';
 export { DEFAULT_API_BASE, resolveApiHost } from './api-host.mjs';
 export { makeLogger, logFile, logDir } from './logger.mjs';
+export { homeRelativePath } from './diagnostics.mjs';
 export { getClient } from './clients/registry.mjs';
 export { extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from './pk-inject.mjs';

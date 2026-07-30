@@ -10,6 +10,7 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
+import { writeCredential } from './credential-writer.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT, PKG_NAME, PKG_VERSION,
   home, backup, classifyEntry, formatMigrationLine, writeFileIfChanged,
@@ -204,11 +205,15 @@ export class OpenCode extends BaseClient {
     return key ? { key, source } : null;
   }
 
-  async writeKey(key) {
+  async writeKey(key, { replaceApproved = false } = {}) {
     const kfp = ownKeyPath();
-    await fs.mkdir(path.dirname(kfp), { recursive: true });
-    await fs.writeFile(kfp, key + '\n', 'utf8');
-    await fs.chmod(kfp, 0o600);
+    await writeCredential({
+      clientId: this.id,
+      scope: 'client',
+      targetPath: kfp,
+      key,
+      replaceApproved,
+    });
     return `Key: ~/.config/opencode/${KEY_FILENAME} (chmod 600)`;
   }
 

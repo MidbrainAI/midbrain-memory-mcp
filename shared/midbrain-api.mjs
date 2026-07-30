@@ -56,6 +56,17 @@ const PK_DEFAULT_TIMEOUT_MS = 2000;
 const DEFAULT_SEARCH_LIMIT = 10;
 const PRODUCT_USER_AGENT = "midbrain-memory-mcp";
 
+async function inspectCredentialScopes(client, projectDir, result) {
+  if (typeof client.inspectCredentialScopes !== "function") {
+    return { entries: [], shadowNote: null };
+  }
+  try {
+    return await client.inspectCredentialScopes(projectDir, result);
+  } catch {
+    return { entries: [], shadowNote: null };
+  }
+}
+
 export class MidbrainApi {
   #key;
   #source;
@@ -64,13 +75,16 @@ export class MidbrainApi {
   #apiBaseScope;
   #apiBaseSource;
   #keyScope;
+  #credentialScopes;
+  #credentialShadowNote;
   #endpoints;
 
   /**
    * @param {string} key API key.
    * @param {string} source Debug label for key origin.
    * @param {{apiBase?: string, apiBaseScope?: string, apiBaseSource?: string,
-   *   keyScope?: string}} [options]
+   *   keyScope?: string, credentialScopes?: object[],
+   *   credentialShadowNote?: string|null}} [options]
    */
   constructor(key, source, options = {}) {
     this.#key = key;
@@ -79,6 +93,8 @@ export class MidbrainApi {
     this.#apiBaseScope = options.apiBaseScope || API_BASE_SCOPE;
     this.#apiBaseSource = options.apiBaseSource || API_BASE_SOURCE;
     this.#keyScope = options.keyScope;
+    this.#credentialScopes = options.credentialScopes || [];
+    this.#credentialShadowNote = options.credentialShadowNote || null;
     this.#endpoints = buildEndpoints(this.#apiBase);
     this.#cacheScope = createHash("sha256")
       .update(`${this.#apiBase}\0${key}`)
@@ -98,11 +114,14 @@ export class MidbrainApi {
       projectDir,
       keyScope: result.scope,
     });
+    const credentialState = await inspectCredentialScopes(client, projectDir, result);
     return new MidbrainApi(result.key, result.source, {
       apiBase: host.url,
       apiBaseScope: host.scope,
       apiBaseSource: host.source,
       keyScope: result.scope,
+      credentialScopes: credentialState.entries,
+      credentialShadowNote: credentialState.shadowNote,
     });
   }
 
@@ -130,6 +149,9 @@ export class MidbrainApi {
 
   /** Key resolution scope selected by BaseClient.resolveKey(). */
   get keyScope() { return this.#keyScope; }
+  get credentialScopes() { return this.#credentialScopes; }
+  get credentialShadowNote() { return this.#credentialShadowNote; }
+  get cacheScope() { return this.#cacheScope; }
 
   /** Effective API base and its resolution metadata. */
   get effectiveApiBase() { return this.#apiBase; }
@@ -144,24 +166,33 @@ export class MidbrainApi {
   get SEMANTIC_FILES() { return this.#endpoints.SEMANTIC_FILES; }
   get PROCEDURAL() { return this.#endpoints.PROCEDURAL; }
 
-  /** Last 4 chars of the key (for safe logging). */
+  /**
+   * @deprecated Retained for compatibility only. Credential fragments must
+   * never be written to user-facing output or shipped logs.
+   */
   get keyFingerprint() {
     return this.#key.length >= 4 ? `...${this.#key.slice(-4)}` : '****';
   }
 
   /**
-   * Authenticated GET request with query params. Falls back to POST on 404/405.
+   * Authenticated GET request with query params. Falls back to POST on 404/405
+   * unless `allowPostFallback` is false (read-only callers such as the
+   * diagnostics probe must never let a GET escalate to a write-method request
+   * against a write endpoint).
    * @param {string} endpoint  Full URL.
    * @param {Record<string, string|number|undefined>} [params]
+   * @param {{allowPostFallback?: boolean}} [opts]
    * @returns {Promise<any>} Parsed JSON.
    */
-  async fetch(endpoint, params = {}) {
+  async fetch(endpoint, params = {}, { allowPostFallback = true } = {}) {
     const url = new URL(endpoint);
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
     }
 
-    console.error(`[API] url=${url} key_source=${this.#source}`);
+    // Never log the resolved key path (it can embed a username); the scope
+    // label is sufficient for debugging.
+    console.error(`[API] url=${url} key_scope=${this.#keyScope || "unknown"}`);
 
     let response = await fetch(url.toString(), {
       method: "GET",
@@ -169,7 +200,7 @@ export class MidbrainApi {
     });
 
     // GET->POST fallback: if GET endpoint not yet deployed, retry with legacy POST.
-    if (response.status === 404 || response.status === 405) {
+    if (allowPostFallback && (response.status === 404 || response.status === 405)) {
       console.error(`[API] GET ${url.toString()} returned ${response.status}, retrying with POST`);
       response = await fetch(endpoint, {
         method: "POST",
@@ -184,6 +215,11 @@ export class MidbrainApi {
     console.error(`[API] status=${response.status}`);
 
     if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error(
+          `API 401 (auth failed): host=${this.#apiBase} key_scope=${this.#keyScope || "unknown"} — run memory_diagnostics for details`,
+        );
+      }
       const body = await response.text().catch(() => "(no body)");
       throw new Error(`API ${response.status}: ${body}`);
     }
@@ -224,8 +260,9 @@ export class MidbrainApi {
    * Never throws.
    */
   async #postEpisodic(text, role, memoryMetadata, logger) {
+    const binding = `host=${this.#apiBase} key_scope=${this.#keyScope || "unknown"}`;
     if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") {
-      logger.warn("STORE ERROR: simulated offline (MIDBRAIN_SIMULATE_OFFLINE=1)");
+      logger.warn(`STORE ERROR: ${binding} simulated offline (MIDBRAIN_SIMULATE_OFFLINE=1)`);
       return false;
     }
     try {
@@ -239,14 +276,14 @@ export class MidbrainApi {
         body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
       });
       if (!response.ok) {
-        const body = await response.text().catch(() => "(no body)");
-        logger.error(`STORE ERROR: status=${response.status} body=${body}`);
+        await response.text().catch(() => undefined);
+        logger.error(`STORE ERROR: status=${response.status} ${binding}`);
         return false;
       }
       logger.debug(`STORED: status=${response.status}`);
       return true;
-    } catch (err) {
-      logger.error(`STORE ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    } catch {
+      logger.error(`STORE ERROR: ${binding} network-error`);
       return false;
     }
   }

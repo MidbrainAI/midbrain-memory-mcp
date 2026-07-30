@@ -4,11 +4,12 @@
  * All filesystem operations are mocked — no real files read or written.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import path from "path";
 import os from "os";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { makeTestEnv } from "./helpers/test-env.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -19,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   realpath:   vi.fn(),
   copyFile:   vi.fn().mockResolvedValue(undefined),
   existsSync: vi.fn(() => false),
+  writeCredential: vi.fn().mockResolvedValue({ action: "written", backupPath: null }),
 }));
 
 vi.mock("fs/promises", () => ({
@@ -30,6 +32,9 @@ vi.mock("fs", async (importOriginal) => {
   const orig = await importOriginal();
   return { ...orig, existsSync: mocks.existsSync, realpathSync: orig.realpathSync };
 });
+vi.mock("../shared/clients/credential-writer.mjs", () => ({
+  writeCredential: mocks.writeCredential,
+}));
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
              chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile };
@@ -37,6 +42,7 @@ const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
+const testEnv = await makeTestEnv();
 const { OpenCode, resolveOpencodeConfig } = await import("../shared/clients/opencode.mjs");
 const { PKG_NAME, PKG_VERSION } = await import("../shared/clients/utils.mjs");
 
@@ -54,6 +60,10 @@ const PATHS = {
   opencodeBundle:  path.join(HOME, ".config", "opencode", "plugins", "midbrain-shared.mjs"),
   opencodeMarker:  path.join(HOME, ".config", "opencode", "plugins", ".midbrain-repo-root"),
 };
+
+afterAll(async () => {
+  await testEnv.restore();
+});
 
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);
@@ -128,6 +138,24 @@ describe("OpenCode.resolveClientKey", () => {
     mocks.readFile.mockRejectedValue(fileError("EIO", PATHS.opencodeKey));
 
     await expect(oc.resolveClientKey()).rejects.toThrow(/EIO/);
+  });
+});
+
+describe("OpenCode.writeKey", () => {
+  const oc = new OpenCode();
+  beforeEach(resetMocks);
+
+  it("delegates the client credential and preserves the summary", async () => {
+    const line = await oc.writeKey("opencode-dummy");
+
+    expect(mocks.writeCredential).toHaveBeenCalledWith({
+      clientId: "opencode",
+      scope: "client",
+      targetPath: PATHS.opencodeKey,
+      key: "opencode-dummy",
+      replaceApproved: false,
+    });
+    expect(line).toBe("Key: ~/.config/opencode/.midbrain-key (chmod 600)");
   });
 });
 

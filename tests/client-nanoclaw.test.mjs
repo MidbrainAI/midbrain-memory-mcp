@@ -11,7 +11,8 @@ import path from "path";
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
 import { makeTestEnv, assertSandboxed } from "./helpers/test-env.mjs";
 
-const mocks = vi.hoisted(() => ({
+const mocks = vi.hoisted(() => {
+  const state = {
   readFile:   vi.fn(),
   writeFile:  vi.fn().mockResolvedValue(undefined),
   mkdir:      vi.fn().mockResolvedValue(undefined),
@@ -20,7 +21,17 @@ const mocks = vi.hoisted(() => ({
   realpath:   vi.fn(),
   copyFile:   vi.fn().mockResolvedValue(undefined),
   existsSync: vi.fn(() => false),
-}));
+  writeCredential: vi.fn(),
+  };
+  state.writeCredential.mockImplementation(async ({ targetPath, key }) => {
+    const slash = Math.max(targetPath.lastIndexOf('/'), targetPath.lastIndexOf('\\'));
+    await state.mkdir(targetPath.slice(0, slash), { recursive: true });
+    await state.writeFile(targetPath, `${key}\n`, 'utf8');
+    await state.chmod(targetPath, 0o600);
+    return { action: 'written', backupPath: null };
+  });
+  return state;
+});
 
 vi.mock("fs/promises", () => ({
   default: { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
@@ -31,6 +42,9 @@ vi.mock("fs", async (importOriginal) => {
   const orig = await importOriginal();
   return { ...orig, existsSync: mocks.existsSync, realpathSync: orig.realpathSync };
 });
+vi.mock("../shared/clients/credential-writer.mjs", () => ({
+  writeCredential: mocks.writeCredential,
+}));
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
              chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile };

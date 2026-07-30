@@ -3,8 +3,9 @@
  *
  * Defines all MCP tools: memory recall (memory_search, grep,
  * get_episodic_memories_by_date, list_files, read_file, check_session_status,
- * memory_setup_project) and account management (list_agents, create_agent,
- * set_agent, set_user_api_key). Uses MidbrainApi for all API communication.
+ * memory_diagnostics, memory_setup_project) and account management
+ * (list_agents, create_agent, set_agent, set_user_api_key). Uses MidbrainApi
+ * for all API communication.
  *
  * IMPORTANT: No console.log — corrupts stdio JSON-RPC pipe. Use console.error only.
  */
@@ -21,6 +22,7 @@ import {
   upsertAgent,
   resolveAgentRef,
 } from "./shared/keystore.mjs";
+import { runMemoryDiagnostics } from "./shared/diagnostics.mjs";
 
 const EPISODIC_PAGE_LIMIT = 1000;
 const PEEK_TTL_MS = 60_000; // 1 minute cache
@@ -28,11 +30,12 @@ const TERMINAL_CWD_PLACEHOLDER = "${TERMINAL_CWD}";
 
 /** Creates a MidbrainApi instance for the current environment. */
 export async function createApi() {
-  const configuredProjectDir = process.env.MIDBRAIN_PROJECT_DIR;
-  const projectDir = configuredProjectDir === TERMINAL_CWD_PLACEHOLDER
-    ? undefined
-    : configuredProjectDir;
-  return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT), projectDir);
+  return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT), currentProjectDir());
+}
+
+function currentProjectDir() {
+  const configured = process.env.MIDBRAIN_PROJECT_DIR;
+  return configured === TERMINAL_CWD_PLACEHOLDER ? undefined : configured || undefined;
 }
 
 /** Creates a user-key authenticated MidbrainApi for account operations. */
@@ -395,6 +398,32 @@ full context if needed.`,
   );
 
   // --- memory_setup_project ---
+
+  server.tool(
+    "memory_diagnostics",
+    `Diagnose authentication and fail-open capture health without exposing credentials.
+
+Reports the resolved API host and credential scopes, an optional live auth
+probe, pending capture cache counts, safe locations, and actionable next steps.`,
+    {
+      probe: z.boolean().optional().default(true)
+        .describe("Run a live authenticated probe (default: true)."),
+    },
+    async ({ probe }) => {
+      try {
+        const text = await runMemoryDiagnostics({
+          probe,
+          createApi,
+          clientId: process.env.MIDBRAIN_CLIENT || "generic",
+          projectDir: currentProjectDir(),
+        });
+        return { content: [{ type: "text", text }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: `Diagnostics failed: ${msg}` }] };
+      }
+    },
+  );
 
   server.tool(
     "memory_setup_project",

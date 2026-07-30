@@ -12,7 +12,8 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
-import { KEY_FILENAME, REPO_ROOT, home, writeSecure } from './utils.mjs';
+import { writeCredential } from './credential-writer.mjs';
+import { KEY_FILENAME, REPO_ROOT, home } from './utils.mjs';
 
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -64,9 +65,15 @@ export class NanoClaw extends BaseClient {
     return key ? { key, source } : null;
   }
 
-  async writeKey(key) {
+  async writeKey(key, { replaceApproved = false } = {}) {
     const kfp = keyFilePath();
-    await writeSecure(kfp, key);
+    await writeCredential({
+      clientId: this.id,
+      scope: 'client',
+      targetPath: kfp,
+      key,
+      replaceApproved,
+    });
     return `Key: ~/.config/nanoclaw/${KEY_FILENAME} (chmod 600)`;
   }
 

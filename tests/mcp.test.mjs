@@ -163,10 +163,47 @@ let client;
 let clientTransport;
 let serverTransport;
 let tmpKeyDir;
+let mcpTestSandbox;
 let fetchSpy;
 const savedEnv = {};
 
+// Real OS temp dirs, captured before beforeAll repoints TEMP/TMP/TMPDIR at the
+// suite sandbox. Child processes spawned by the CLI tests must use the real
+// temp — on Windows a subprocess whose TEMP/TMP points at a test-managed dir
+// can abort (0xC0000409). See spawnServer helpers below.
+const REAL_TEMP_ENV = {
+  TMPDIR: process.env.TMPDIR,
+  TEMP: process.env.TEMP,
+  TMP: process.env.TMP,
+};
+
+/** Build a child-process env that restores the real OS temp dirs. */
+function withRealTemp(extraEnv = {}) {
+  const env = { ...process.env };
+  for (const [k, v] of Object.entries(REAL_TEMP_ENV)) {
+    if (v === undefined) delete env[k];
+    else env[k] = v;
+  }
+  return { ...env, ...extraEnv };
+}
+
 beforeAll(async () => {
+  for (const k of [
+    "MIDBRAIN_API_KEY",
+    "MIDBRAIN_PROJECT_DIR",
+    "MIDBRAIN_TEST_SANDBOX",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+  ]) {
+    savedEnv[k] = process.env[k];
+  }
+  mcpTestSandbox = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-suite-sandbox-"));
+  process.env.MIDBRAIN_TEST_SANDBOX = mcpTestSandbox;
+  process.env.TMPDIR = mcpTestSandbox;
+  process.env.TEMP = mcpTestSandbox;
+  process.env.TMP = mcpTestSandbox;
+
   // Mock fetch before any tool calls
   fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(mockFetch);
 
@@ -177,9 +214,6 @@ beforeAll(async () => {
   fs.chmodSync(keyPath, 0o600);
 
   // Set env vars for the in-process server
-  for (const k of ["MIDBRAIN_API_KEY", "MIDBRAIN_PROJECT_DIR"]) {
-    savedEnv[k] = process.env[k];
-  }
   process.env.MIDBRAIN_API_KEY = "test-key-for-mcp-tests";
   process.env.MIDBRAIN_PROJECT_DIR = "";
 
@@ -197,6 +231,7 @@ afterAll(async () => {
   try { await clientTransport?.close(); } catch { /* ignore */ }
   try { await serverTransport?.close(); } catch { /* ignore */ }
   try { fs.rmSync(tmpKeyDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { fs.rmSync(mcpTestSandbox, { recursive: true, force: true }); } catch { /* ignore */ }
   fetchSpy?.mockRestore();
 
   for (const [k, v] of Object.entries(savedEnv)) {
@@ -210,9 +245,9 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe("MCP server tool listing", () => {
-  it("exposes exactly 11 tools", async () => {
+  it("exposes exactly 12 tools", async () => {
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(11);
+    expect(tools).toHaveLength(12);
   });
 
   it("exposes the expected tool names", async () => {
@@ -225,12 +260,20 @@ describe("MCP server tool listing", () => {
       "grep",
       "list_agents",
       "list_files",
+      "memory_diagnostics",
       "memory_search",
       "memory_setup_project",
       "read_file",
       "set_agent",
       "set_user_api_key",
     ]);
+  });
+
+  it("exposes optional probe control for memory_diagnostics", async () => {
+    const { tools } = await client.listTools();
+    const diagnostics = tools.find((tool) => tool.name === "memory_diagnostics");
+    expect(diagnostics).toBeDefined();
+    expect(diagnostics.inputSchema.properties.probe.type).toBe("boolean");
   });
 });
 
@@ -1436,7 +1479,7 @@ describe("index.js CLI — --version flag (PRD-010)", () => {
   /** Spawn `node index.js <args>` and return {status, stdout, stderr}. */
   function spawnServer(args, extraEnv = {}) {
     return spawnSync(process.execPath, [SERVER_PATH, ...args], {
-      env: { ...process.env, ...extraEnv },
+      env: withRealTemp(extraEnv),
       encoding: "utf8",
       timeout: 5000,
     });
@@ -1488,7 +1531,7 @@ describe("index.js startup — version log line (PRD-010 G-5)", () => {
 describe("index.js CLI — install subcommand (PRD-011)", () => {
   function spawnServer(args, extraEnv = {}) {
     return spawnSync(process.execPath, [SERVER_PATH, ...args], {
-      env: { ...process.env, ...extraEnv },
+      env: withRealTemp(extraEnv),
       encoding: "utf8",
       timeout: 5000,
     });

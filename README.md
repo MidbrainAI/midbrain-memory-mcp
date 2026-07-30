@@ -112,11 +112,24 @@ then tells the user to restart.
 | `list_files` | Browse semantic memory documents |
 | `read_file` | Read a semantic memory document by line range |
 | `check_session_status` | Check for recent activity from other clients/sessions |
+| `memory_diagnostics` | Diagnose authentication and fail-open capture health |
 | `memory_setup_project` | Configure project memory and detected-client rules |
 | `list_agents` | List agents owned by the account (needs user API key) |
 | `create_agent` | Create an agent + mint its key, cataloged locally (explicit request) |
 | `set_agent` | Point a project at an agent by writing its project `.midbrain-key` |
 | `set_user_api_key` | Store/reroll the account-level user API key |
+
+`memory_diagnostics` reports the package/client identity, effective API host
+and its scope/source, credential scope and source category, credential
+shadowing, an optional live MCP auth probe, pending capture-cache counts for
+the current and other bindings, safe cache/log locations, and next steps. Pass
+`probe: false` when a network request is not appropriate. Capture remains
+fail-open: failures are cached and logged without blocking the client.
+
+The diagnostics response is safe to paste into an issue. It never includes
+credential contents, hashes, fingerprints, or last-four fragments, and it
+does not read or quote cache or log contents. Paths under the user's home are
+rendered with `~/`; cache-binding hashes are not printed.
 
 ---
 
@@ -171,6 +184,24 @@ MidBrain rules current:
 
 NanoClaw's composed `groups/<group>/CLAUDE.md` files are generated at spawn
 and are never edited directly.
+
+For automation, `--non-interactive` uses one eligible credential only when the
+choice is unambiguous. If detected client credentials differ and no global
+credential exists, the installer exits without writing anything and tells you
+to choose one of two effective paths:
+
+- run the installer interactively and select the credential source;
+- pass `--key-source <clientId>` in automation:
+
+```sh
+# Select one detected client's resolved credential explicitly
+npx midbrain-memory-mcp install --non-interactive --key-source opencode
+```
+
+Project-scoped credentials are never eligible for global promotion. An existing
+global credential is preserved; `--key-source` cannot replace it. Run the
+installer interactively to approve a fresh credential replacement, which first
+creates a timestamped mode-0600 backup.
 
 ### Per-Project Memory
 
@@ -949,6 +980,7 @@ mcp.mjs                        MCP tool definitions (createServer factory)
 install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
   midbrain-api.mjs             MidbrainApi class: ALL API calls go here
+  diagnostics.mjs              Secret-free auth/capture report assembly
   logger.mjs                   makeLogger(), logFile(), logDir()
   plugin-entry.mjs             esbuild bundle entry point
   clients/

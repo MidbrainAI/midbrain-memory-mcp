@@ -23,11 +23,12 @@ import os from 'os';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
+import { readKeyFile } from './shared/clients/base.mjs';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
 import { writeGlobalRules, writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
 import { readGlobalKeystore, writeGlobalKeystore, globalKeystorePath } from './shared/keystore.mjs';
-import { PKG_NAME, REPO_ROOT } from './shared/clients/utils.mjs';
+import { KEY_FILENAME, PKG_NAME, REPO_ROOT } from './shared/clients/utils.mjs';
 import { classifyInstallContext, shouldSkipSelfRepair } from './shared/install-context.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -53,6 +54,11 @@ const UPDATE_FETCH_TIMEOUT_MS = 5000;
 const NPX_DIR_NAME = '_npx';
 const SELF_PKG_SUBPATH = path.join('node_modules', PKG_NAME, 'package.json');
 const STABLE_VERSION_RE = /^\d+\.\d+\.\d+$/;
+const GLOBAL_KEY_SOURCE_WARNING =
+  'global credential already exists; --key-source ignored — remove it explicitly first if you intend replacement';
+const NO_KEY_MESSAGE =
+  'No API key found. Run the installer interactively first or set MIDBRAIN_API_KEY.';
+const GLOBAL_CANDIDATE_SCOPES = new Set(['client', 'environment', 'entered']);
 
 function isStableVersion(version) {
   return typeof version === 'string' && STABLE_VERSION_RE.test(version);
@@ -312,11 +318,11 @@ async function prompt(question) {
  * @param {boolean} [opts.forceLogin] - Force device-code flow even if a key exists.
  * @param {boolean} [opts.noLogin] - Skip browser/device auth and use manual key entry.
  * @returns {Promise<{
- *   keys: Map<string, string>,
+ *   keys: Map<string, {key: string, scope: string, source: string}>,
  *   perClient: boolean,
  *   existingClientKeys: Set<string>,
  * }>}
- *   keys: Map<clientId, string>.
+ *   keys: Map<clientId, {key, scope, source}>.
  *   perClient: true when the interactive user wants a distinct per-client key
  *   written (or distinct keys already exist on disk); false for a single shared
  *   key that only needs the global key file.
@@ -334,7 +340,7 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
     const existing = await client.resolveKey(undefined, { includeScope: true });
     if (existing) {
       console.log(`Found ${client.displayName} key: ${existing.source}`);
-      keys.set(client.id, existing.key);
+      keys.set(client.id, existing);
       if (existing.scope === 'client') existingClientKeys.add(client.id);
       anyKeyFound = true;
     }
@@ -345,7 +351,11 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
   // it shared (global key only) or split into per-client keys.
   if (forceLogin && !noLogin && interactive) {
     const result = await deviceCodeLogin();
-    return await distributeSharedKey(clients, result.apiKey, { interactive });
+    return await distributeSharedKey(clients, result.apiKey, {
+      interactive,
+      source: 'device-login',
+      existingClientKeys,
+    });
   }
 
   // If all clients already have keys on disk, honor them. Distinct values mean
@@ -364,7 +374,11 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
     // share flow rather than prompting separately for every client.
     if (noLogin) {
       const key = await promptForKey();
-      return await distributeSharedKey(clients, key, { interactive });
+      return await distributeSharedKey(clients, key, {
+        interactive,
+        source: 'manual-entry',
+        existingClientKeys,
+      });
     }
 
     console.log('');
@@ -377,7 +391,11 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
     if (choice === '1') {
       try {
         const result = await deviceCodeLogin();
-        return await distributeSharedKey(clients, result.apiKey, { interactive });
+        return await distributeSharedKey(clients, result.apiKey, {
+          interactive,
+          source: 'device-login',
+          existingClientKeys,
+        });
       } catch (err) {
         console.error(`Device login failed: ${err.message}`);
         console.error('Falling back to manual key entry.');
@@ -387,7 +405,11 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
 
     // Choice [2], a blank choice, or a failed login: paste a single key.
     const key = await promptForKey();
-    return await distributeSharedKey(clients, key, { interactive });
+    return await distributeSharedKey(clients, key, {
+      interactive,
+      source: 'manual-entry',
+      existingClientKeys,
+    });
   }
 
   // Partial fill: some clients already have keys on disk, others don't.
@@ -397,7 +419,11 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
 
     if (interactive) {
       const key = await promptForKey(`Enter MidBrain API key for ${client.displayName}: `);
-      keys.set(client.id, key);
+      keys.set(client.id, {
+        key,
+        scope: 'entered',
+        source: 'manual-entry',
+      });
     } else {
       console.error(`WARN: no key found for ${client.displayName} (non-interactive mode, skipping)`);
     }
@@ -415,7 +441,7 @@ async function promptForKey(label = 'Enter MidBrain API key: ') {
 
 /** True if the map holds more than one distinct key value. */
 function hasDistinctKeys(keys) {
-  return new Set(keys.values()).size > 1;
+  return new Set([...keys.values()].map(({ key }) => key)).size > 1;
 }
 
 /**
@@ -424,18 +450,22 @@ function hasDistinctKeys(keys) {
  * for a distinct key per detected client.
  *
  * @returns {Promise<{
- *   keys: Map<string, string>,
+ *   keys: Map<string, {key: string, scope: string, source: string}>,
  *   perClient: boolean,
  *   existingClientKeys: Set<string>,
  * }>}
  */
-async function distributeSharedKey(clients, sharedKey, { interactive }) {
+async function distributeSharedKey(
+  clients,
+  sharedKey,
+  { interactive, source, existingClientKeys = new Set() },
+) {
   const keys = new Map();
-  const existingClientKeys = new Set();
+  const entered = { key: sharedKey, scope: 'entered', source };
 
   // Non-interactive or a single client: nothing to split — share the key.
   if (!interactive || clients.length < 2) {
-    for (const client of clients) keys.set(client.id, sharedKey);
+    for (const client of clients) keys.set(client.id, entered);
     return { keys, perClient: false, existingClientKeys };
   }
 
@@ -446,16 +476,64 @@ async function distributeSharedKey(clients, sharedKey, { interactive }) {
 
   // Default (empty) and anything other than an explicit "n" means: share it.
   if (answer.toLowerCase() !== 'n') {
-    for (const client of clients) keys.set(client.id, sharedKey);
+    for (const client of clients) keys.set(client.id, entered);
     return { keys, perClient: false, existingClientKeys };
   }
 
   // User opted out — prompt for a distinct key per client.
   for (const client of clients) {
     const key = await promptForKey(`Enter MidBrain API key for ${client.displayName}: `);
-    keys.set(client.id, key);
+    keys.set(client.id, { key, scope: 'entered', source: 'manual-entry' });
   }
   return { keys, perClient: true, existingClientKeys };
+}
+
+function eligibleGlobalCandidates(resolved) {
+  return [...resolved.entries()]
+    .filter(([, entry]) => GLOBAL_CANDIDATE_SCOPES.has(entry.scope))
+    .map(([clientId, entry]) => ({ clientId, ...entry }));
+}
+
+function selectedKeySource(resolved, keySourceFlag) {
+  const entry = resolved.get(keySourceFlag);
+  if (!entry) throw new Error(`--key-source "${keySourceFlag}" has no resolved credential.`);
+  if (!GLOBAL_CANDIDATE_SCOPES.has(entry.scope)) {
+    throw new Error(
+      `--key-source "${keySourceFlag}" cannot use a ${entry.scope}-scope credential.`,
+    );
+  }
+  return { action: 'write', clientId: keySourceFlag, ...entry };
+}
+
+/**
+ * Decide whether a resolved credential may be promoted to the global scope.
+ */
+function decideGlobalKey({
+  resolved,
+  existingGlobal,
+  interactive,
+  keySourceFlag,
+}) {
+  const candidates = eligibleGlobalCandidates(resolved);
+  if (existingGlobal !== null) {
+    if (keySourceFlag) {
+      return { action: 'keep', warning: GLOBAL_KEY_SOURCE_WARNING };
+    }
+    const fresh = candidates.filter(({ scope }) => scope === 'entered');
+    if (!interactive || fresh.length === 0) return { action: 'keep' };
+    const distinctFresh = new Set(fresh.map(({ key }) => key));
+    return distinctFresh.size === 1
+      ? { action: 'confirm-replace', ...fresh[0] }
+      : { action: 'choose-replace', candidates: fresh };
+  }
+  if (keySourceFlag) return selectedKeySource(resolved, keySourceFlag);
+  if (candidates.length === 0) return { action: 'none', reason: 'no eligible candidate' };
+  if (new Set(candidates.map(({ key }) => key)).size === 1) {
+    return { action: 'write', ...candidates[0] };
+  }
+  return interactive
+    ? { action: 'choose', candidates }
+    : { action: 'error', reason: 'distinct eligible credentials', candidates };
 }
 
 // ---------------------------------------------------------------------------
@@ -562,8 +640,74 @@ async function writeRulesForMainMode(nonInteractive, clients) {
 // ---------------------------------------------------------------------------
 // Main (interactive mode)
 // ---------------------------------------------------------------------------
+function globalKeyPath() {
+  return path.join(os.homedir(), '.config', 'midbrain', KEY_FILENAME);
+}
+
+function candidateLabel(candidate, clients) {
+  const client = clients.find(({ id }) => id === candidate.clientId);
+  return `${client?.displayName || candidate.clientId} (${candidate.scope}, ${candidate.source})`;
+}
+
+function ambiguityError(candidates, clients) {
+  const found = candidates.map((candidate) => `  - ${candidateLabel(candidate, clients)}`).join('\n');
+  return [
+    'Distinct eligible credentials were found; no global credential was written:',
+    found,
+    'Resolve by running interactively or passing --key-source <clientId>.',
+  ].join('\n');
+}
+
+async function promptForGlobalCandidate(candidates, clients) {
+  console.log('');
+  console.log('Choose the credential to use globally:');
+  candidates.forEach((candidate, index) => {
+    console.log(`  [${index + 1}] ${candidateLabel(candidate, clients)}`);
+  });
+  console.log(`  [${candidates.length + 1}] Keep per-client only (no global credential)`);
+  console.log(`  [${candidates.length + 2}] Enter a different credential manually`);
+  const answer = await prompt(`Select (1-${candidates.length + 2}): `);
+  const selected = Number.parseInt(answer, 10);
+  if (selected >= 1 && selected <= candidates.length) return candidates[selected - 1];
+  if (selected === candidates.length + 2) {
+    const key = await promptForKey();
+    return { clientId: 'manual', key, scope: 'entered', source: 'manual-entry' };
+  }
+  return null;
+}
+
+async function confirmGlobalReplacement(candidate) {
+  const answer = await prompt('Replace existing global credential? [y/N] ');
+  return answer.toLowerCase() === 'y' ? candidate : null;
+}
+
+async function writeGlobalDecision(decision, clients) {
+  if (decision.warning) console.error(`WARN: ${decision.warning}`);
+  if (decision.action === 'keep' || decision.action === 'none') return [];
+  if (decision.action === 'error') throw new Error(ambiguityError(decision.candidates, clients));
+
+  let candidate = decision;
+  if (decision.action === 'choose' || decision.action === 'choose-replace') {
+    candidate = await promptForGlobalCandidate(decision.candidates, clients);
+  }
+  if (!candidate) return [];
+  const replacement = decision.action === 'confirm-replace' || decision.action === 'choose-replace';
+  if (replacement) candidate = await confirmGlobalReplacement(candidate);
+  if (!candidate) return [];
+  return [await getClient('generic').writeKey(candidate.key, {
+    replaceApproved: replacement,
+  })];
+}
+
 async function main(opts = {}) {
-  const { isDev = false, nonInteractive = false, skipRules = false, forceLogin = false, noLogin = false } = opts;
+  const {
+    isDev = false,
+    nonInteractive = false,
+    skipRules = false,
+    forceLogin = false,
+    noLogin = false,
+    keySourceFlag,
+  } = opts;
   const clients = detectClients();
 
   if (clients.length === 0) {
@@ -575,28 +719,31 @@ async function main(opts = {}) {
   // Resolve and write keys
   const { keys, perClient, existingClientKeys } =
     await resolveKeys(clients, { nonInteractive, forceLogin, noLogin });
-  if (keys.size === 0) {
-    throw new Error("No API key found. Run the installer interactively first or set MIDBRAIN_API_KEY.");
-  }
-  const keyLines = [];
+  if (keys.size === 0) throw new Error(NO_KEY_MESSAGE);
 
-  // The global key is always written and is the single source of truth for the
-  // shared-key case. Use the first detected client's key as the global value.
-  const primaryKey = keys.values().next().value;
-  keyLines.push(await getClient('generic').writeKey(primaryKey));
+  const existingGlobal = await readKeyFile(globalKeyPath());
+  const interactive = !nonInteractive && process.stdin.isTTY;
+  const decision = decideGlobalKey({
+    resolved: keys,
+    existingGlobal,
+    interactive,
+    keySourceFlag,
+  });
+  if (decision.action === 'none') throw new Error(NO_KEY_MESSAGE);
+  const keyLines = await writeGlobalDecision(decision, clients);
 
   // Per-client key files are only written when the user opted into distinct
   // keys (or distinct keys already existed). Otherwise the global key alone
   // serves every client via the resolution chain.
   if (perClient) {
     for (const client of clients) {
-      const key = keys.get(client.id);
-      if (!key) continue;
+      const entry = keys.get(client.id);
+      if (!entry) continue;
       if (existingClientKeys.has(client.id)) {
         keyLines.push(`Key preserved: existing ${client.displayName} client credential`);
         continue;
       }
-      keyLines.push(await client.writeKey(key));
+      keyLines.push(await client.writeKey(entry.key));
     }
   }
 
@@ -755,10 +902,11 @@ Usage:
   npx midbrain-memory-mcp install --login                    Force browser-based login
   npx midbrain-memory-mcp install --project <absolute-path>  Per-project setup (non-interactive)
   npx midbrain-memory-mcp install --non-interactive           Non-interactive install (uses existing keys/env)
+  npx midbrain-memory-mcp install --non-interactive --key-source <clientId>
   npx midbrain-memory-mcp install --help                     Show this help
 
 Development (clone-local):
-  node install.mjs [--help | --project <path> | --dev | --non-interactive | --no-rules]
+  node install.mjs [--help | --project <path> | --dev | --non-interactive | --key-source <clientId> | --no-rules]
 
 Flags:
   --login             Authenticate via browser (opens your default browser).
@@ -773,6 +921,8 @@ Flags:
   --non-interactive   Skip all prompts. Uses existing key files or
                       MIDBRAIN_API_KEY env var. Useful for Docker entrypoints
                       and CI environments.
+  --key-source <id>   Explicitly select one detected client's eligible key for
+                      global use when non-interactive candidates differ.
   --no-rules          Skip writing MidBrain memory rules to AGENTS.md and
                       CLAUDE.md. Use when managing instruction files manually.
   --help, -h          Show this help text.
@@ -785,6 +935,16 @@ zero maintenance.
 
 function printHelp() {
   console.log(HELP_TEXT);
+}
+
+function flagValue(argv, flag) {
+  const index = argv.indexOf(flag);
+  if (index === -1) return undefined;
+  const value = argv[index + 1];
+  if (!value || value.startsWith('-')) {
+    throw new Error(`${flag} requires a client ID argument.`);
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -832,7 +992,15 @@ async function runInstallerCli(argv) {
     }
   } else {
     try {
-      await main({ isDev, nonInteractive, skipRules, forceLogin, noLogin });
+      const keySourceFlag = flagValue(argv, '--key-source');
+      await main({
+        isDev,
+        nonInteractive,
+        skipRules,
+        forceLogin,
+        noLogin,
+        keySourceFlag,
+      });
     } catch (err) {
       console.error('Fatal error:', err.message);
       process.exit(1);
@@ -903,6 +1071,7 @@ export {
   runInstallerCli,
   runUserKeyCli,
   printHelp,
+  decideGlobalKey,
   // Re-exports from registry for test convenience
   detectClients,
   allClients,
