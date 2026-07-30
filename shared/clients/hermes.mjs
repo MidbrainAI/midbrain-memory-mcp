@@ -18,9 +18,10 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
+import { writeCredential } from './credential-writer.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT,
-  home, backup, writeSecure, extractCustomEnv, PINNED_RE, writeFileIfChanged,
+  home, backup, extractCustomEnv, PINNED_RE, writeFileIfChanged,
   migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
 import {
@@ -240,9 +241,15 @@ export class Hermes extends BaseClient {
     return key ? { key, source } : null;
   }
 
-  async writeKey(key) {
+  async writeKey(key, { replaceApproved = false } = {}) {
     const kfp = keyFilePath();
-    await writeSecure(kfp, key);
+    await writeCredential({
+      clientId: this.id,
+      scope: 'client',
+      targetPath: kfp,
+      key,
+      replaceApproved,
+    });
     return `Key: ~/.config/hermes/${KEY_FILENAME} (chmod 600)`;
   }
 

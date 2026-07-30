@@ -16,23 +16,34 @@ import os from "os";
 import { enoent, makeResetMocks, makeExistsFor, makeReadFileReturns, makeStatFor } from "./fs-mock.mjs";
 import { makeTestEnv, assertSandboxed } from "./helpers/test-env.mjs";
 
-const mocks = vi.hoisted(() => ({
-  readFile:   vi.fn(),
-  writeFile:  vi.fn().mockResolvedValue(undefined),
-  mkdir:      vi.fn().mockResolvedValue(undefined),
-  chmod:      vi.fn().mockResolvedValue(undefined),
-  stat:       vi.fn(),
-  realpath:   vi.fn(),
-  copyFile:   vi.fn().mockResolvedValue(undefined),
-  readdir:    vi.fn().mockResolvedValue([]),
-  rm:         vi.fn().mockResolvedValue(undefined),
-  access:     vi.fn().mockResolvedValue(undefined),
-  existsSync: vi.fn(() => false),
-  deviceCodeLogin: vi.fn(),
-  readlineAnswers: [],
-  readlineQuestions: [],
-  createReadlineInterface: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+  const state = {
+    readFile:   vi.fn(),
+    writeFile:  vi.fn().mockResolvedValue(undefined),
+    mkdir:      vi.fn().mockResolvedValue(undefined),
+    chmod:      vi.fn().mockResolvedValue(undefined),
+    stat:       vi.fn(),
+    realpath:   vi.fn(),
+    copyFile:   vi.fn().mockResolvedValue(undefined),
+    readdir:    vi.fn().mockResolvedValue([]),
+    rm:         vi.fn().mockResolvedValue(undefined),
+    access:     vi.fn().mockResolvedValue(undefined),
+    existsSync: vi.fn(() => false),
+    writeCredential: vi.fn(),
+    deviceCodeLogin: vi.fn(),
+    readlineAnswers: [],
+    readlineQuestions: [],
+    createReadlineInterface: vi.fn(),
+  };
+  state.writeCredential.mockImplementation(async ({ targetPath, key }) => {
+    const slash = Math.max(targetPath.lastIndexOf('/'), targetPath.lastIndexOf('\\'));
+    await state.mkdir(targetPath.slice(0, slash), { recursive: true });
+    await state.writeFile(targetPath, `${key}\n`, 'utf8');
+    await state.chmod(targetPath, 0o600);
+    return { action: 'written', backupPath: null };
+  });
+  return state;
+});
 
 mocks.createReadlineInterface.mockImplementation(() => ({
   question(question, cb) {
@@ -60,6 +71,9 @@ vi.mock("readline", () => ({
 vi.mock("../shared/device-auth.mjs", () => ({
   deviceCodeLogin: mocks.deviceCodeLogin,
 }));
+vi.mock("../shared/clients/credential-writer.mjs", () => ({
+  writeCredential: mocks.writeCredential,
+}));
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
              chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile,
@@ -73,7 +87,7 @@ const statFor = makeStatFor(mocks);
 const {
   main, setupProject, projectSetup, runInstallerCli, printHelp, checkForUpdate,
   isNewerVersion, selfNpxCacheDir, clearStaleSelfNpxCache, maybeSelfUpdate,
-  PKG_VERSION,
+  decideGlobalKey, PKG_VERSION,
 } = await import("../install.mjs");
 
 // Versions relative to the running package version, for update-check tests.
@@ -179,12 +193,114 @@ function withStdinIsTTY(value) {
   };
 }
 
+function resolvedEntry(key, scope, source) {
+  return { key, scope, source };
+}
+
+describe("decideGlobalKey", () => {
+  it("excludes project-scope credentials from global promotion", () => {
+    const resolved = new Map([
+      ["opencode", resolvedEntry("project-dummy", "project", "/project/.midbrain/.midbrain-key")],
+    ]);
+    expect(decideGlobalKey({
+      resolved,
+      existingGlobal: null,
+      interactive: false,
+    })).toEqual({ action: "none", reason: "no eligible candidate" });
+  });
+
+  it("selects an identical eligible value without insertion-order dependence", () => {
+    const resolved = new Map([
+      ["claude", resolvedEntry("shared-dummy", "client", "/claude/key")],
+      ["opencode", resolvedEntry("shared-dummy", "environment", "env:MIDBRAIN_API_KEY")],
+    ]);
+    expect(decideGlobalKey({
+      resolved,
+      existingGlobal: null,
+      interactive: false,
+    })).toMatchObject({ action: "write", key: "shared-dummy" });
+  });
+
+  it("refuses distinct non-interactive candidates without an explicit source", () => {
+    const resolved = new Map([
+      ["opencode", resolvedEntry("first-dummy", "client", "/opencode/key")],
+      ["claude", resolvedEntry("second-dummy", "client", "/claude/key")],
+    ]);
+    expect(decideGlobalKey({
+      resolved,
+      existingGlobal: null,
+      interactive: false,
+    })).toMatchObject({ action: "error", reason: "distinct eligible credentials" });
+  });
+
+  it("honors an eligible explicit key source", () => {
+    const resolved = new Map([
+      ["opencode", resolvedEntry("first-dummy", "client", "/opencode/key")],
+      ["claude", resolvedEntry("second-dummy", "client", "/claude/key")],
+    ]);
+    expect(decideGlobalKey({
+      resolved,
+      existingGlobal: null,
+      interactive: false,
+      keySourceFlag: "claude",
+    })).toMatchObject({ action: "write", key: "second-dummy", clientId: "claude" });
+  });
+
+  it("rejects an unknown explicit key source", () => {
+    const resolved = new Map([
+      ["opencode", resolvedEntry("first-dummy", "client", "/opencode/key")],
+    ]);
+    expect(() => decideGlobalKey({
+      resolved,
+      existingGlobal: null,
+      interactive: false,
+      keySourceFlag: "unknown",
+    })).toThrow(/has no resolved credential/);
+  });
+
+  it("rejects a project-scoped explicit key source", () => {
+    const resolved = new Map([
+      ["opencode", resolvedEntry("project-dummy", "project", "/project/key")],
+    ]);
+    expect(() => decideGlobalKey({
+      resolved,
+      existingGlobal: null,
+      interactive: false,
+      keySourceFlag: "opencode",
+    })).toThrow(/cannot use a project-scope credential/);
+  });
+
+  it("keeps an existing global and ignores --key-source with a warning", () => {
+    const resolved = new Map([
+      ["opencode", resolvedEntry("client-dummy", "client", "/opencode/key")],
+    ]);
+    expect(decideGlobalKey({
+      resolved,
+      existingGlobal: "global-dummy",
+      interactive: false,
+      keySourceFlag: "opencode",
+    })).toMatchObject({ action: "keep", warning: expect.stringContaining("--key-source ignored") });
+  });
+
+  it("offers replacement only for interactive freshly entered credentials", () => {
+    const resolved = new Map([
+      ["opencode", resolvedEntry("fresh-dummy", "entered", "device-login")],
+    ]);
+    expect(decideGlobalKey({
+      resolved,
+      existingGlobal: "global-dummy",
+      interactive: true,
+    })).toMatchObject({ action: "confirm-replace", key: "fresh-dummy" });
+  });
+});
+
 // ===================================================================
 // main() — per-client key writing
 // ===================================================================
 
 describe("main — per-client key writing", () => {
   let logSpy;
+  let errSpy;
   const savedEnv = {};
 
   beforeEach(() => {
@@ -199,9 +315,11 @@ describe("main — per-client key writing", () => {
     mocks.readlineAnswers = [];
     mocks.readlineQuestions = [];
     savedEnv.MIDBRAIN_API_KEY = process.env.MIDBRAIN_API_KEY;
+    savedEnv.MIDBRAIN_PROJECT_DIR = process.env.MIDBRAIN_PROJECT_DIR;
     delete process.env.MIDBRAIN_API_KEY;
+    delete process.env.MIDBRAIN_PROJECT_DIR;
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -209,6 +327,8 @@ describe("main — per-client key writing", () => {
     vi.restoreAllMocks();
     if (savedEnv.MIDBRAIN_API_KEY === undefined) delete process.env.MIDBRAIN_API_KEY;
     else process.env.MIDBRAIN_API_KEY = savedEnv.MIDBRAIN_API_KEY;
+    if (savedEnv.MIDBRAIN_PROJECT_DIR === undefined) delete process.env.MIDBRAIN_PROJECT_DIR;
+    else process.env.MIDBRAIN_PROJECT_DIR = savedEnv.MIDBRAIN_PROJECT_DIR;
   });
 
   it("default interactive no-key install uses device login and writes global key only", async () => {
@@ -392,6 +512,7 @@ describe("main — per-client key writing", () => {
         [PATHS.opencodeKey]: "oc-key\n",
         [PATHS.hermesKey]: "hermes-key\n",
       });
+      mocks.readlineAnswers = ["3"];
 
       await main();
 
@@ -399,6 +520,13 @@ describe("main — per-client key writing", () => {
       const hermesWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.hermesKey);
       expect(ocWrite).toBeUndefined();
       expect(hermesWrite).toBeUndefined();
+      expect(mocks.writeCredential).not.toHaveBeenCalled();
+      const output = [...logSpy.mock.calls.flat(), ...mocks.readlineQuestions].join("\n");
+      expect(output).toContain("OpenCode (client");
+      expect(output).toContain("Hermes Agent (client");
+      expect(output).toContain("Keep per-client only");
+      expect(output).not.toContain("oc-key");
+      expect(output).not.toContain("hermes-key");
     } finally {
       restoreTTY();
     }
@@ -431,7 +559,7 @@ describe("main — per-client key writing", () => {
     try {
       existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
       // [1] device login, "n" to share prompt, then a key per detected client.
-      mocks.readlineAnswers = ["1", "n", "oc-distinct", "cc-distinct"];
+      mocks.readlineAnswers = ["1", "n", "oc-distinct", "cc-distinct", "1"];
 
       await runInstallerCli(["--no-rules"]);
 
@@ -624,22 +752,168 @@ describe("main — per-client key writing", () => {
     expect(clientWrite).toBeUndefined();
   });
 
-  it("--non-interactive uses distinct existing client keys as global only", async () => {
+  it("--non-interactive refuses distinct existing client keys with zero writes", async () => {
     existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
     readFileReturns({
       [PATHS.opencodeKey]: "oc-existing\n",
       [PATHS.claudeKey]: "cc-existing\n",
     });
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`__EXIT__${code}`);
+    });
 
-    await main({ nonInteractive: true });
+    await expect(runInstallerCli(["--non-interactive", "--no-rules"]))
+      .rejects.toThrow("__EXIT__1");
 
-    const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
-    expect(globalWrite?.[1]).toBe("oc-existing\n");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(fs.writeFile).not.toHaveBeenCalled();
+    expect(mocks.writeCredential).not.toHaveBeenCalled();
+    const output = errSpy.mock.calls.flat().join("\n");
+    expect(output).toContain("OpenCode (client");
+    expect(output).toContain("Claude Code (client");
+    expect(output).toContain("running interactively");
+    expect(output).toContain("--key-source <clientId>");
+    expect(output).not.toContain("MIDBRAIN_API_KEY");
+    expect(output).not.toContain("oc-existing");
+    expect(output).not.toContain("cc-existing");
+  });
 
-    const ocWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.opencodeKey);
-    const ccWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeKey);
-    expect(ocWrite).toBeUndefined();
-    expect(ccWrite).toBeUndefined();
+  it("--key-source explicitly selects an eligible distinct client key", async () => {
+    existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+    readFileReturns({
+      [PATHS.opencodeKey]: "oc-source-dummy\n",
+      [PATHS.claudeKey]: "cc-source-dummy\n",
+    });
+
+    await main({ nonInteractive: true, keySourceFlag: "opencode", skipRules: true });
+
+    expect(mocks.writeCredential).toHaveBeenCalledWith({
+      clientId: "generic",
+      scope: "global",
+      targetPath: PATHS.globalKey,
+      key: "oc-source-dummy",
+      replaceApproved: false,
+    });
+  });
+
+  it("ignores --key-source when a global credential already exists", async () => {
+    existsFor(PATHS.opencodeConfig);
+    readFileReturns({
+      [PATHS.opencodeKey]: "client-dummy\n",
+      [PATHS.globalKey]: "global-dummy\n",
+    });
+
+    await main({
+      nonInteractive: true,
+      keySourceFlag: "opencode",
+      skipRules: true,
+    });
+
+    expect(mocks.writeCredential).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join("\n")).toContain("--key-source ignored");
+  });
+
+  it("preserves a direct existing global when all candidates are client-scope", async () => {
+    existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+    readFileReturns({
+      [PATHS.opencodeKey]: "oc-client-dummy\n",
+      [PATHS.claudeKey]: "cc-client-dummy\n",
+      [PATHS.globalKey]: "global-preserve-dummy\n",
+    });
+
+    await main({ nonInteractive: true, skipRules: true });
+
+    expect(mocks.readFile).toHaveBeenCalledWith(PATHS.globalKey, "utf8");
+    expect(mocks.writeCredential).not.toHaveBeenCalled();
+  });
+
+  it("never promotes a project-scope key to the global credential", async () => {
+    process.env.MIDBRAIN_PROJECT_DIR = PROJECT_DIR;
+    const projectKey = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+    existsFor(PATHS.opencodeConfig);
+    readFileReturns({ [projectKey]: "project-only-dummy\n" });
+
+    await expect(main({ nonInteractive: true, skipRules: true }))
+      .rejects.toThrow(
+        "No API key found. Run the installer interactively first or set MIDBRAIN_API_KEY.",
+      );
+    expect(mocks.writeCredential).not.toHaveBeenCalled();
+  });
+
+  it("--login keeps an existing global by default without exposing credentials", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig);
+      readFileReturns({ [PATHS.globalKey]: "global-before-dummy\n" });
+      mocks.readlineAnswers = [""];
+
+      await main({ forceLogin: true, skipRules: true });
+
+      expect(mocks.writeCredential).not.toHaveBeenCalled();
+      expect(mocks.readlineQuestions.join("\n")).toContain(
+        "Replace existing global credential? [y/N]",
+      );
+      const output = [
+        ...logSpy.mock.calls.flat(),
+        ...errSpy.mock.calls.flat(),
+        ...mocks.readlineQuestions,
+      ].join("\n");
+      expect(output).not.toContain("global-before-dummy");
+      expect(output).not.toContain("device-api-key");
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("--login replaces an existing global only after explicit approval", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig);
+      readFileReturns({ [PATHS.globalKey]: "global-before-dummy\n" });
+      mocks.readlineAnswers = ["y"];
+
+      await main({ forceLogin: true, skipRules: true });
+
+      expect(mocks.writeCredential).toHaveBeenCalledWith({
+        clientId: "generic",
+        scope: "global",
+        targetPath: PATHS.globalKey,
+        key: "device-api-key",
+        replaceApproved: true,
+      });
+      const output = [
+        ...logSpy.mock.calls.flat(),
+        ...errSpy.mock.calls.flat(),
+        ...mocks.readlineQuestions,
+      ].join("\n");
+      expect(output).not.toContain("global-before-dummy");
+      expect(output).not.toContain("global-b");
+      expect(output).not.toContain("device-api-key");
+      expect(output).not.toContain("device-a");
+    } finally {
+      restoreTTY();
+    }
+  });
+
+  it("does not offer global replacement for existing keys only", async () => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+      readFileReturns({
+        [PATHS.opencodeKey]: "oc-existing-dummy\n",
+        [PATHS.claudeKey]: "cc-existing-dummy\n",
+        [PATHS.globalKey]: "global-existing-dummy\n",
+      });
+
+      await main({ skipRules: true });
+
+      expect(mocks.readlineQuestions.join("\n")).not.toContain(
+        "Replace existing global credential?",
+      );
+      expect(mocks.writeCredential).not.toHaveBeenCalled();
+    } finally {
+      restoreTTY();
+    }
   });
 
   it("--non-interactive uses MIDBRAIN_API_KEY through shared key resolution (global only)", async () => {
@@ -1170,13 +1444,14 @@ describe("projectSetup", () => {
 // ===================================================================
 
 describe("printHelp", () => {
-  it("includes --project, --dev, --help flags", () => {
+  it("includes --project, --dev, --key-source, and --help flags", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     printHelp();
     const out = logSpy.mock.calls.map((c) => c[0]).join("\n");
     logSpy.mockRestore();
     expect(out).toContain("--project");
     expect(out).toContain("--dev");
+    expect(out).toContain("--key-source");
     expect(out).toContain("--help");
     expect(out).toContain("midbrain-memory-mcp@latest");
   });
@@ -1228,6 +1503,14 @@ describe("runInstallerCli", () => {
     await expect(runInstallerCli(["--project", "   "])).rejects.toThrow("__EXIT__1");
     const err = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(err).toContain("cannot be empty");
+  });
+
+  it("--key-source without a client ID exits 1", async () => {
+    await expect(runInstallerCli(["--non-interactive", "--key-source"]))
+      .rejects.toThrow("__EXIT__1");
+    const err = errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(err).toContain("--key-source requires a client ID argument");
+    expect(mocks.writeCredential).not.toHaveBeenCalled();
   });
 
   it("--project <path> reaches projectSetup", async () => {
