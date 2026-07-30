@@ -514,14 +514,15 @@ user API key.`,
           }));
         } catch (writeErr) {
           // Post-mint durable-store failure: the key exists remotely but could
-          // not be saved. Report the orphaned agent id so it can be reconciled;
-          // NEVER return the raw secret as a fallback.
-          const detail = writeErr instanceof Error ? writeErr.message : String(writeErr);
+          // not be saved. Report the orphaned agent id and a FIXED reason label
+          // so it can be reconciled; never echo the raw error message (it may
+          // embed a username-bearing path) nor the secret.
+          const reason = writeErr?.category || "keystore-write-failed";
           return {
             content: [{
               type: "text",
               text: `Agent "${name}" (${agent.agent_id}) was created and its key minted, ` +
-                `but the key could NOT be stored in the keystore (${detail}). ` +
+                `but the key could NOT be stored in the keystore (${reason}). ` +
                 `The key was not saved and is not recoverable here — delete agent ` +
                 `${agent.agent_id} in the MidBrain dashboard and retry after fixing the keystore.`,
             }],

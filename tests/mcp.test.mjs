@@ -2422,6 +2422,35 @@ describe("account management tools", () => {
     fetchSpy.mockRestore();
   });
 
+  it("create_agent reports the orphaned agent (label only, no path/secret) when the store fails post-mint", async () => {
+    if (process.platform === "win32") return; // symlink privilege varies on Windows
+    // Preflight passes (no keystore yet), mint succeeds, but the keystore path
+    // is a symlink so the guarded write is refused AFTER minting.
+    const dir = path.dirname(keystoreFile());
+    fs.mkdirSync(dir, { recursive: true });
+    const decoy = path.join(acFakeHome, "decoy.json");
+    fs.writeFileSync(decoy, "{}");
+    fs.symlinkSync(decoy, keystoreFile());
+
+    mockAccountFetch(async (url, opts) => {
+      if (url.endsWith("/api/v1/account/agents") && opts.method === "POST") {
+        return { ok: true, status: 201, json: async () => ({ agent_id: "agent_orphan", name: "New" }), text: async () => "" };
+      }
+      if (url.endsWith("/api/v1/account/keys") && opts.method === "POST") {
+        return { ok: true, status: 201, json: async () => ({ key: "sk-lost-secret-zzzz", token: "t", key_alias: "k", agent_id: "agent_orphan" }), text: async () => "" };
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+
+    const res = await acClient.callTool({ name: "create_agent", arguments: { name: "New" } });
+    const text = res.content[0].text;
+    expect(text).toContain("agent_orphan");          // names the orphan
+    expect(text).toContain("could NOT be stored");
+    expect(text).toContain("symlink-target");         // fixed category label
+    expect(text).not.toContain("sk-lost-secret");     // never the secret
+    expect(text).not.toContain(acFakeHome);           // never a username-bearing path
+  });
+
   it("set_agent refuses to overwrite an existing project key with a different agent without replace", async () => {
     fs.mkdirSync(path.dirname(keystoreFile()), { recursive: true });
     fs.writeFileSync(keystoreFile(), JSON.stringify({
