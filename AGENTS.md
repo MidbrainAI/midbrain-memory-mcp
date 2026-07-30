@@ -109,18 +109,27 @@ and migrates scope-preservingly to the files above.
 
 Key-write policy at install time:
 
+- Every production credential write must use
+  `shared/clients/credential-writer.mjs`; adapters and installer paths must not
+  write key files directly.
 - Global install writes only `~/.config/midbrain/.midbrain-key` by default and
   relies on the resolution chain; it does not duplicate that key into every
   detected client's config dir.
 - When two or more clients are detected interactively, the installer asks
   whether to share one key across all of them. Declining prompts for a distinct
   key per client and writes the per-client files via each client's `writeKey()`.
-- Distinct per-client keys already present on disk are preserved (treated as an
-  intentional per-client setup). Identical existing keys collapse to global.
-- Non-interactive installs always use a single shared (global) key and never
-  write per-client key files.
-- `resolveKeys()` returns `{ keys, perClient }`; `main()` writes per-client key
-  files only when `perClient` is true.
+- Distinct per-client keys already present on disk are preserved. Without an
+  existing global credential, interactive installs require an explicit global
+  source choice; non-interactive installs fail before writes unless
+  `--key-source <clientId>` selects an eligible source.
+- Project-scope credentials are never global-promotion candidates. Existing
+  global credentials are preserved unless an interactive fresh-key flow gets
+  explicit replacement approval; approved replacement creates a timestamped
+  mode-0600 backup first.
+- `resolveKeys()` returns
+  `{ keys: Map<clientId, {key, scope, source}>, perClient,
+  existingClientKeys }`; `main()` writes per-client key files only when
+  `perClient` is true.
 
 ## Capture Paths
 
@@ -302,6 +311,10 @@ never edited. `--no-rules` remains the explicit opt-out.
   Explicit `install` (no flag) restores canonical and drops the markers.
 - `setupProject()` writes project key/config files and returns structured
   summary lines.
+- All installer and adapter credential writes delegate to
+  `shared/clients/credential-writer.mjs`, which validates scope/target,
+  test-sandbox containment, replacement approval, backups, atomic rename, and
+  mode 0600.
 - Project setup must preserve existing config files and merge idempotently.
 - Project setup must guard existing key files and never overwrite credentials.
 - `--no-rules` skips instruction-file rule writes.

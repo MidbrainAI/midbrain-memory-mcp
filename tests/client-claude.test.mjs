@@ -4,7 +4,7 @@
  * All filesystem operations are mocked — no real files read or written.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import fsSync from "node:fs";
 import path from "path";
@@ -12,6 +12,7 @@ import os from "os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
+import { makeTestEnv } from "./helpers/test-env.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
 
 const mocks = vi.hoisted(() => ({
@@ -23,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   realpath:   vi.fn(),
   copyFile:   vi.fn().mockResolvedValue(undefined),
   existsSync: vi.fn(() => false),
+  writeCredential: vi.fn().mockResolvedValue({ action: "written", backupPath: null }),
 }));
 
 vi.mock("fs/promises", () => ({
@@ -34,6 +36,9 @@ vi.mock("fs", async (importOriginal) => {
   const orig = await importOriginal();
   return { ...orig, existsSync: mocks.existsSync, realpathSync: orig.realpathSync };
 });
+vi.mock("../shared/clients/credential-writer.mjs", () => ({
+  writeCredential: mocks.writeCredential,
+}));
 
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
              chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile };
@@ -41,6 +46,7 @@ const resetMocks = makeResetMocks(mocks);
 const existsFor = makeExistsFor(mocks);
 const readFileReturns = makeReadFileReturns(mocks);
 
+const testEnv = await makeTestEnv();
 const { Claude } = await import("../shared/clients/claude.mjs");
 const { shimFilename, buildShimBody } = await import("../shared/clients/shim.mjs");
 
@@ -57,6 +63,10 @@ const PATHS = {
   claudeJson:     path.join(HOME, ".claude.json"),
   claudeSettings: path.join(HOME, ".claude", "settings.json"),
 };
+
+afterAll(async () => {
+  await testEnv.restore();
+});
 
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);
@@ -131,6 +141,24 @@ describe("Claude.resolveClientKey", () => {
     mocks.readFile.mockRejectedValue(fileError("EIO", PATHS.claudeKey));
 
     await expect(cc.resolveClientKey()).rejects.toThrow(/EIO/);
+  });
+});
+
+describe("Claude.writeKey", () => {
+  const cc = new Claude();
+  beforeEach(resetMocks);
+
+  it("delegates the client credential and preserves the summary", async () => {
+    const line = await cc.writeKey("claude-dummy");
+
+    expect(mocks.writeCredential).toHaveBeenCalledWith({
+      clientId: "claude",
+      scope: "client",
+      targetPath: PATHS.claudeKey,
+      key: "claude-dummy",
+      replaceApproved: false,
+    });
+    expect(line).toBe("Key: ~/.config/claude/.midbrain-key (chmod 600)");
   });
 });
 

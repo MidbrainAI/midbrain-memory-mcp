@@ -11,8 +11,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { Codex } from "../shared/clients/codex.mjs";
+import { Claude } from "../shared/clients/claude.mjs";
+import { Generic } from "../shared/clients/generic.mjs";
 import { Hermes } from "../shared/clients/hermes.mjs";
 import { NanoClaw } from "../shared/clients/nanoclaw.mjs";
+import { OpenCode } from "../shared/clients/opencode.mjs";
 import { main } from "../install.mjs";
 import { collectHashes, diffHashes, tripwireSurfaces } from "./helpers/global-tripwire.mjs";
 import { assertSandboxed, makeTestEnv } from "./helpers/test-env.mjs";
@@ -44,6 +47,20 @@ async function expectIsolatedWrite({ clients = [], target, write }) {
 }
 
 describe("credential writers stay inside the test sandbox without filesystem interception", () => {
+  it("isolates the OpenCode adapter writer", async () => {
+    await expectIsolatedWrite({
+      target: (env) => path.join(env.home, ".config", "opencode", ".midbrain-key"),
+      write: () => new OpenCode().writeKey(DUMMY_CREDENTIAL),
+    });
+  });
+
+  it("isolates the Claude adapter writer", async () => {
+    await expectIsolatedWrite({
+      target: (env) => path.join(env.home, ".config", "claude", ".midbrain-key"),
+      write: () => new Claude().writeKey(DUMMY_CREDENTIAL),
+    });
+  });
+
   it("isolates the Codex adapter writer", async () => {
     await expectIsolatedWrite({
       target: (env) => path.join(env.home, ".config", "codex", ".midbrain-key"),
@@ -75,6 +92,16 @@ describe("credential writers stay inside the test sandbox without filesystem int
         process.env.MIDBRAIN_API_KEY = DUMMY_CREDENTIAL;
         await main({ nonInteractive: true, skipRules: true, noLogin: true });
       },
+    });
+  });
+
+  it("isolates the Generic project writer", async () => {
+    await expectIsolatedWrite({
+      target: (env) => path.join(env.root, "project", ".midbrain", ".midbrain-key"),
+      write: (env) => new Generic().setProjectKey(
+        path.join(env.root, "project"),
+        DUMMY_CREDENTIAL,
+      ),
     });
   });
 });

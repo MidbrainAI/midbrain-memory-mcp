@@ -9,7 +9,8 @@
 import { homedir } from 'os';
 import { join } from 'path';
 import { BaseClient } from './base.mjs';
-import { KEY_FILENAME, MIDBRAIN_DIR, writeSecure, resolveProjectKey } from './utils.mjs';
+import { writeCredential } from './credential-writer.mjs';
+import { KEY_FILENAME, MIDBRAIN_DIR, resolveProjectKey } from './utils.mjs';
 
 export class Generic extends BaseClient {
   get id() { return 'generic'; }
@@ -18,9 +19,15 @@ export class Generic extends BaseClient {
   isInstalled() { return true; }
 
   /** Write the global key. Returns a summary line. */
-  async writeKey(key) {
+  async writeKey(key, { replaceApproved = false } = {}) {
     const gp = join(homedir(), '.config', 'midbrain', KEY_FILENAME);
-    await writeSecure(gp, key);
+    await writeCredential({
+      clientId: this.id,
+      scope: 'global',
+      targetPath: gp,
+      key,
+      replaceApproved,
+    });
     return `Key: ~/.config/midbrain/${KEY_FILENAME} (chmod 600)`;
   }
 
@@ -34,7 +41,13 @@ export class Generic extends BaseClient {
   /** Write the project-level key. Returns the file path written. */
   async setProjectKey(projectDir, key) {
     const keyPath = join(projectDir, MIDBRAIN_DIR, KEY_FILENAME);
-    await writeSecure(keyPath, key);
+    await writeCredential({
+      clientId: this.id,
+      scope: 'project',
+      targetPath: keyPath,
+      projectDir,
+      key,
+    });
     return keyPath;
   }
 

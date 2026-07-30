@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import os from "os";
 import path from "path";
 
 import { makeResetMocks, makeReadFileReturns } from "./fs-mock.mjs";
@@ -22,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   realpath:   vi.fn(),
   copyFile:   vi.fn().mockResolvedValue(undefined),
   existsSync: vi.fn(() => false),
+  writeCredential: vi.fn().mockResolvedValue({ action: "written", backupPath: null }),
 }));
 
 vi.mock("fs/promises", () => ({
@@ -33,6 +35,9 @@ vi.mock("fs", async (importOriginal) => {
   const orig = await importOriginal();
   return { ...orig, existsSync: mocks.existsSync, realpathSync: orig.realpathSync };
 });
+vi.mock("../shared/clients/credential-writer.mjs", () => ({
+  writeCredential: mocks.writeCredential,
+}));
 
 const { BaseClient } = await import("../shared/clients/base.mjs");
 const { Generic } = await import("../shared/clients/generic.mjs");
@@ -281,5 +286,38 @@ describe("Generic.getProjectKey", () => {
 
     await expect(client.getProjectKey(PROJECT_DIR)).rejects.toThrow(/Key file is empty/);
     expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("Generic credential writes", () => {
+  const client = new Generic();
+  const projectDir = "/home/testuser/proj";
+
+  beforeEach(resetMocks);
+
+  it("delegates the global credential and preserves the summary", async () => {
+    const targetPath = path.join(os.homedir(), ".config", "midbrain", ".midbrain-key");
+    const line = await client.writeKey("global-dummy");
+
+    expect(mocks.writeCredential).toHaveBeenCalledWith({
+      clientId: "generic",
+      scope: "global",
+      targetPath,
+      key: "global-dummy",
+      replaceApproved: false,
+    });
+    expect(line).toBe("Key: ~/.config/midbrain/.midbrain-key (chmod 600)");
+  });
+
+  it("delegates the canonical project credential and returns its path", async () => {
+    const targetPath = path.join(projectDir, ".midbrain", ".midbrain-key");
+    await expect(client.setProjectKey(projectDir, "project-dummy")).resolves.toBe(targetPath);
+    expect(mocks.writeCredential).toHaveBeenCalledWith({
+      clientId: "generic",
+      scope: "project",
+      targetPath,
+      projectDir,
+      key: "project-dummy",
+    });
   });
 });

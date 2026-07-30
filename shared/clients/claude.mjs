@@ -10,6 +10,7 @@
  */
 
 import { BaseClient, readKeyFile } from './base.mjs';
+import { writeCredential } from './credential-writer.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT,
   home, readJson, writeJson, writeJsonIfChanged, backup, classifyEntry, formatMigrationLine,
@@ -20,7 +21,6 @@ import {
   commandHasLegacyScriptPath, commandHasMidbrainInvocation,
 } from './shim.mjs';
 
-import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 
@@ -159,11 +159,15 @@ export class Claude extends BaseClient {
     return key ? { key, source } : null;
   }
 
-  async writeKey(key) {
+  async writeKey(key, { replaceApproved = false } = {}) {
     const kfp = keyFilePathFn();
-    await fs.mkdir(path.dirname(kfp), { recursive: true });
-    await fs.writeFile(kfp, key + '\n', 'utf8');
-    await fs.chmod(kfp, 0o600);
+    await writeCredential({
+      clientId: this.id,
+      scope: 'client',
+      targetPath: kfp,
+      key,
+      replaceApproved,
+    });
     return `Key: ~/.config/claude/${KEY_FILENAME} (chmod 600)`;
   }
 
