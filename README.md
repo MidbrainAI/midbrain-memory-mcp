@@ -112,7 +112,20 @@ then tells the user to restart.
 | `list_files` | Browse semantic memory documents |
 | `read_file` | Read a semantic memory document by line range |
 | `check_session_status` | Check for recent activity from other clients/sessions |
+| `memory_diagnostics` | Diagnose authentication and fail-open capture health |
 | `memory_setup_project` | Configure project memory and detected-client rules |
+
+`memory_diagnostics` reports the package/client identity, effective API host
+and its scope/source, credential scope and source category, credential
+shadowing, an optional live MCP auth probe, pending capture-cache counts for
+the current and other bindings, safe cache/log locations, and next steps. Pass
+`probe: false` when a network request is not appropriate. Capture remains
+fail-open: failures are cached and logged without blocking the client.
+
+The diagnostics response is safe to paste into an issue. It never includes
+credential contents, hashes, fingerprints, or last-four fragments, and it
+does not read or quote cache or log contents. Paths under the user's home are
+rendered with `~/`; cache-binding hashes are not printed.
 
 ---
 
@@ -932,6 +945,7 @@ mcp.mjs                        MCP tool definitions (createServer factory)
 install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
   midbrain-api.mjs             MidbrainApi class: ALL API calls go here
+  diagnostics.mjs              Secret-free auth/capture report assembly
   logger.mjs                   makeLogger(), logFile(), logDir()
   plugin-entry.mjs             esbuild bundle entry point
   clients/

@@ -54,6 +54,7 @@ describe("MidbrainApi instance API base", () => {
     expect(api.apiBaseScope).toBe("client");
     expect(api.apiBaseSource).toBe("/tmp/config.json");
     expect(api.keyScope).toBe("global");
+    expect(api.cacheScope).toMatch(/^[a-f0-9]{64}$/);
     expect(api.SEARCH_SEMANTIC).toBe(
       "http://127.0.0.1:43123/custom/api/v1/memories/search/semantic",
     );
@@ -107,6 +108,133 @@ describe("MidbrainApi instance API base", () => {
     } finally {
       delete process.env.MIDBRAIN_API_URL;
     }
+  });
+});
+
+describe("MidbrainApi.fetch diagnostics", () => {
+  let fetchSpy;
+
+  afterEach(() => fetchSpy?.mockRestore());
+
+  it("enriches 401 with host, key scope, and the diagnostics pointer only", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: vi.fn().mockResolvedValue("credential ending A1b2 rejected"),
+    });
+    const api = new MidbrainApi("secret-A1b2", "/Users/alice/.midbrain-key", {
+      apiBase: "https://staging.example.test",
+      apiBaseScope: "client",
+      apiBaseSource: "/Users/alice/.config/midbrain/config.json",
+      keyScope: "client",
+    });
+
+    await expect(api.fetch(api.EPISODIC)).rejects.toThrow(
+      "API 401 (auth failed): host=https://staging.example.test key_scope=client — run memory_diagnostics for details",
+    );
+    await expect(api.fetch(api.EPISODIC)).rejects.not.toThrow(/alice|A1b2|config\.json/);
+  });
+
+  it("leaves non-401 error behavior unchanged", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: vi.fn().mockResolvedValue("temporarily unavailable"),
+    });
+    const api = new MidbrainApi("test-key", "test-source");
+    await expect(api.fetch(api.EPISODIC)).rejects.toThrow(
+      "API 503: temporarily unavailable",
+    );
+  });
+
+  it("does not fall back to POST when allowPostFallback is false", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 405,
+      text: vi.fn().mockResolvedValue("method not allowed"),
+    });
+    const api = new MidbrainApi("test-key", "test-source");
+
+    await expect(
+      api.fetch(api.EPISODIC, {}, { allowPostFallback: false }),
+    ).rejects.toThrow("API 405: method not allowed");
+
+    // Exactly one call, and it must be a GET — never a POST to the write path.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][1]).toMatchObject({ method: "GET" });
+  });
+
+  it("still falls back to POST on 405 by default", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce({ ok: false, status: 405, text: vi.fn().mockResolvedValue("") })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ items: [] }) });
+    const api = new MidbrainApi("test-key", "test-source");
+
+    await api.fetch(api.EPISODIC, { page: 1 });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[1][1]).toMatchObject({ method: "POST" });
+  });
+});
+
+describe("MidbrainApi diagnostic output audit", () => {
+  let fetchSpy;
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-output-audit-"));
+    _setCachePath(tmpDir);
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    _setCachePath(null);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("audits the enriched 401 and both capture log-label lines together", async () => {
+    const api = new MidbrainApi("secret-A1b2", "/Users/alice/.midbrain-key", {
+      apiBase: "https://staging.example.test",
+      apiBaseScope: "client",
+      apiBaseSource: "/Users/alice/.config/midbrain/config.json",
+      keyScope: "client",
+    });
+
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: vi.fn().mockResolvedValue("credential ending A1b2 rejected"),
+    });
+    let authError;
+    try {
+      await api.fetch(api.EPISODIC);
+    } catch (error) {
+      authError = error;
+    }
+
+    const networkLog = makeLog();
+    fetchSpy.mockRejectedValueOnce(new Error("network down with credential A1b2"));
+    await api.storeEpisodic("network case", "user", networkLog);
+
+    const statusLog = makeLog();
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: vi.fn().mockResolvedValue("credential ending A1b2 rejected"),
+    });
+    await api.storeEpisodic("status case", "user", statusLog);
+
+    const surfaces = [
+      authError?.message,
+      networkLog.error.mock.calls[0]?.[0],
+      statusLog.error.mock.calls[0]?.[0],
+    ];
+    expect(surfaces).toEqual([
+      "API 401 (auth failed): host=https://staging.example.test key_scope=client — run memory_diagnostics for details",
+      "STORE ERROR: host=https://staging.example.test key_scope=client network-error",
+      "STORE ERROR: status=503 host=https://staging.example.test key_scope=client",
+    ]);
+    expect(surfaces.join("\n")).not.toMatch(/\/Users\/|alice|A1b2|secret-A1b2|key=/i);
   });
 });
 
@@ -208,23 +336,29 @@ describe("MidbrainApi.storeEpisodic", () => {
   });
 
   it("returns false and logs when fetch fails", async () => {
-    fetchSpy.mockRejectedValueOnce(new Error("network down"));
+    fetchSpy.mockRejectedValueOnce(new Error("network down with credential A1b2"));
     const log = makeLog();
 
     await expect(api.storeEpisodic("msg", "user", log)).resolves.toBe(false);
-    expect(log.error).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR"));
+    expect(log.error).toHaveBeenCalledWith(
+      "STORE ERROR: host=https://memory.midbrain.ai key_scope=unknown network-error",
+    );
+    expect(log.error.mock.calls.flat().join("\n")).not.toContain("A1b2");
   });
 
   it("returns false and logs when the API returns a non-2xx status", async () => {
     fetchSpy.mockResolvedValueOnce({
       ok: false,
       status: 503,
-      text: vi.fn().mockResolvedValue("temporarily unavailable"),
+      text: vi.fn().mockResolvedValue("credential ending A1b2 rejected"),
     });
     const log = makeLog();
 
     await expect(api.storeEpisodic("msg", "user", log)).resolves.toBe(false);
-    expect(log.error).toHaveBeenCalledWith(expect.stringContaining("STORE ERROR: status=503"));
+    expect(log.error).toHaveBeenCalledWith(
+      "STORE ERROR: status=503 host=https://memory.midbrain.ai key_scope=unknown",
+    );
+    expect(log.error.mock.calls.flat().join("\n")).not.toContain("A1b2");
   });
 });
 
@@ -629,10 +763,40 @@ describe("MidbrainApi.create", () => {
     expect(api.keySource).toBe("test");
     expect(api.keyFingerprint).toBe("...c123");
     expect(api.keyScope).toBe("global");
+    expect(api.credentialScopes).toEqual([]);
+    expect(api.credentialShadowNote).toBeNull();
     expect(mockClient.resolveKey).toHaveBeenCalledWith(
       "/some/dir",
       { includeScope: true },
     );
+  });
+
+  it("exposes secret-free credential diagnostics from the client resolver", async () => {
+    const diagnosticState = {
+      entries: [
+        { scope: "client", status: "present", source: "/tmp/key", winner: true },
+        { scope: "global", status: "present", source: "/tmp/global", winner: false },
+      ],
+      shadowNote: "client credential shadows the global credential for this client",
+    };
+    const mockClient = {
+      id: "codex",
+      resolveKey: vi.fn().mockResolvedValue({
+        key: "client-secret",
+        source: "/tmp/key",
+        scope: "client",
+      }),
+      inspectCredentialScopes: vi.fn().mockResolvedValue(diagnosticState),
+    };
+
+    const api = await MidbrainApi.create(mockClient, "/project");
+    expect(mockClient.inspectCredentialScopes).toHaveBeenCalledWith(
+      "/project",
+      expect.objectContaining({ scope: "client", source: "/tmp/key" }),
+    );
+    expect(api.credentialScopes).toEqual(diagnosticState.entries);
+    expect(api.credentialShadowNote).toBe(diagnosticState.shadowNote);
+    expect(JSON.stringify(api.credentialScopes)).not.toContain("client-secret");
   });
 
   it("throws when no key found", async () => {

@@ -212,5 +212,7 @@ describe("API-host MCP/capture parity", () => {
     );
     expect(source).toContain("host=${api.effectiveApiBase}");
     expect(source).toContain("scope=${api.apiBaseScope}");
+    expect(source).not.toContain("api.keyFingerprint");
+    expect(source).not.toContain(" key=");
   });
 });

@@ -206,6 +206,84 @@ describe("BaseClient.resolveKey — project→global WARN", () => {
   });
 });
 
+describe("BaseClient.inspectCredentialScopes", () => {
+  const client = new TestClient();
+  const PROJECT_DIR = "/home/testuser/proj";
+  const projectKey = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+  const globalKey = path.join(os.homedir(), ".config", "midbrain", ".midbrain-key");
+  const savedEnv = {};
+
+  beforeEach(() => {
+    resetMocks();
+    savedEnv.MIDBRAIN_PROJECT_DIR = process.env.MIDBRAIN_PROJECT_DIR;
+    savedEnv.MIDBRAIN_API_KEY = process.env.MIDBRAIN_API_KEY;
+    delete process.env.MIDBRAIN_PROJECT_DIR;
+    delete process.env.MIDBRAIN_API_KEY;
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("marks the winner and reports only a differing higher-priority shadow", async () => {
+    readFileReturns({ [projectKey]: "project-key", [globalKey]: "global-key" });
+    const resolved = await client.resolveKey(PROJECT_DIR, { includeScope: true });
+    const state = await client.inspectCredentialScopes(PROJECT_DIR, resolved);
+
+    expect(state.entries).toEqual([
+      { scope: "project", status: "present", source: projectKey, winner: true },
+      { scope: "client", status: "absent", winner: false },
+      { scope: "global", status: "present", source: globalKey, winner: false },
+      { scope: "environment", status: "absent", winner: false },
+    ]);
+    expect(state.shadowNote).toBe(
+      "project credential shadows the global credential for this client",
+    );
+    expect(JSON.stringify(state)).not.toContain("project-key");
+    expect(JSON.stringify(state)).not.toContain("global-key");
+  });
+
+  it("does not report a same-content shadow", async () => {
+    readFileReturns({ [projectKey]: "same-key", [globalKey]: "same-key" });
+    const resolved = await client.resolveKey(PROJECT_DIR, { includeScope: true });
+    const state = await client.inspectCredentialScopes(PROJECT_DIR, resolved);
+    expect(state.shadowNote).toBeNull();
+  });
+
+  it("reports a fixed reason label for read errors, never a raw path", async () => {
+    // Project read succeeds (winner); global read fails with an unexpected
+    // errno whose message embeds a username-bearing absolute path.
+    const ioError = Object.assign(
+      new Error(`EIO: i/o error, open '${globalKey}'`),
+      { code: "EIO" },
+    );
+    mocks.readFile.mockImplementation(async (filePath) => {
+      if (filePath === projectKey) return "project-key\n";
+      if (filePath === globalKey) throw ioError;
+      const err = new Error("ENOENT");
+      err.code = "ENOENT";
+      throw err;
+    });
+
+    const resolved = await client.resolveKey(PROJECT_DIR, { includeScope: true });
+    const state = await client.inspectCredentialScopes(PROJECT_DIR, resolved);
+
+    const globalEntry = state.entries.find((entry) => entry.scope === "global");
+    expect(globalEntry).toMatchObject({ status: "error", reason: "unreadable" });
+    expect(globalEntry).not.toHaveProperty("source");
+    // The error branch must never carry the raw fs message or the failing
+    // path. (The winner entry legitimately carries its own source, which the
+    // diagnostics report sanitizes at assembly time — not tested here.)
+    const errorEntry = JSON.stringify(globalEntry);
+    expect(errorEntry).not.toContain("testuser");
+    expect(errorEntry).not.toContain("i/o error");
+    expect(errorEntry).not.toContain(".midbrain-key");
+  });
+});
+
 // ===================================================================
 // Generic project key CRUD
 // ===================================================================

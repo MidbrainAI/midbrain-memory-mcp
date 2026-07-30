@@ -66,6 +66,10 @@ tests/                           Vitest suite
 - Use native `fetch`; do not add HTTP client dependencies.
 - Tool handlers must use `MidbrainApi.create(getClient(id), projectDir)` for
   API calls and key resolution.
+- `memory_diagnostics` reads host/key binding facts only from `MidbrainApi`
+  instance getters; never re-run host or credential precedence in the tool.
+  Its output must not include credential contents, hashes, fingerprints,
+  last-four fragments, usernames in home paths, or cache-binding hashes.
 
 ## API Key Resolution
 
