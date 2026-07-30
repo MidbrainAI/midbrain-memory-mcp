@@ -39,7 +39,7 @@ export class Generic extends BaseClient {
   }
 
   /** Write the project-level key. Returns the file path written. */
-  async setProjectKey(projectDir, key) {
+  async setProjectKey(projectDir, key, { replaceApproved = false } = {}) {
     const keyPath = join(projectDir, MIDBRAIN_DIR, KEY_FILENAME);
     await writeCredential({
       clientId: this.id,
@@ -47,6 +47,7 @@ export class Generic extends BaseClient {
       targetPath: keyPath,
       projectDir,
       key,
+      replaceApproved,
     });
     return keyPath;
   }

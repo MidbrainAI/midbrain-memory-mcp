@@ -27,6 +27,7 @@ import { readKeyFile } from './shared/clients/base.mjs';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
 import { writeGlobalRules, writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
+import { readGlobalKeystore, writeGlobalKeystore, globalKeystorePath } from './shared/keystore.mjs';
 import { KEY_FILENAME, PKG_NAME, REPO_ROOT } from './shared/clients/utils.mjs';
 import { classifyInstallContext, shouldSkipSelfRepair } from './shared/install-context.mjs';
 
@@ -1008,6 +1009,54 @@ async function runInstallerCli(argv) {
 }
 
 // ---------------------------------------------------------------------------
+// user-key subcommand: set/reroll the account-level user API key
+// ---------------------------------------------------------------------------
+
+/** Prompt for a line of input, echoing the prompt to stderr (keeps stdout clean). */
+async function promptStderr(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+/**
+ * `user-key set [key]` — store the account-level user API key in the global
+ * keystore. Prefer the no-argument form: it prompts on stderr so the secret
+ * never lands in shell history or an assistant transcript. Passing the key
+ * inline is supported for scripts/CI but records it in shell history.
+ *
+ * @param {string[]} argv  Subcommand args (after "user-key").
+ */
+async function runUserKeyCli(argv) {
+  const sub = argv[0];
+  if (sub === 'set') {
+    let key = argv[1];
+    if (!key) key = await promptStderr('Enter your MidBrain user API key: ');
+    if (!key) {
+      console.error('No key provided. Aborting.');
+      process.exit(1);
+    }
+    // Store unconditionally — this is a local file write, not a validation
+    // step. If the key is bad, the account operations that use it will fail
+    // with the real server error at the point they are invoked.
+    const ks = await readGlobalKeystore();
+    await writeGlobalKeystore({ ...ks, user_key: key });
+    // Never echo any part of the secret (privacy contract).
+    console.error(`User API key saved to ${globalKeystorePath()}`);
+    return;
+  }
+
+  console.error('Usage: midbrain-memory-mcp@latest user-key set');
+  console.error('  Runs interactively and prompts for the key (recommended).');
+  console.error('  Optionally: user-key set <key>  (records the key in shell history)');
+  process.exit(2);
+}
+
+// ---------------------------------------------------------------------------
 // Exports (for testability)
 // ---------------------------------------------------------------------------
 export {
@@ -1015,6 +1064,7 @@ export {
   setupProject,
   projectSetup,
   runInstallerCli,
+  runUserKeyCli,
   printHelp,
   decideGlobalKey,
   // Re-exports from registry for test convenience

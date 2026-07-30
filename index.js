@@ -47,6 +47,9 @@ if (isMain) {
   } else if (process.argv[2] === "install") {
     const { runInstallerCli } = await import("./install.mjs");
     await runInstallerCli(process.argv.slice(3));
+  } else if (process.argv[2] === "user-key") {
+    const { runUserKeyCli } = await import("./install.mjs");
+    await runUserKeyCli(process.argv.slice(3));
   } else {
     const server = createServer(PKG_VERSION);
     const transport = new StdioServerTransport();

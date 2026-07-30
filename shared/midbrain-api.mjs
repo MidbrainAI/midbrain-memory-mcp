@@ -3,7 +3,9 @@
  *
  * HTTP client for the MidBrain Memory API.
  * Handles authentication, endpoint routing, and both read-path (GET)
- * and write-path (POST episodic) operations.
+ * and write-path (POST episodic) operations. Also exposes the account
+ * management surface (/api/v1/account: agents + keys) for instances
+ * constructed with the user API key via MidbrainApi.createForUser().
  *
  * Episodic write resilience: when a POST to the episodic endpoint fails,
  * the entry is appended to a local NDJSON cache file. On the next
@@ -49,6 +51,26 @@ const PK_DEFAULT_TIMEOUT_MS = 2000;
 
 const DEFAULT_SEARCH_LIMIT = 10;
 const PRODUCT_USER_AGENT = "midbrain-memory-mcp";
+const ERROR_BODY_MAX = 200;
+
+/**
+ * Bound and sanitize an account-API error body before surfacing it: cap the
+ * length and strip bearer tokens / sk-style secrets so a server error can never
+ * echo a credential fragment through MCP output.
+ * @param {string} text
+ * @returns {string} A short, safe `: <detail>` suffix, or "".
+ */
+function sanitizeErrorBody(text) {
+  if (!text) return "";
+  let clean = String(text)
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
+    .replace(/\b(sk|mb|pk)[-_][A-Za-z0-9._-]{6,}/gi, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return "";
+  if (clean.length > ERROR_BODY_MAX) clean = `${clean.slice(0, ERROR_BODY_MAX)}…`;
+  return `: ${clean}`;
+}
 
 async function inspectCredentialScopes(client, projectDir, result) {
   if (typeof client.inspectCredentialScopes !== "function") {
@@ -116,6 +138,35 @@ export class MidbrainApi {
       keyScope: result.scope,
       credentialScopes: credentialState.entries,
       credentialShadowNote: credentialState.shadowNote,
+    });
+  }
+
+  /**
+   * Factory for account-level operations: resolves the account USER API key
+   * (global-only) from a client adapter. The returned instance is intended for
+   * the account methods (listAgents/createAgent/createKey/...), which are
+   * authenticated with the user key rather than an agent key.
+   *
+   * @param {import('./clients/base.mjs').BaseClient} client
+   */
+  static async createForUser(client) {
+    const result = await client.resolveUserKey();
+    if (!result) {
+      throw new Error(
+        "No user API key configured. Set one with the set_user_api_key tool " +
+        "or `npx midbrain-memory-mcp@latest user-key set`.",
+      );
+    }
+    // The user key is a global credential, so resolve the host at global scope
+    // (never a project host). Binding the host here means account requests go
+    // to the user's configured origin instead of the default, so a self-hosted
+    // or pinned user never leaks their account credential to memory.midbrain.ai.
+    const host = await resolveApiHost({ clientId: client.id, keyScope: "global" });
+    return new MidbrainApi(result.key, result.source, {
+      apiBase: host.url,
+      apiBaseScope: host.scope,
+      apiBaseSource: host.source,
+      keyScope: "global",
     });
   }
 
@@ -326,6 +377,91 @@ export class MidbrainApi {
     } catch {
       return [];
     }
+  }
+
+  // --- Account management (user-key authenticated) ---
+  //
+  // These operate on /api/v1/account and require this instance to hold the
+  // account USER API key (see MidbrainApi.createForUser). They let the caller
+  // manage agents and agent API keys.
+
+  /** Account surface (/api/v1/account) derived from THIS instance's base. */
+  get #accountBase() {
+    return `${this.#apiBase}/api/v1/account`;
+  }
+
+  /**
+   * Authenticated JSON request against the account surface.
+   * @param {string} method   HTTP method.
+   * @param {string} suffix   Path under /api/v1/account (e.g. "/agents").
+   * @param {object} [body]   JSON body for write requests.
+   * @returns {Promise<any>}  Parsed JSON, or null for 204.
+   */
+  async #accountRequest(method, suffix, body) {
+    const headers = {
+      Authorization: `Bearer ${this.#key}`,
+      "User-Agent": PRODUCT_USER_AGENT,
+    };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+
+    // Build the URL from the instance base (resolved per user-key scope), never
+    // a module-level default — a self-hosted user must not hit memory.midbrain.ai.
+    const response = await fetch(`${this.#accountBase}${suffix}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Account API ${response.status}${sanitizeErrorBody(text)}`);
+    }
+    if (response.status === 204) return null;
+    return response.json().catch(() => null);
+  }
+
+  /** List agents owned by the user. @returns {Promise<Array<object>>} */
+  async listAgents() {
+    const data = await this.#accountRequest("GET", "/agents");
+    return Array.isArray(data) ? data : [];
+  }
+
+  /**
+   * Create a server-managed (key_provider="midbrain") agent.
+   * @param {{name: string, description?: string}} params
+   * @returns {Promise<object>} AgentOut
+   */
+  async createAgent({ name, description } = {}) {
+    if (!name) throw new Error("createAgent requires a name");
+    const body = { name };
+    if (description !== undefined) body.description = description;
+    return this.#accountRequest("POST", "/agents", body);
+  }
+
+  /**
+   * Create an API key for an agent. The raw key is returned exactly once.
+   * @param {{agent_id: string, key_alias: string, max_budget?: number, read_only?: boolean}} params
+   * @returns {Promise<object>} KeyResponse (includes `key` secret + `token`)
+   */
+  async createKey({ agent_id, key_alias, max_budget, read_only } = {}) {
+    if (!agent_id) throw new Error("createKey requires an agent_id");
+    if (!key_alias) throw new Error("createKey requires a key_alias");
+    const body = { agent_id, key_alias };
+    if (max_budget !== undefined) body.max_budget = max_budget;
+    if (read_only !== undefined) body.read_only = read_only;
+    return this.#accountRequest("POST", "/keys", body);
+  }
+
+  /**
+   * Delete an agent. Per the account API this HARD-deletes the agent AND
+   * cascades to its API keys (and memories) — so this alone is sufficient
+   * compensating cleanup for a minted-but-unstored key. Returns null (204).
+   * @param {string} agent_id
+   * @returns {Promise<null>}
+   */
+  async deleteAgent(agent_id) {
+    if (!agent_id) throw new Error("deleteAgent requires an agent_id");
+    return this.#accountRequest("DELETE", `/agents/${encodeURIComponent(agent_id)}`);
   }
 
   // --- Static endpoint constants (for callers that build URLs directly) ---

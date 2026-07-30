@@ -3,6 +3,7 @@ dist/
 .tmp-test-fixtures/
 .midbrain-key
 .midbrain-account-key
+.midbrain-keystore.json
 .DS_Store
 *.log
 *.bak

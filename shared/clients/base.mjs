@@ -19,11 +19,14 @@
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
+import { readKeystore, getUserKey } from '../keystore.mjs';
 import { classifyScopeError, credentialShadowNote } from '../credential-scope.mjs';
 
 const KEY_FILENAME = ".midbrain-key";
+const KEYSTORE_FILENAME = '.midbrain-keystore.json';
 const MIDBRAIN_DIR = '.midbrain';
 const ENV_VAR = 'MIDBRAIN_API_KEY';
+const USER_ENV_VAR = 'MIDBRAIN_USER_API_KEY';
 const UNRESOLVED_TERMINAL_CWD = '${TERMINAL_CWD}';
 
 function projectContext(projectDir) {
@@ -169,6 +172,30 @@ export class BaseClient {
     const globalPath = join(homedir(), '.config', 'midbrain', KEY_FILENAME);
     const key = await readKeyFile(globalPath);
     return key ? { key, source: globalPath } : null;
+  }
+
+  /**
+   * Resolve the account-level user API key. This is a global credential (used
+   * to mint agents and agent keys) and is intentionally NOT project-scoped.
+   *
+   * Priority:
+   *   1. MIDBRAIN_USER_API_KEY env var
+   *   2. ~/.config/midbrain/.midbrain-keystore.json user_key
+   *
+   * @returns {Promise<{key: string, source: string} | null>}
+   */
+  async resolveUserKey() {
+    if (process.env[USER_ENV_VAR]) {
+      const key = process.env[USER_ENV_VAR].trim();
+      if (key) return { key, source: `env:${USER_ENV_VAR}` };
+    }
+    const globalDir = join(homedir(), '.config', 'midbrain');
+    const ks = await readKeystore(join(globalDir, KEYSTORE_FILENAME));
+    if (ks) {
+      const key = getUserKey(ks);
+      if (key) return { key, source: join(globalDir, KEYSTORE_FILENAME) };
+    }
+    return null;
   }
 
   /** @deprecated Credential fragments must not be included in output. */

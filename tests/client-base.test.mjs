@@ -285,6 +285,104 @@ describe("BaseClient.inspectCredentialScopes", () => {
 });
 
 // ===================================================================
+// Agent-key resolution uses ONLY .midbrain-key (keystore is not a selector)
+// ===================================================================
+
+describe("BaseClient.resolveKey — keystore is not an agent selector", () => {
+  const client = new TestClient();
+  const PROJECT_DIR = "/home/testuser/proj";
+  const projKeystore = path.join(PROJECT_DIR, ".midbrain", ".midbrain-keystore.json");
+  const globalKeystore = path.join(os.homedir(), ".config", "midbrain", ".midbrain-keystore.json");
+  const savedEnv = {};
+  let errSpy;
+
+  beforeEach(() => {
+    resetMocks();
+    savedEnv.MIDBRAIN_PROJECT_DIR = process.env.MIDBRAIN_PROJECT_DIR;
+    savedEnv.MIDBRAIN_API_KEY = process.env.MIDBRAIN_API_KEY;
+    delete process.env.MIDBRAIN_PROJECT_DIR;
+    delete process.env.MIDBRAIN_API_KEY;
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errSpy.mockRestore();
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  const agentKeystore = (key) =>
+    JSON.stringify({
+      version: 1,
+      agents: { agent_a: { agent_key: key, key_provider: "midbrain" } },
+    }) + "\n";
+
+  it("does NOT resolve an agent key from a project keystore", async () => {
+    // Only a keystore is present (no .midbrain-key). resolveKey must NOT use it
+    // for the agent key — selection is .midbrain-key-only.
+    readFileReturns({ [projKeystore]: agentKeystore("keystore-key") });
+    await expect(client.resolveKey(PROJECT_DIR)).resolves.toBeNull();
+  });
+
+  it("does NOT resolve an agent key from the global keystore", async () => {
+    readFileReturns({ [globalKeystore]: agentKeystore("global-ks-key") });
+    await expect(client.resolveKey()).resolves.toBeNull();
+  });
+
+  it("resolves the project .midbrain-key normally", async () => {
+    const legacySub = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+    readFileReturns({ [legacySub]: "legacy-key\n" });
+    await expect(client.resolveKey(PROJECT_DIR)).resolves.toEqual({
+      key: "legacy-key",
+      source: legacySub,
+    });
+  });
+});
+
+describe("BaseClient.resolveUserKey", () => {
+  const client = new TestClient();
+  const globalKeystore = path.join(os.homedir(), ".config", "midbrain", ".midbrain-keystore.json");
+  const savedEnv = {};
+
+  beforeEach(() => {
+    resetMocks();
+    savedEnv.MIDBRAIN_USER_API_KEY = process.env.MIDBRAIN_USER_API_KEY;
+    delete process.env.MIDBRAIN_USER_API_KEY;
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("prefers MIDBRAIN_USER_API_KEY env var", async () => {
+    process.env.MIDBRAIN_USER_API_KEY = "sk-user-env";
+    await expect(client.resolveUserKey()).resolves.toEqual({
+      key: "sk-user-env",
+      source: "env:MIDBRAIN_USER_API_KEY",
+    });
+  });
+
+  it("reads user_key from the global keystore", async () => {
+    readFileReturns({
+      [globalKeystore]: JSON.stringify({ version: 1, user_key: "sk-user-ks", agents: {} }) + "\n",
+    });
+    await expect(client.resolveUserKey()).resolves.toEqual({
+      key: "sk-user-ks",
+      source: globalKeystore,
+    });
+  });
+
+  it("returns null when no user key configured", async () => {
+    await expect(client.resolveUserKey()).resolves.toBeNull();
+  });
+});
+
+// ===================================================================
 // Generic project key CRUD
 // ===================================================================
 
@@ -396,6 +494,14 @@ describe("Generic credential writes", () => {
       targetPath,
       projectDir,
       key: "project-dummy",
+      replaceApproved: false,
     });
+  });
+
+  it("passes replaceApproved through to the guarded writer", async () => {
+    await client.setProjectKey(projectDir, "project-dummy", { replaceApproved: true });
+    expect(mocks.writeCredential).toHaveBeenCalledWith(
+      expect.objectContaining({ replaceApproved: true }),
+    );
   });
 });
