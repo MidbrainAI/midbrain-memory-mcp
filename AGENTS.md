@@ -123,9 +123,12 @@ Rules:
   called only on explicit user request — never to autonomously provision storage.
 - `create_agent` creates an agent AND mints its key in one step, cataloging both
   in the keystore (stored at rest under chmod 600); the raw secret is never
-  returned in tool output, and a keystore-write failure reports the orphaned
-  agent id rather than echoing the key. Keystore writes go through the guarded
-  credential writer (symlink-reject, atomic mode-0600, backup-before-replace).
+  returned in tool output. It preflights keystore readability before minting; on
+  a post-mint store failure it deletes the just-created agent (the account API
+  cascades this to the minted key) and reports a clean rollback, falling back to
+  reporting the orphaned agent id only if that rollback also fails. Keystore
+  writes go through the guarded credential writer (symlink-reject, atomic
+  mode-0600, backup-before-replace).
 - `set_agent` selects an agent for a project by writing that agent's key into
   `<project_dir>/.midbrain/.midbrain-key` (via `Generic.setProjectKey`, through
   the guarded writer). It resolves a free-form name/alias (or exact id) via

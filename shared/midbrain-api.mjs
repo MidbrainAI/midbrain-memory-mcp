@@ -452,6 +452,18 @@ export class MidbrainApi {
     return this.#accountRequest("POST", "/keys", body);
   }
 
+  /**
+   * Delete an agent. Per the account API this HARD-deletes the agent AND
+   * cascades to its API keys (and memories) — so this alone is sufficient
+   * compensating cleanup for a minted-but-unstored key. Returns null (204).
+   * @param {string} agent_id
+   * @returns {Promise<null>}
+   */
+  async deleteAgent(agent_id) {
+    if (!agent_id) throw new Error("deleteAgent requires an agent_id");
+    return this.#accountRequest("DELETE", `/agents/${encodeURIComponent(agent_id)}`);
+  }
+
   // --- Static endpoint constants (for callers that build URLs directly) ---
 
   static get SEARCH_SEMANTIC()    { return ENDPOINTS.SEARCH_SEMANTIC; }

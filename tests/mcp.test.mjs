@@ -2422,10 +2422,9 @@ describe("account management tools", () => {
     fetchSpy.mockRestore();
   });
 
-  it("create_agent reports the orphaned agent (label only, no path/secret) when the store fails post-mint", async () => {
-    if (process.platform === "win32") return; // symlink privilege varies on Windows
-    // Preflight passes (no keystore yet), mint succeeds, but the keystore path
-    // is a symlink so the guarded write is refused AFTER minting.
+  // A symlinked keystore makes the guarded write fail AFTER the key is minted,
+  // exercising the compensating-rollback path. Seed it and mock the account API.
+  function seedSymlinkedKeystoreAndMint(handleDelete) {
     const dir = path.dirname(keystoreFile());
     fs.mkdirSync(dir, { recursive: true });
     const decoy = path.join(acFakeHome, "decoy.json");
@@ -2437,18 +2436,40 @@ describe("account management tools", () => {
         return { ok: true, status: 201, json: async () => ({ agent_id: "agent_orphan", name: "New" }), text: async () => "" };
       }
       if (url.endsWith("/api/v1/account/keys") && opts.method === "POST") {
-        return { ok: true, status: 201, json: async () => ({ key: "sk-lost-secret-zzzz", token: "t", key_alias: "k", agent_id: "agent_orphan" }), text: async () => "" };
+        return { ok: true, status: 201, json: async () => ({ key: "sk-lost-secret-zzzz", token: "tok-1", key_alias: "k", agent_id: "agent_orphan" }), text: async () => "" };
       }
-      throw new Error(`unexpected ${url}`);
+      if (url.includes("/api/v1/account/agents/agent_orphan") && opts.method === "DELETE") {
+        return handleDelete();
+      }
+      throw new Error(`unexpected ${opts.method} ${url}`);
     });
+  }
+
+  it("create_agent rolls back the agent when the store fails post-mint (no secret/path)", async () => {
+    if (process.platform === "win32") return; // symlink privilege varies on Windows
+    seedSymlinkedKeystoreAndMint(() => ({ ok: true, status: 204, text: async () => "", json: async () => null }));
 
     const res = await acClient.callTool({ name: "create_agent", arguments: { name: "New" } });
     const text = res.content[0].text;
-    expect(text).toContain("agent_orphan");          // names the orphan
-    expect(text).toContain("could NOT be stored");
-    expect(text).toContain("symlink-target");         // fixed category label
-    expect(text).not.toContain("sk-lost-secret");     // never the secret
-    expect(text).not.toContain(acFakeHome);           // never a username-bearing path
+    // The compensating DELETE was issued for the minted agent.
+    const deleteCall = acFetchSpy.mock.calls.find(([u, o]) => String(u).includes("/agents/agent_orphan") && o.method === "DELETE");
+    expect(deleteCall).toBeDefined();
+    expect(text).toMatch(/rolled back/i);
+    expect(text).toContain("symlink-target");        // fixed category label
+    expect(text).not.toContain("sk-lost-secret");    // never the secret
+    expect(text).not.toContain(acFakeHome);          // never a username-bearing path
+  });
+
+  it("create_agent reports the orphaned agent id when rollback also fails", async () => {
+    if (process.platform === "win32") return;
+    seedSymlinkedKeystoreAndMint(() => ({ ok: false, status: 500, text: async () => "boom", json: async () => null }));
+
+    const res = await acClient.callTool({ name: "create_agent", arguments: { name: "New" } });
+    const text = res.content[0].text;
+    expect(text).toContain("agent_orphan");          // names the orphan for manual cleanup
+    expect(text).toMatch(/rollback also failed/i);
+    expect(text).not.toContain("sk-lost-secret");    // never the secret
+    expect(text).not.toContain(acFakeHome);          // never a username-bearing path
   });
 
   it("set_agent refuses to overwrite an existing project key with a different agent without replace", async () => {

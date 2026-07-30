@@ -883,6 +883,34 @@ describe("MidbrainApi account operations", () => {
     expect(JSON.parse(opts.body)).toEqual({ agent_id: "a1", key_alias: "k", read_only: true, max_budget: 5 });
   });
 
+  it("deleteAgent issues a DELETE to the instance base and tolerates 204", async () => {
+    fetchSpy.mockResolvedValue({ ok: true, status: 204, text: async () => "", json: async () => null });
+    const api = new MidbrainApi("sk-user", "ks", {
+      apiBase: "https://self-host.invalid",
+      apiBaseScope: "environment",
+      apiBaseSource: "env:MIDBRAIN_API_URL",
+      keyScope: "global",
+    });
+    await expect(api.deleteAgent("agent_9")).resolves.toBeNull();
+    const [url, opts] = fetchSpy.mock.calls[0];
+    expect(url).toBe("https://self-host.invalid/api/v1/account/agents/agent_9");
+    expect(opts.method).toBe("DELETE");
+    expect(opts.headers.Authorization).toBe("Bearer sk-user");
+    // Never the default origin.
+    for (const [calledUrl] of fetchSpy.mock.calls) {
+      expect(String(calledUrl)).not.toContain("memory.midbrain.ai");
+    }
+  });
+
+  it("deleteAgent url-encodes the id and requires one", async () => {
+    fetchSpy.mockResolvedValue({ ok: true, status: 204, text: async () => "", json: async () => null });
+    const api = new MidbrainApi("sk-user", "test");
+    await api.deleteAgent("a/b?c");
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toMatch(/\/agents\/a%2Fb%3Fc$/);
+    await expect(api.deleteAgent()).rejects.toThrow(/requires an agent_id/);
+  });
+
   it("throws with status + body on a non-2xx account response", async () => {
     fetchSpy.mockResolvedValue({ ok: false, status: 404, text: async () => "Agent not found" });
     const api = new MidbrainApi("sk-user", "test");
