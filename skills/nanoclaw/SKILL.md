@@ -238,10 +238,11 @@ Verify MCP tools:
 bash bin/ncl groups config get --id "$AGENT_GROUP_ID" | grep midbrain-memory
 ```
 
-Verify hook registration without printing keys:
+Verify hook registration without printing keys (quiet grep — matching lines
+carry the inline key and must never be echoed):
 
 ```bash
-grep -F ".midbrain/bin/claude-hook" "$SETTINGS_FILE"
+grep -Fq ".midbrain/bin/claude-hook" "$SETTINGS_FILE" && echo "midbrain hooks registered"
 ```
 
 Verify memory search from the agent:
