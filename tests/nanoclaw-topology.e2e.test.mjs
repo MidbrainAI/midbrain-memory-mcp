@@ -58,6 +58,8 @@ afterEach(async () => {
   errSpy.mockRestore();
   delete process.env.MIDBRAIN_API_KEY;
   delete process.env.MIDBRAIN_USER_API_KEY;
+  delete process.env.MIDBRAIN_API_URL;
+  delete process.env.MIDBRAIN_CLIENT;
   await env.restore();
 });
 
@@ -110,6 +112,29 @@ describe("PRD-039 F1 — ensureHookCredential matrix (runSelfRepair)", () => {
     await runSelfRepair(NPX_CTX);
 
     await expect(fs.stat(env.paths.globalKey)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("MIDBRAIN_API_URL set (env-bound self-host key) → no write — never strand the key on the default origin", async () => {
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    process.env.MIDBRAIN_API_URL = "https://selfhost.example";
+
+    await runSelfRepair(NPX_CTX);
+
+    await expect(fs.stat(env.paths.globalKey)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(stderrText()).not.toContain("hook credential");
+  });
+
+  it("an active client-scope file credential blocks persistence (no scope promotion)", async () => {
+    const clientKeyPath = path.join(env.home, ".config", "claude", ".midbrain-key");
+    await fs.mkdir(path.dirname(clientKeyPath), { recursive: true });
+    await fs.writeFile(clientKeyPath, "client-key-active\n", { mode: 0o600 });
+    process.env.MIDBRAIN_CLIENT = "claude";
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+
+    await runSelfRepair(DURABLE);
+
+    await expect(fs.stat(env.paths.globalKey)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(clientKeyPath, "utf8")).toBe("client-key-active\n");
   });
 
   it("identical existing key → mtime-preserving no-op, silent", async () => {

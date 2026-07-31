@@ -709,14 +709,15 @@ The skill instructs Claude Code to:
 3. Wire the MCP server for that group with `npx -y midbrain-memory-mcp@latest`
 4. Directly merge Claude capture hooks into
    `data/v2-sessions/<group-id>/.claude-shared/settings.json`
-5. Write shim-form capture hooks — `'/home/node/.midbrain/bin/claude-hook'
-   user|assistant` with an inline key prefix — while the MCP server persists
-   its env key to the global key file at server start for hook child
-   processes. The shim re-resolves through the published package instead of a
-   pinned package-store path. Legacy inline-key
+5. Write canonical shim-form capture hooks —
+   `'/home/node/.midbrain/bin/claude-hook' user|assistant` — while the MCP
+   server persists its env key to the global key file at server start for
+   hook child processes. The shim re-resolves through the published package
+   instead of a pinned package-store path. Legacy inline-key
    `midbrain-memory-mcp@latest hook claude user` and
    `midbrain-memory-mcp@latest hook claude assistant` npx entries are migrated
-   to the shim form by self-repair, preserving leading `MIDBRAIN_*` prefixes
+   to the canonical shim form by self-repair (inline prefixes are scrubbed;
+   the persisted key file takes over)
 6. Preserve existing settings and hooks, redact inline hook keys in output,
    and restart only after approval
 

@@ -378,6 +378,18 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     }
     expect(readme).toMatch(/replace only its `### Tool loading` section/i);
   });
+
+  it("D-28: NanoClaw skill never dumps or echoes raw settings (inline-key safety, PR #47)", async () => {
+    const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
+    // Raw dumps of the mounted settings can print legacy inline keys into an
+    // executing agent's transcript. Reads must be quiet (-Fq) or redacting.
+    expect(skill).not.toMatch(/cat "\$SETTINGS_FILE"/);
+    const grepLines = skill.split("\n").filter((l) => l.includes("grep") && l.includes("$SETTINGS_FILE"));
+    expect(grepLines.length).toBeGreaterThan(0);
+    for (const line of grepLines) expect(line).toContain("-Fq");
+    // The one sanctioned display path is the redacting filter.
+    expect(skill).toContain("MIDBRAIN_API_KEY=<redacted>/g");
+  });
 });
 
 async function readNanoClawDocParts() {

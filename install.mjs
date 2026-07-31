@@ -221,15 +221,27 @@ async function ensureHooksFresh() {
  * key to the global key file — the lowest-precedence file in the resolution
  * chain — lets hooks resolve it without shadowing client or project keys.
  *
- * Absence-only: an existing global credential always wins (replacement is
- * refused by the central writer and left alone here), and an unreadable
- * existing file is never touched. Never throws.
+ * Guards (PR #47 Phase-7 review):
+ * - Skipped when MIDBRAIN_API_URL is set: an env-bound self-host key must
+ *   never be stranded on the default origin for env-less hook children.
+ * - Skipped unless this server's own resolution selects the environment key:
+ *   an active project/client/global file credential always wins, so a merely
+ *   ambient env value is never promoted to machine scope.
+ * - Absence-only: an existing global credential is never replaced, and an
+ *   unreadable existing file is never touched.
+ *
+ * Locally never-throwing: everything, including path/scope resolution, runs
+ * inside the try so no failure here can affect the rest of startup.
  */
 async function ensureHookCredential() {
-  const key = (process.env.MIDBRAIN_API_KEY || '').trim();
-  if (!key) return;
-  const targetPath = path.join(os.homedir(), '.config', 'midbrain', KEY_FILENAME);
   try {
+    const key = (process.env.MIDBRAIN_API_KEY || '').trim();
+    if (!key) return;
+    if ((process.env.MIDBRAIN_API_URL || '').trim()) return;
+    const resolved = await getClient(process.env.MIDBRAIN_CLIENT)
+      .resolveKey(undefined, { includeScope: true });
+    if (resolved?.scope !== 'environment') return;
+    const targetPath = path.join(os.homedir(), '.config', 'midbrain', KEY_FILENAME);
     const { action } = await writeCredential({
       clientId: 'generic',
       scope: 'global',
@@ -242,7 +254,8 @@ async function ensureHookCredential() {
   } catch (error) {
     if (error instanceof CredentialReplaceNotApprovedError) return; // different key installed: keep it
     if (error instanceof CredentialReadError) return; // unreadable existing file: leave untouched
-    // Any other refusal (target validation, sandbox guard) is non-fatal at startup.
+    // Any other failure (resolution read errors on empty/denied key files,
+    // target validation, sandbox guard) is equally non-fatal at startup.
   }
 }
 
@@ -272,8 +285,10 @@ export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
       );
       return { skipped: true, kind: ctx.kind };
     }
-    await ensureHookCredential();
+    // Hook/shim repair first: a hung or slow credential store (network home,
+    // FIFO at the key path) must never delay or suppress config repair.
     await ensureHooksFresh();
+    await ensureHookCredential();
     return { skipped: false, kind: ctx.kind };
   } catch {
     return { skipped: false, kind: 'unknown' };

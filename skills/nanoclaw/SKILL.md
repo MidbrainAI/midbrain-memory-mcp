@@ -132,15 +132,15 @@ containers the home directory is `/home/node`):
 
 ```bash
 HOOK_SHIM="/home/node/.midbrain/bin/claude-hook"
-USER_HOOK_CMD="MIDBRAIN_API_KEY=${MIDBRAIN_API_KEY} '${HOOK_SHIM}' user"
-ASSISTANT_HOOK_CMD="MIDBRAIN_API_KEY=${MIDBRAIN_API_KEY} '${HOOK_SHIM}' assistant"
+USER_HOOK_CMD="'${HOOK_SHIM}' user"
+ASSISTANT_HOOK_CMD="'${HOOK_SHIM}' assistant"
 ```
 
-Key delivery is double-covered: at server start the MCP server persists its
-env key to the global key file for hook child processes, and the inline
-`MIDBRAIN_API_KEY` prefix rides on the hook command as a fallback. Self-repair
-preserves leading inline `MIDBRAIN_*` assignments when it rewrites hook
-entries.
+Key delivery is handled by the MCP server itself: at server start it persists
+its env `MIDBRAIN_API_KEY` to the global key file for hook child processes
+(absence-only — an existing credential is never replaced). Do not put inline
+keys on hook commands: self-repair scrubs hook-command prefixes when it
+rewrites entries, so an inline key would not survive.
 
 Do not discover or write `/pnpm/.../midbrain-memory-mcp@<version>/...` hook
 paths. Versioned package-store paths pin hooks to an old release. The shim
@@ -149,11 +149,17 @@ always run the current package.
 
 ## Phase 6: Direct Settings Merge
 
-Merge MidBrain hooks directly into the mounted Claude settings file:
+Merge MidBrain hooks directly into the mounted Claude settings file. Older
+settings may carry inline keys, so inspect only through a redacting filter —
+never dump the raw file into output:
 
 ```bash
-cat "$SETTINGS_FILE" 2>/dev/null || echo '{}'
+sed -E 's/MIDBRAIN_API_KEY=[^ "]*/MIDBRAIN_API_KEY=<redacted>/g' "$SETTINGS_FILE" 2>/dev/null || echo '{}'
 ```
+
+Perform the merge itself by reading the file programmatically (for example
+`jq` into a temp file, then move it into place). Never reconstruct the file
+from the redacted display output.
 
 Rules for the merge:
 
@@ -161,13 +167,14 @@ Rules for the merge:
 - Preserve every non-MidBrain hook entry.
 - Replace old MidBrain hook entries instead of duplicating them.
 - Add `UserPromptSubmit` and `Stop` command hooks.
-- Use inline `MIDBRAIN_API_KEY` only in the local mounted settings file.
+- Hook commands carry no keys; the MCP server env delivers the key at server
+  start (Phase 5).
 - Use the shim commands from Phase 5, with `"timeout": 30` on both hooks and
   `"async": true` on the `Stop` hook — self-repair enforces exactly this
   shape.
 - Redact inline keys in all summaries, diffs, and chat messages.
 
-The resulting settings must contain commands equivalent to this redacted shape:
+The resulting settings must contain commands equivalent to this shape:
 
 ```json
 {
@@ -177,7 +184,7 @@ The resulting settings must contain commands equivalent to this redacted shape:
         "hooks": [
           {
             "type": "command",
-            "command": "MIDBRAIN_API_KEY=<redacted> '/home/node/.midbrain/bin/claude-hook' user",
+            "command": "'/home/node/.midbrain/bin/claude-hook' user",
             "timeout": 30
           }
         ]
@@ -188,7 +195,7 @@ The resulting settings must contain commands equivalent to this redacted shape:
         "hooks": [
           {
             "type": "command",
-            "command": "MIDBRAIN_API_KEY=<redacted> '/home/node/.midbrain/bin/claude-hook' assistant",
+            "command": "'/home/node/.midbrain/bin/claude-hook' assistant",
             "timeout": 30,
             "async": true
           }
@@ -199,16 +206,14 @@ The resulting settings must contain commands equivalent to this redacted shape:
 }
 ```
 
-When writing the real file, replace `<redacted>` with the local key value. Do
-not show the real command afterward.
-
 ### Legacy form (pre-0.4.8)
 
 Older installs wrote inline-key npx hook commands —
 `midbrain-memory-mcp@latest hook claude user` and
 `midbrain-memory-mcp@latest hook claude assistant`. Self-repair migrates those
-entries to the shim form on server start and preserves leading `MIDBRAIN_*`
-assignments. Do not write the npx form for new installs.
+entries to the canonical shim form on server start and scrubs inline
+prefixes; key delivery moves to the server-start persistence above. Do not
+write the npx form for new installs.
 
 ## Phase 7: Environment File
 
@@ -223,8 +228,7 @@ cp .env data/env/env
 Do not commit `.env`, `data/env/env`, or any NanoClaw group settings.
 
 Container env files do not reach hook child processes; hooks get their key
-from the Phase 5 delivery paths (server-start persistence plus the inline
-prefix).
+from the Phase 5 server-start persistence.
 
 ## Phase 8: Restart With Approval
 
@@ -283,10 +287,11 @@ bash bin/ncl groups config get --id "$AGENT_GROUP_ID" | grep midbrain-memory
 
 ### Hooks not capturing
 
-Check mounted settings and redact any inline key before sharing output:
+Check hook registration quietly (matching lines can carry legacy inline keys
+and must never be echoed):
 
 ```bash
-grep -F ".midbrain/bin/claude-hook" "$SETTINGS_FILE"
+grep -Fq ".midbrain/bin/claude-hook" "$SETTINGS_FILE" && echo "midbrain hooks registered"
 ```
 
 Capture is fail-open: a hook that cannot resolve a key exits 0 silently and

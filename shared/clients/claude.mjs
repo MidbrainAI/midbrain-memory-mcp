@@ -18,7 +18,7 @@ import {
 } from './utils.mjs';
 import {
   shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
-  commandHasLegacyScriptPath, commandHasMidbrainInvocation, leadingMidbrainEnvAssignments,
+  commandHasLegacyScriptPath, commandHasMidbrainInvocation,
 } from './shim.mjs';
 
 import { existsSync } from 'fs';
@@ -77,13 +77,12 @@ const HOOK_EVENTS = {
 };
 const LEGACY_HOOK_SCRIPTS = ['capture-user.mjs', 'capture-assistant.mjs'];
 
-function buildHookCommand(role, envPrefix = '') {
-  const canonical = `${shellQuote(stableShimPath('claude'))} ${role}`;
-  return envPrefix ? `${envPrefix} ${canonical}` : canonical;
+function buildHookCommand(role) {
+  return `${shellQuote(stableShimPath('claude'))} ${role}`;
 }
 
-function midbrainHookEntry(role, envPrefix = '') {
-  const entry = { type: 'command', command: buildHookCommand(role, envPrefix), timeout: HOOK_TIMEOUT_SEC };
+function midbrainHookEntry(role) {
+  const entry = { type: 'command', command: buildHookCommand(role), timeout: HOOK_TIMEOUT_SEC };
   if (role === 'assistant') entry.async = true;
   return entry;
 }
@@ -119,24 +118,6 @@ function withoutMidbrainGroups(groups) {
 }
 
 /**
- * First inline MIDBRAIN_* env prefix carried by an owned hook command in these
- * groups (PRD-039). The NanoClaw setup delivered the API key as a leading env
- * assignment on the hook command; the rewrite must carry it forward instead of
- * discarding the only credential the hook child will ever see (issue #46).
- * Deterministic on hand-edited configs: the first non-empty prefix wins.
- */
-function inheritedEnvPrefix(groups) {
-  for (const group of groups) {
-    for (const hook of group.hooks || []) {
-      if (!isMidbrainHook(hook)) continue;
-      const prefix = leadingMidbrainEnvAssignments(hook?.command);
-      if (prefix) return prefix;
-    }
-  }
-  return '';
-}
-
-/**
  * Rewrite only the midbrain hooks: exactly one canonical group per capture
  * event, all non-midbrain hooks and unrelated events preserved (the previous
  * wholesale `data.hooks = buildHooks()` wiped user hooks on repair).
@@ -145,8 +126,7 @@ function patchHooks(data) {
   data.hooks = data.hooks || {};
   for (const [event, role] of Object.entries(HOOK_EVENTS)) {
     const groups = Array.isArray(data.hooks[event]) ? data.hooks[event] : [];
-    const envPrefix = inheritedEnvPrefix(groups);
-    data.hooks[event] = [...withoutMidbrainGroups(groups), { hooks: [midbrainHookEntry(role, envPrefix)] }];
+    data.hooks[event] = [...withoutMidbrainGroups(groups), { hooks: [midbrainHookEntry(role)] }];
   }
   return data;
 }
@@ -270,12 +250,7 @@ export class Claude extends BaseClient {
         if (hooks.some((h) => isLegacyHookCommand(h?.command))) return false;
         const midbrain = hooks.filter((h) => isMidbrainHook(h));
         if (midbrain.length !== 1) return false;
-        // A preserved inline MIDBRAIN_* prefix (PRD-039) is part of the
-        // canonical form: strip it before comparing, or repair churns forever.
-        const command = typeof midbrain[0].command === 'string' ? midbrain[0].command : '';
-        const prefix = leadingMidbrainEnvAssignments(command);
-        const canonical = prefix ? command.slice(prefix.length).replace(/^\s+/, '') : command;
-        if (canonical !== buildHookCommand(role)) return false;
+        if (midbrain[0].command !== buildHookCommand(role)) return false;
         if (midbrain[0].timeout !== HOOK_TIMEOUT_SEC) return false;
         if (role === 'assistant' && midbrain[0].async !== true) return false;
       }

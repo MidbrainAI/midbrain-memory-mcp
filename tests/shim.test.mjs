@@ -25,7 +25,6 @@ import {
   commandHasLegacyScriptPath,
   commandHasMidbrainPackageRef,
   commandHasMidbrainInvocation,
-  leadingMidbrainEnvAssignments,
 } from "../shared/clients/shim.mjs";
 import { writeFileIfChanged } from "../shared/clients/utils.mjs";
 
@@ -401,63 +400,6 @@ describe("commandHasMidbrainInvocation — package + hook dispatch", () => {
 
   it("does not match a package ref without the hook <client> dispatch", () => {
     expect(commandHasMidbrainInvocation("npx midbrain-memory-mcp@latest install", "claude")).toBe(false);
-  });
-
-  it("still matches when an inline MIDBRAIN env prefix leads the command (NanoClaw form, PRD-039)", () => {
-    expect(commandHasMidbrainInvocation(
-      "MIDBRAIN_API_KEY=sk-fixture npx -y midbrain-memory-mcp@latest hook claude user",
-      "claude",
-    )).toBe(true);
-  });
-});
-
-describe("leadingMidbrainEnvAssignments — strict inline-prefix extraction (PRD-039)", () => {
-  it("extracts a single leading MIDBRAIN assignment", () => {
-    expect(leadingMidbrainEnvAssignments(
-      "MIDBRAIN_API_KEY=abc123 npx -y midbrain-memory-mcp@latest hook claude user",
-    )).toBe("MIDBRAIN_API_KEY=abc123");
-  });
-
-  it("extracts multiple leading MIDBRAIN assignments in order", () => {
-    expect(leadingMidbrainEnvAssignments(
-      "MIDBRAIN_API_KEY=abc MIDBRAIN_API_URL=https://api.example npx -y midbrain-memory-mcp@latest hook claude user",
-    )).toBe("MIDBRAIN_API_KEY=abc MIDBRAIN_API_URL=https://api.example");
-  });
-
-  it("accepts single-quoted values", () => {
-    expect(leadingMidbrainEnvAssignments(
-      "MIDBRAIN_API_KEY='with space' npx hook claude user",
-    )).toBe("MIDBRAIN_API_KEY='with space'");
-  });
-
-  it("returns '' for non-MIDBRAIN leading assignments", () => {
-    expect(leadingMidbrainEnvAssignments("FOO=1 npx -y midbrain-memory-mcp@latest hook claude user")).toBe("");
-  });
-
-  it("stops at the first non-MIDBRAIN token (no skipping)", () => {
-    expect(leadingMidbrainEnvAssignments("FOO=1 MIDBRAIN_API_KEY=x npx hook claude user")).toBe("");
-  });
-
-  it("ignores assignments that appear after the command word", () => {
-    expect(leadingMidbrainEnvAssignments("npx MIDBRAIN_API_KEY=x -y midbrain-memory-mcp@latest")).toBe("");
-  });
-
-  it.each([
-    ["double quotes", 'MIDBRAIN_API_KEY="quoted" npx hook claude user'],
-    ["command substitution", "MIDBRAIN_API_KEY=$(cat /etc/secret) npx hook claude user"],
-    ["backticks", "MIDBRAIN_API_KEY=`cat x` npx hook claude user"],
-    ["backslash escape", "MIDBRAIN_API_KEY=a\\ b npx hook claude user"],
-    ["variable expansion", "MIDBRAIN_API_KEY=$KEY npx hook claude user"],
-    ["semicolon in value", "MIDBRAIN_API_KEY=a;rm npx hook claude user"],
-  ])("refuses exotic shapes (%s) — no preservation", (_label, command) => {
-    expect(leadingMidbrainEnvAssignments(command)).toBe("");
-  });
-
-  it("returns '' when the command is only assignments, or not a string", () => {
-    expect(leadingMidbrainEnvAssignments("MIDBRAIN_API_KEY=abc")).toBe("");
-    expect(leadingMidbrainEnvAssignments("MIDBRAIN_API_KEY=abc   ")).toBe("");
-    expect(leadingMidbrainEnvAssignments(undefined)).toBe("");
-    expect(leadingMidbrainEnvAssignments(42)).toBe("");
   });
 });
 

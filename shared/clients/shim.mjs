@@ -225,45 +225,6 @@ export function commandHasMidbrainInvocation(command, client) {
   return new RegExp(`\\bhook\\s+${escapeRe(client)}\\b`).test(normalized);
 }
 
-// One inline env assignment: MIDBRAIN_* name, value either single-quoted (no
-// inner quotes) or a bare token from a conservative charset — no whitespace,
-// quotes, expansion, escapes, or separators. Anything else is not preserved.
-const MIDBRAIN_ASSIGNMENT_RE = /^MIDBRAIN_[A-Z0-9_]*=(?:'[^']*'|[A-Za-z0-9@%+=:,./_-]*)(?=\s|$)/;
-
-/**
- * Exact leading run of inline `MIDBRAIN_*=value` assignments on a hook
- * command, or '' when there is none (PRD-039). Migration uses this to carry
- * an inline credential prefix onto the rewritten shim command instead of
- * discarding it (the NanoClaw regression, issue #46); freshness checks use it
- * to strip the prefix before comparing against the canonical command.
- *
- * Deliberately strict — this is not a shell parser. Only `MIDBRAIN_*` names,
- * only bare or single-quoted values, and only when a command word follows.
- * The returned string is the verbatim leading substring (internal spacing
- * preserved), so `command.slice(prefix.length)` is always the remainder.
- *
- * @param {string} command
- * @returns {string}
- */
-export function leadingMidbrainEnvAssignments(command) {
-  if (typeof command !== 'string') return '';
-  let end = 0;
-  for (;;) {
-    let sep = 0;
-    if (end > 0) {
-      sep = (/^\s+/.exec(command.slice(end)) || [''])[0].length;
-      if (sep === 0) break;
-    }
-    const match = MIDBRAIN_ASSIGNMENT_RE.exec(command.slice(end + sep));
-    if (!match) break;
-    end = end + sep + match[0].length;
-  }
-  if (end === 0) return '';
-  // A preserved prefix must precede an actual command word.
-  if (!/^\s+\S/.test(command.slice(end))) return '';
-  return command.slice(0, end);
-}
-
 /** chmod 0755 (POSIX only, best-effort). mtime-safe: chmod touches ctime only. */
 async function restoreExecBit(shimPath) {
   if (process.platform !== 'win32') {

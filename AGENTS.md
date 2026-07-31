@@ -215,13 +215,14 @@ NanoClaw:
 - The skill wires MCP and Claude hooks for one selected group.
 - Hook setup uses a direct settings merge into
   `data/v2-sessions/<group-id>/.claude-shared/settings.json`.
-- Hook entries call the stable `~/.midbrain/bin/claude-hook` shim with an
-  inline `MIDBRAIN_*` key prefix; self-repair preserves that prefix when it
-  rewrites owned entries (PRD-039, issue #46).
+- Hook entries call the stable `~/.midbrain/bin/claude-hook` shim with no
+  inline key; self-repair scrubs hook-command prefixes when it rewrites owned
+  entries (PRD-039, issue #46).
 - Hook child processes receive no container env: the MCP server persists its
-  env `MIDBRAIN_API_KEY` to the global key file at server start
-  (absence-only, through the central credential writer) so hooks can
-  authenticate.
+  env `MIDBRAIN_API_KEY` to the global key file at server start —
+  absence-only and guarded (skipped when `MIDBRAIN_API_URL` is set or when a
+  file credential is the server's active key), through the central credential
+  writer — so hooks can authenticate.
 - Inline hook keys used inside container settings must be redacted from output,
   docs, logs, and review artifacts.
 
