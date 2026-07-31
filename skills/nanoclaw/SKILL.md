@@ -295,6 +295,11 @@ container. The MCP server persists its env key to
 after a fresh session, confirm the group's MCP env still carries
 `MIDBRAIN_API_KEY`, then restart the group with approval.
 
+When rotating the group's key, update the MCP env and recreate the group's
+container with approval: the persisted key file is absence-only, and a fresh
+container rebuilds it from the new env. A restarted (not recreated) container
+keeps its old file, and the stale key outranks the new env until recreation.
+
 ### Hooks still show an old version
 
 If `settings.json`, `container.json`, or `bash bin/ncl groups config get` shows

@@ -158,6 +158,29 @@ describe("PRD-039 F1 — ensureHookCredential matrix (runSelfRepair)", () => {
     expect(commands.join("\n")).not.toContain("capture-user.mjs"); // repair ran
   });
 
+  it.skipIf(IS_WIN || process.getuid?.() === 0)(
+    "unreadable existing key file (EACCES) → no-op, no throw, hook repair still runs",
+    async () => {
+      await fs.mkdir(path.dirname(env.paths.globalKey), { recursive: true });
+      await fs.writeFile(env.paths.globalKey, "pre-existing-unreadable-key\n", { mode: 0o600 });
+      await fs.chmod(env.paths.globalKey, 0o000);
+      await fs.writeFile(env.paths.claudeSettings, JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ type: "command", command: "node /old/plugins/claude-code/capture-user.mjs", timeout: 10 }] }],
+        },
+      }, null, 2) + "\n");
+      process.env.MIDBRAIN_API_KEY = TEST_KEY;
+
+      await runSelfRepair(DURABLE);
+
+      await fs.chmod(env.paths.globalKey, 0o600);
+      expect(await readGlobalKey()).toBe("pre-existing-unreadable-key\n"); // untouched
+      const settings = JSON.parse(await fs.readFile(env.paths.claudeSettings, "utf8"));
+      const commands = settings.hooks.UserPromptSubmit.flatMap((g) => g.hooks.map((h) => h.command));
+      expect(commands.join("\n")).not.toContain("capture-user.mjs"); // repair ran
+    },
+  );
+
   it.each([
     ["tmp", "/private/tmp/some-checkout"],
     ["worktree", "/Users/u/dev/some-worktree"],
@@ -241,6 +264,11 @@ describe.skipIf(IS_WIN)("PRD-039 AC-1 — NanoClaw topology end-to-end", () => {
     delete process.env.MIDBRAIN_API_KEY;
 
     expect(await readGlobalKey()).toBe(`${TEST_KEY}\n`);
+
+    // The container reality this file exists to prove: the hook child spawn
+    // env must carry no credential — the file written above is its only path.
+    expect(env.childEnv()).not.toHaveProperty("MIDBRAIN_API_KEY");
+    expect(env.childEnv()).not.toHaveProperty("MIDBRAIN_USER_API_KEY");
 
     const result = runShim("user", { prompt: "nanoclaw topology marker PRD-039", cwd: workspace });
 
