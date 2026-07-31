@@ -193,6 +193,96 @@ describe.each(JSON_CLIENTS)("$id — exact hook ownership (AC-12)", ({ id, make,
 });
 
 // ---------------------------------------------------------------------------
+// PRD-039: Claude migration preserves inline MIDBRAIN_* env prefixes.
+// The NanoClaw setup carried the API key as a leading env assignment on the
+// npx hook command; the 0.4.7 rewrite discarded it (issue #46). Claude-only:
+// codex/hermes wiring is a PRD-039 deferred item.
+// ---------------------------------------------------------------------------
+
+describe("claude — inline MIDBRAIN env prefix preservation (PRD-039)", () => {
+  let env;
+  let claude;
+  let file;
+
+  beforeEach(async () => {
+    env = await makeTestEnv({ clients: ["claude"] });
+    claude = new Claude();
+    await claude.installGlobal();
+    file = env.paths.claudeSettings;
+  });
+
+  afterEach(async () => {
+    await env.restore();
+  });
+
+  async function readData() {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  }
+  async function writeData(data) {
+    await fs.writeFile(file, JSON.stringify(data, null, 2) + "\n", "utf8");
+  }
+  function eventCommands(data, event) {
+    return (data.hooks[event] || []).flatMap((g) => (g.hooks || []).map((h) => h.command));
+  }
+
+  it("preserves the leading MIDBRAIN_API_KEY assignment when migrating the npx form (both events)", async () => {
+    const data = await readData();
+    data.hooks.UserPromptSubmit = [{
+      hooks: [{ type: "command", command: "MIDBRAIN_API_KEY=sk-fixture-user npx -y midbrain-memory-mcp@latest hook claude user" }],
+    }];
+    data.hooks.Stop = [{
+      hooks: [{ type: "command", command: "MIDBRAIN_API_KEY=sk-fixture-user npx -y midbrain-memory-mcp@latest hook claude assistant", async: true }],
+    }];
+    await writeData(data);
+
+    expect(await claude.isFresh()).toBe(false);
+    await claude.repairHooks();
+
+    const after = await readData();
+    const userCmds = eventCommands(after, "UserPromptSubmit");
+    const stopCmds = eventCommands(after, "Stop");
+    expect(userCmds).toContain(`MIDBRAIN_API_KEY=sk-fixture-user ${shimCommand("claude", "user")}`);
+    expect(stopCmds).toContain(`MIDBRAIN_API_KEY=sk-fixture-user ${shimCommand("claude", "assistant")}`);
+    expect([...userCmds, ...stopCmds].join("\n")).not.toContain("npx -y midbrain-memory-mcp@latest hook");
+    // canonical entry shape preserved around the prefix
+    const stopEntry = after.hooks.Stop.flatMap((g) => g.hooks).find((h) => h.command.includes("claude-hook"));
+    expect(stopEntry.timeout).toBe(30);
+    expect(stopEntry.async).toBe(true);
+  });
+
+  it("a preserved-prefix entry is fresh — the second repair is a churn-free no-op", async () => {
+    const data = await readData();
+    data.hooks.UserPromptSubmit = [{
+      hooks: [{ type: "command", command: "MIDBRAIN_API_KEY=sk-fixture npx -y midbrain-memory-mcp@latest hook claude user" }],
+    }];
+    await writeData(data);
+    await claude.repairHooks();
+
+    expect(await claude.isFresh()).toBe(true);
+
+    const before = await fs.stat(file);
+    expect(await claude.repairHooks()).toEqual([]);
+    const after = await fs.stat(file);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it("does not preserve non-MIDBRAIN prefixes — migrates to the canonical unprefixed command", async () => {
+    const data = await readData();
+    data.hooks.UserPromptSubmit = [{
+      hooks: [{ type: "command", command: "FOO=1 npx -y midbrain-memory-mcp@latest hook claude user" }],
+    }];
+    await writeData(data);
+
+    await claude.repairHooks();
+
+    const after = await readData();
+    const commands = eventCommands(after, "UserPromptSubmit");
+    expect(commands.filter((c) => c === shimCommand("claude", "user"))).toHaveLength(1);
+    expect(commands.join("\n")).not.toContain("FOO=1");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Hermes uses hooks.<event>: [ { command, timeout } ] in YAML
 // ---------------------------------------------------------------------------
 

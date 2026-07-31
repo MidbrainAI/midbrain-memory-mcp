@@ -709,10 +709,14 @@ The skill instructs Claude Code to:
 3. Wire the MCP server for that group with `npx -y midbrain-memory-mcp@latest`
 4. Directly merge Claude capture hooks into
    `data/v2-sessions/<group-id>/.claude-shared/settings.json`
-5. Use `npx -y midbrain-memory-mcp@latest hook claude user` and
-   `npx -y midbrain-memory-mcp@latest hook claude assistant` for capture hooks,
-   so hooks re-resolve through the published package instead of a pinned
-   package-store path
+5. Write shim-form capture hooks — `'/home/node/.midbrain/bin/claude-hook'
+   user|assistant` with an inline key prefix — while the MCP server persists
+   its env key to the global key file at server start for hook child
+   processes. The shim re-resolves through the published package instead of a
+   pinned package-store path. Legacy inline-key
+   `midbrain-memory-mcp@latest hook claude user` and
+   `midbrain-memory-mcp@latest hook claude assistant` npx entries are migrated
+   to the shim form by self-repair, preserving leading `MIDBRAIN_*` prefixes
 6. Preserve existing settings and hooks, redact inline hook keys in output,
    and restart only after approval
 
@@ -736,8 +740,11 @@ bash bin/ncl groups restart --id <agent-group-id> --message "Added midbrain memo
 
 Note: Manual `add-mcp-server` gives MCP tools only (search, browse). Episodic
 capture requires the direct `.claude-shared/settings.json` settings merge
-performed by the skill. Those hooks should use the `npx @latest hook` commands
-above, not `/pnpm/.../midbrain-memory-mcp@<version>/...` paths.
+performed by the skill. Those hooks call the stable
+`~/.midbrain/bin/claude-hook` shim, never
+`/pnpm/.../midbrain-memory-mcp@<version>/...` paths, and the MCP server
+persists its env `MIDBRAIN_API_KEY` to the global key file at server start so
+hook child processes can authenticate without container env passthrough.
 
 ---
 

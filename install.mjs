@@ -24,6 +24,11 @@ import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { readKeyFile } from './shared/clients/base.mjs';
+import {
+  writeCredential,
+  CredentialReplaceNotApprovedError,
+  CredentialReadError,
+} from './shared/clients/credential-writer.mjs';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
 import { writeGlobalRules, writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
@@ -208,6 +213,40 @@ async function ensureHooksFresh() {
 }
 
 /**
+ * Persist the MCP server's env credential for hook child processes (PRD-039).
+ *
+ * NanoClaw containers pass MIDBRAIN_API_KEY only to the MCP server process:
+ * hook children get no env, and after the 0.4.7 shim migration dropped the
+ * inline hook key they had no key source at all (issue #46). Writing the env
+ * key to the global key file — the lowest-precedence file in the resolution
+ * chain — lets hooks resolve it without shadowing client or project keys.
+ *
+ * Absence-only: an existing global credential always wins (replacement is
+ * refused by the central writer and left alone here), and an unreadable
+ * existing file is never touched. Never throws.
+ */
+async function ensureHookCredential() {
+  const key = (process.env.MIDBRAIN_API_KEY || '').trim();
+  if (!key) return;
+  const targetPath = path.join(os.homedir(), '.config', 'midbrain', KEY_FILENAME);
+  try {
+    const { action } = await writeCredential({
+      clientId: 'generic',
+      scope: 'global',
+      targetPath,
+      key,
+    });
+    if (action === 'written') {
+      console.error('[midbrain] hook credential persisted (global scope)');
+    }
+  } catch (error) {
+    if (error instanceof CredentialReplaceNotApprovedError) return; // different key installed: keep it
+    if (error instanceof CredentialReadError) return; // unreadable existing file: leave untouched
+    // Any other refusal (target validation, sandbox guard) is non-fatal at startup.
+  }
+}
+
+/**
  * Context-gated self-repair (PRD-034 S1). Automatic repair may only run from
  * a durable location: instances launched from temp dirs, git worktrees, or CI
  * must never write their own paths — or anything else — into permanent
@@ -233,6 +272,7 @@ export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
       );
       return { skipped: true, kind: ctx.kind };
     }
+    await ensureHookCredential();
     await ensureHooksFresh();
     return { skipped: false, kind: ctx.kind };
   } catch {
