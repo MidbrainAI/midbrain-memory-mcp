@@ -24,6 +24,11 @@ import readline from 'readline';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { readKeyFile } from './shared/clients/base.mjs';
+import {
+  writeCredential,
+  CredentialReplaceNotApprovedError,
+  CredentialReadError,
+} from './shared/clients/credential-writer.mjs';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
 import { writeGlobalRules, writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
@@ -208,6 +213,53 @@ async function ensureHooksFresh() {
 }
 
 /**
+ * Persist the MCP server's env credential for hook child processes (PRD-039).
+ *
+ * NanoClaw containers pass MIDBRAIN_API_KEY only to the MCP server process:
+ * hook children get no env, and after the 0.4.7 shim migration dropped the
+ * inline hook key they had no key source at all (issue #46). Writing the env
+ * key to the global key file — the lowest-precedence file in the resolution
+ * chain — lets hooks resolve it without shadowing client or project keys.
+ *
+ * Guards (PR #47 Phase-7 review):
+ * - Skipped when MIDBRAIN_API_URL is set: an env-bound self-host key must
+ *   never be stranded on the default origin for env-less hook children.
+ * - Skipped unless this server's own resolution selects the environment key:
+ *   an active project/client/global file credential always wins, so a merely
+ *   ambient env value is never promoted to machine scope.
+ * - Absence-only: an existing global credential is never replaced, and an
+ *   unreadable existing file is never touched.
+ *
+ * Locally never-throwing: everything, including path/scope resolution, runs
+ * inside the try so no failure here can affect the rest of startup.
+ */
+async function ensureHookCredential() {
+  try {
+    const key = (process.env.MIDBRAIN_API_KEY || '').trim();
+    if (!key) return;
+    if ((process.env.MIDBRAIN_API_URL || '').trim()) return;
+    const resolved = await getClient(process.env.MIDBRAIN_CLIENT)
+      .resolveKey(undefined, { includeScope: true });
+    if (resolved?.scope !== 'environment') return;
+    const targetPath = path.join(os.homedir(), '.config', 'midbrain', KEY_FILENAME);
+    const { action } = await writeCredential({
+      clientId: 'generic',
+      scope: 'global',
+      targetPath,
+      key,
+    });
+    if (action === 'written') {
+      console.error('[midbrain] hook credential persisted (global scope)');
+    }
+  } catch (error) {
+    if (error instanceof CredentialReplaceNotApprovedError) return; // different key installed: keep it
+    if (error instanceof CredentialReadError) return; // unreadable existing file: leave untouched
+    // Any other failure (resolution read errors on empty/denied key files,
+    // target validation, sandbox guard) is equally non-fatal at startup.
+  }
+}
+
+/**
  * Context-gated self-repair (PRD-034 S1). Automatic repair may only run from
  * a durable location: instances launched from temp dirs, git worktrees, or CI
  * must never write their own paths — or anything else — into permanent
@@ -233,7 +285,10 @@ export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
       );
       return { skipped: true, kind: ctx.kind };
     }
+    // Hook/shim repair first: a hung or slow credential store (network home,
+    // FIFO at the key path) must never delay or suppress config repair.
     await ensureHooksFresh();
+    await ensureHookCredential();
     return { skipped: false, kind: ctx.kind };
   } catch {
     return { skipped: false, kind: 'unknown' };
