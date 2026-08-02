@@ -723,6 +723,8 @@ The skill instructs Claude Code to:
 
 After the skill completes, agents have full memory search and automatic
 episodic capture. Memory persists server-side across container restarts.
+Captures from NanoClaw groups are labeled `nanoclaw` in memory metadata via
+the `.claude-shared/.midbrain-capture-client` marker the skill writes.
 
 **Manual setup (alternative):**
 

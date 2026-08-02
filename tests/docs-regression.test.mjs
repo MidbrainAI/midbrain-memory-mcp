@@ -379,6 +379,19 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(readme).toMatch(/replace only its `### Tool loading` section/i);
   });
 
+  it("D-29: NanoClaw docs write and remove the capture-client marker (issue #48)", async () => {
+    const { readme, agents, skill } = await readNanoClawDocParts();
+    // Setup flow writes the marker next to the merged settings (no key material).
+    expect(skill).toContain(`printf 'nanoclaw\\n' > "$SETTINGS_DIR/.midbrain-capture-client"`);
+    // Removal section cleans the marker up again.
+    const removal = skill.slice(skill.indexOf("## Removing MidBrain Memory"));
+    expect(removal).toContain(".midbrain-capture-client");
+    // README and AGENTS document the nanoclaw label and its resolution.
+    expect(readme).toContain(".midbrain-capture-client");
+    expect(agents).toContain(".midbrain-capture-client");
+    expect(agents).toContain("MIDBRAIN_CAPTURE_CLIENT");
+  });
+
   it("D-28: NanoClaw skill never dumps or echoes raw settings (inline-key safety, PR #47)", async () => {
     const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
     // Raw dumps of the mounted settings can print legacy inline keys into an

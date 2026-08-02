@@ -225,6 +225,11 @@ NanoClaw:
   writer — so hooks can authenticate.
 - Inline hook keys used inside container settings must be redacted from output,
   docs, logs, and review artifacts.
+- Capture-client label (issue #48): the Claude hooks resolve episodic `client`
+  metadata as `MIDBRAIN_CAPTURE_CLIENT` env, then the
+  `~/.claude/.midbrain-capture-client` marker (first line, validated slug),
+  then `claude`. The skill writes `nanoclaw` into the mounted
+  `.claude-shared` marker so group captures are labeled `nanoclaw`.
 
 Hermes Agent:
 
