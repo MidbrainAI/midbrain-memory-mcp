@@ -17,7 +17,8 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { PKG_NAME, REPO_ROOT, home, writeFileIfChanged } from './utils.mjs';
+import { PKG_NAME, REPO_ROOT, writeFileIfChanged } from './utils.mjs';
+import { shimBinDir } from '../state-dir.mjs';
 
 export const DEV_MARKER_POSIX = '# midbrain-dev';
 export const DEV_MARKER_WIN = '@rem midbrain-dev';
@@ -49,9 +50,14 @@ export function shimFilename(client, platform = process.platform) {
   return `${client}-hook`;
 }
 
-/** Absolute path of the client's stable shim under the current home. */
+/**
+ * Absolute path of the client's stable shim. Default: ~/.midbrain/bin/…;
+ * relocated under MIDBRAIN_STATE_DIR/bin when set. The relocated base keeps the
+ * `.midbrain/bin/<client>-hook` tail, so commandReferencesShim() ownership
+ * matching and self-repair rewrite need no change.
+ */
 export function stableShimPath(client, platform = process.platform) {
-  return path.join(home(), '.midbrain', 'bin', shimFilename(client, platform));
+  return path.join(shimBinDir(), shimFilename(client, platform));
 }
 
 /**

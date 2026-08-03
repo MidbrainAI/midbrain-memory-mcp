@@ -754,3 +754,86 @@ describe("Issue #52 — server-start spool flush discipline", () => {
     await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
+
+// ===================================================================
+// Issue #52 — MIDBRAIN_STATE_DIR relocation closes the shim-missing race by
+// putting the shim + key under the durable ~/.claude mount, so both survive a
+// cold --rm respawn and exist at t=0. Cross-platform (in-process; no shell).
+// ===================================================================
+
+describe("Issue #52 — durable state under ~/.claude (MIDBRAIN_STATE_DIR)", () => {
+  const stateDir = () => path.join(env.home, ".claude", ".midbrain");
+  const relocatedShim = () =>
+    path.join(stateDir(), "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+  const relocatedKey = () => path.join(stateDir(), ".midbrain-key");
+
+  // Ephemeral container dirs that a --rm respawn wipes (everything NOT under
+  // the ~/.claude mount).
+  async function wipeEphemeralDirs() {
+    await fs.rm(path.join(env.home, ".midbrain"), { recursive: true, force: true });
+    await fs.rm(path.join(env.home, ".config", "midbrain"), { recursive: true, force: true });
+    await fs.rm(path.join(env.home, ".cache", "midbrain"), { recursive: true, force: true });
+  }
+
+  const hostShim = () =>
+    path.join(env.home, ".midbrain", "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+  const hostKey = () => path.join(env.home, ".config", "midbrain", ".midbrain-key");
+
+  it("relocates the shim and persisted key under ~/.claude when the env is set", async () => {
+    process.env.MIDBRAIN_STATE_DIR = stateDir();
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      // The MCP server writes the shim (installShim → stableShimPath) and, via
+      // runSelfRepair, persists the env key. Both honor MIDBRAIN_STATE_DIR.
+      await installShim("claude", { mode: "install", isDev: true });
+      await runSelfRepair(NPX_CTX);
+
+      // Shim + key landed under the durable mount, not the ephemeral dirs.
+      await assertSandboxed(env, relocatedShim());
+      await assertSandboxed(env, relocatedKey());
+      expect(await fs.stat(relocatedShim())).toBeTruthy();
+      expect((await fs.readFile(relocatedKey(), "utf8")).trim()).toBe(TEST_KEY);
+      // The ephemeral locations were NOT used.
+      await expect(fs.stat(hostShim())).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.stat(hostKey())).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      delete process.env.MIDBRAIN_STATE_DIR;
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+  });
+
+  it("shim + key survive a cold respawn: the ephemeral dirs are wiped but ~/.claude persists", async () => {
+    process.env.MIDBRAIN_STATE_DIR = stateDir();
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      await installShim("claude", { mode: "install", isDev: true });
+      await runSelfRepair(NPX_CTX); // "first boot" writes durable state
+
+      // Simulate the --rm respawn: wipe everything NOT under ~/.claude.
+      await wipeEphemeralDirs();
+
+      // The durable shim + key are still present at t=0 of the next spawn,
+      // BEFORE any server work — this is what closes the shim-missing race.
+      expect(await fs.stat(relocatedShim())).toBeTruthy();
+      expect((await fs.readFile(relocatedKey(), "utf8")).trim()).toBe(TEST_KEY);
+    } finally {
+      delete process.env.MIDBRAIN_STATE_DIR;
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+  });
+
+  it("host parity: with the env UNSET, everything stays on the historical paths", async () => {
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      await installShim("claude", { mode: "install", isDev: true });
+      await runSelfRepair(NPX_CTX);
+
+      // Historical locations used; nothing relocated under ~/.claude/.midbrain.
+      expect(await fs.stat(hostShim())).toBeTruthy();
+      expect((await fs.readFile(hostKey(), "utf8")).trim()).toBe(TEST_KEY);
+      await expect(fs.stat(stateDir())).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+  });
+});

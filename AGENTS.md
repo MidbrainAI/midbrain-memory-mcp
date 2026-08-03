@@ -210,6 +210,25 @@ Claude Code:
   `MIDBRAIN_KEY_WAIT_POLL_MS`). This closes the key race; the shim-missing race
   on a fully-cold `--rm` spawn is inherent to NanoClaw's mount model (only
   `~/.claude` is durable) and is tracked upstream.
+- Durable state relocation (issue #52): `MIDBRAIN_STATE_DIR` (resolver in
+  `shared/state-dir.mjs`, modeled on `logDir()`) relocates MidBrain's OWN shared
+  state — the global key/keystore/host `config.json` (`globalConfigDir()`), the
+  hook shim bin (`shimBinDir()`), and the offline cache (`cacheDir()`) — under a
+  single base. In NanoClaw the skill sets it to `/home/node/.claude/.midbrain`
+  so all of it lives on the durable `.claude-shared` mount and survives a cold
+  `--rm` spawn; because the shim then exists at t=0, this closes the
+  shim-missing race with no NanoClaw change. The base keeps the
+  `.midbrain/bin/<client>-hook` tail so `commandReferencesShim` ownership
+  matching and self-repair rewrite are unchanged. It is strictly OPT-IN: unset
+  means every path resolves to its historical location, so non-NanoClaw host
+  installs (OpenCode, host Claude, Codex, Hermes) are byte-identical. Per-client
+  native dirs (`~/.config/<client>`) are NEVER relocated — only MidBrain's own
+  shared state moves. The credential-writer's `expectedTarget`/
+  `expectedKeystorePath` validators resolve through the same resolver as the
+  writers, in lockstep, so a relocated key/keystore write is accepted at the
+  relocated path (a desync would fail every relocated write closed). No adapter
+  or installer path emits `MIDBRAIN_STATE_DIR`; only the NanoClaw skill sets it
+  in the group MCP env.
 - Spool flush (`flushClaudeSpool` in `install.mjs`, called from `runSelfRepair`
   after `ensureHookCredential`): once the key is persisted, it drains the spool
   in a single server-start pass via `MidbrainApi.postEpisodicResult` (a

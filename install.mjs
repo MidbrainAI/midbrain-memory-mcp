@@ -30,6 +30,7 @@ import {
   CredentialReadError,
 } from './shared/clients/credential-writer.mjs';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
+import { globalConfigDir } from './shared/state-dir.mjs';
 import { MidbrainApi } from './shared/midbrain-api.mjs';
 import {
   beginSpoolFlush,
@@ -250,7 +251,7 @@ async function ensureHookCredential() {
     const resolved = await getClient(process.env.MIDBRAIN_CLIENT)
       .resolveKey(undefined, { includeScope: true });
     if (resolved?.scope !== 'environment') return;
-    const targetPath = path.join(os.homedir(), '.config', 'midbrain', KEY_FILENAME);
+    const targetPath = path.join(globalConfigDir(), KEY_FILENAME);
     const { action } = await writeCredential({
       clientId: 'generic',
       scope: 'global',
@@ -880,7 +881,7 @@ async function writeRulesForMainMode(nonInteractive, clients) {
 // Main (interactive mode)
 // ---------------------------------------------------------------------------
 function globalKeyPath() {
-  return path.join(os.homedir(), '.config', 'midbrain', KEY_FILENAME);
+  return path.join(globalConfigDir(), KEY_FILENAME);
 }
 
 function candidateLabel(candidate, clients) {

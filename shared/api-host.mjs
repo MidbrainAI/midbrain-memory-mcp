@@ -6,8 +6,8 @@
  */
 
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
+import { globalConfigDir } from "./state-dir.mjs";
 
 export const DEFAULT_API_BASE = "https://memory.midbrain.ai";
 export const API_URL_ENV = "MIDBRAIN_API_URL";
@@ -153,7 +153,7 @@ export async function resolveApiHost({ clientId, projectDir, keyScope } = {}) {
   const project = await projectCandidate(resolveProjectDir(projectDir), keyScope);
   if (project) return project;
 
-  const globalPath = path.join(os.homedir(), ".config", "midbrain", CONFIG_FILENAME);
+  const globalPath = path.join(globalConfigDir(), CONFIG_FILENAME);
   const globalConfig = await readConfig(globalPath);
   const client = clientCandidate(globalConfig, globalPath, clientId);
   if (client) return client;
