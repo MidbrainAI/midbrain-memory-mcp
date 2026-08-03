@@ -282,6 +282,53 @@ export class MidbrainApi {
   }
 
   /**
+   * Controlled single-entry episodic POST for the disciplined spool flush
+   * (issue #52). Unlike storeEpisodic() this does NOT append to or flush the
+   * offline cache — the spool flush owns its own persistence and must not
+   * trigger the undisciplined cache replay (issue #53).
+   *
+   * Discriminates a rate-limit / WAF rejection from an ordinary failure so the
+   * caller can back off instead of bursting: a 429, or a 403 whose body is not
+   * JSON (the HTML-bodied edge rejection observed in the #53 incident), is
+   * reported as `rateLimited`. Never throws.
+   *
+   * @param {string} text
+   * @param {"user"|"assistant"} role
+   * @param {Record<string,string>} [memoryMetadata]
+   * @returns {Promise<"ok"|"rateLimited"|"failed">}
+   */
+  async postEpisodicResult(text, role, memoryMetadata) {
+    if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") return "failed";
+    try {
+      const response = await fetch(this.#endpoints.EPISODIC, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.#key}`,
+          "User-Agent": PRODUCT_USER_AGENT,
+        },
+        body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
+      });
+      if (response.ok) return "ok";
+      if (response.status === 429) {
+        await response.text().catch(() => undefined);
+        return "rateLimited";
+      }
+      if (response.status === 403) {
+        const contentType = (response.headers.get("content-type") || "").toLowerCase();
+        await response.text().catch(() => undefined);
+        // A JSON 403 is a genuine auth/permission denial; a non-JSON (HTML) 403
+        // is the edge/WAF rejecting a traffic pattern — treat as rate-limited.
+        return contentType.includes("application/json") ? "failed" : "rateLimited";
+      }
+      await response.text().catch(() => undefined);
+      return "failed";
+    } catch {
+      return "failed";
+    }
+  }
+
+  /**
    * Raw POST to the episodic endpoint. Returns true on 2xx, false otherwise.
    * Never throws.
    */

@@ -504,3 +504,253 @@ describe.skipIf(IS_WIN)("Issue #51 e2e — migrated marker labels the capture na
     expect(episodic[0].body?.memory_metadata?.client).toBe("nanoclaw");
   });
 });
+
+// ===================================================================
+// Issue #52 — cold-wake opener recovery: bounded key-wait, keyless spool on
+// the durable ~/.claude surface, and a disciplined server-start flush.
+// ===================================================================
+
+describe.skipIf(IS_WIN)("Issue #52 — opener recovery (spool + flush)", () => {
+  const spoolPath = () => path.join(env.home, ".claude", ".midbrain-spool.ndjson");
+
+  async function readSpool() {
+    const raw = await fs.readFile(spoolPath(), "utf8");
+    return raw.trim().split("\n").filter(Boolean).map(JSON.parse);
+  }
+
+  let workspace;
+  let preloadUrl;
+
+  beforeEach(async () => {
+    await fs.writeFile(
+      env.paths.claudeSettings,
+      JSON.stringify(migratedClaudeSettings(), null, 2) + "\n",
+    );
+    workspace = path.join(env.home, "workspace");
+    await fs.mkdir(workspace, { recursive: true });
+    // A hermetic dev shim pointing at this checkout (repair preserves dev bodies).
+    await installShim("claude", { mode: "install", isDev: true });
+
+    // Hook children must fail fast on the key-wait (no key will ever appear in
+    // the child) so the spool path runs without a 20s real wait.
+    const preload = path.join(env.tmp, "spool-preload.mjs");
+    await fs.writeFile(preload, `
+      globalThis.fetch = async () => ({ ok: false, status: 503, text: async () => "", json: async () => ({}) });
+    `);
+    preloadUrl = pathToFileURL(preload).href;
+  });
+
+  function runShim(role, input) {
+    return spawnSync("/bin/sh", [stableShimPath("claude"), role], {
+      input: JSON.stringify(input),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: env.childEnv({
+        NODE_OPTIONS: `--import ${preloadUrl}`,
+        MIDBRAIN_KEY_WAIT_MS: "0", // no key will arrive in the child; don't wait
+      }),
+    });
+  }
+
+  it("cold wake with no key: the opener is spooled to ~/.claude, not dropped (exit 0)", async () => {
+    // No key on any resolution path, no MIDBRAIN_* in the hook child env.
+    const result = runShim("user", { prompt: "the very first message", cwd: workspace });
+
+    expect(result.status).toBe(0);
+    await assertSandboxed(env, spoolPath());
+    const spooled = await readSpool();
+    expect(spooled).toHaveLength(1);
+    expect(spooled[0].text).toBe("the very first message");
+    expect(spooled[0].role).toBe("user");
+    if (!IS_WIN) {
+      const { mode } = await fs.stat(spoolPath());
+      expect(mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("bounded key-wait: a key that appears mid-wait is used, and nothing is spooled", async () => {
+    // Seed the global key BEFORE the hook runs but let the wait be generous:
+    // the very first resolution attempt should already succeed (fast path).
+    await fs.mkdir(path.dirname(env.paths.globalKey), { recursive: true });
+    await fs.writeFile(env.paths.globalKey, `${TEST_KEY}\n`, { mode: 0o600 });
+
+    // This child records fetches so we can assert a real authenticated POST.
+    const fetchLog = path.join(env.tmp, "keywait-fetch.ndjson");
+    const preload = path.join(env.tmp, "keywait-preload.mjs");
+    await fs.writeFile(preload, `
+      import fs from "node:fs";
+      globalThis.fetch = async (url, opts = {}) => {
+        const headers = opts.headers || {};
+        fs.appendFileSync(process.env.MIDBRAIN_TEST_FETCH_LOG, JSON.stringify({
+          url: String(url),
+          hasAuth: typeof headers.Authorization === "string" && headers.Authorization.length > 0,
+          body: opts.body ? JSON.parse(opts.body) : undefined,
+        }) + "\\n");
+        if (String(url).includes("/memories/episodic")) return { ok: true, status: 201, text: async () => "", json: async () => ({}) };
+        return { ok: false, status: 404, text: async () => "", json: async () => ({}) };
+      };
+    `);
+    const result = spawnSync("/bin/sh", [stableShimPath("claude"), "user"], {
+      input: JSON.stringify({ prompt: "captured not spooled", cwd: workspace }),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: env.childEnv({
+        NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
+        MIDBRAIN_TEST_FETCH_LOG: fetchLog,
+      }),
+    });
+
+    expect(result.status).toBe(0);
+    await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
+    const log = (await fs.readFile(fetchLog, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
+    const episodic = log.filter((r) => r.url.includes("/memories/episodic"));
+    expect(episodic).toHaveLength(1);
+    expect(episodic[0].hasAuth).toBe(true);
+    expect(episodic[0].body?.text).toBe("captured not spooled");
+  });
+
+});
+
+// Flush/cooldown behavior is driven by in-process runSelfRepair + a mocked
+// fetch, so (unlike the shim-based blocks above) it needs no POSIX shell and
+// runs on every platform.
+describe("Issue #52 — server-start spool flush discipline", () => {
+  const spoolPath = () => path.join(env.home, ".claude", ".midbrain-spool.ndjson");
+  const cooldownPath = () => path.join(env.home, ".claude", ".midbrain-spool-cooldown");
+
+  async function readSpool() {
+    const raw = await fs.readFile(spoolPath(), "utf8");
+    return raw.trim().split("\n").filter(Boolean).map(JSON.parse);
+  }
+
+  it("server-start flush drains the spool once the key is present (each entry POSTed once)", async () => {
+    // Spool two entries as a keyless hook would.
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "opener one", role: "user", memory_metadata: { client: "nanoclaw" } });
+    appendToSpool({ text: "reply one", role: "assistant", memory_metadata: { client: "nanoclaw" } });
+
+    const posts = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, opts = {}) => {
+      if (String(url).includes("/memories/episodic")) {
+        posts.push(JSON.parse(opts.body));
+        return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    process.env.MIDBRAIN_SPOOL_POST_SPACING_MS = "0";
+    try {
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+      delete process.env.MIDBRAIN_SPOOL_POST_SPACING_MS;
+    }
+
+    expect(posts.map((p) => p.text).sort()).toEqual(["opener one", "reply one"]);
+    // Spool cleared after a fully-successful flush.
+    await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("WAF rejection: flush stops, entries are preserved (never dropped), cooldown is set", async () => {
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "opener a", role: "user" });
+    appendToSpool({ text: "opener b", role: "user" });
+    appendToSpool({ text: "opener c", role: "user" });
+
+    // First POST 429s → the whole pass stops immediately.
+    let calls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) {
+        calls += 1;
+        return { ok: false, status: 429, headers: new Map(), text: async () => "rate limited", json: async () => ({}) };
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    process.env.MIDBRAIN_SPOOL_POST_SPACING_MS = "0";
+    process.env.MIDBRAIN_SPOOL_COOLDOWN_MS = "300000";
+    try {
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+      delete process.env.MIDBRAIN_SPOOL_POST_SPACING_MS;
+      delete process.env.MIDBRAIN_SPOOL_COOLDOWN_MS;
+    }
+
+    // Only one POST attempted (the pass stopped on the 429), no burst.
+    expect(calls).toBe(1);
+    // All three entries preserved — nothing dropped.
+    const spooled = await readSpool();
+    expect(spooled.map((e) => e.text).sort()).toEqual(["opener a", "opener b", "opener c"]);
+    // Cooldown persisted in the future.
+    const until = Number((await fs.readFile(cooldownPath(), "utf8")).trim());
+    expect(until).toBeGreaterThan(Date.now());
+  });
+
+  it("cooldown defers the next flush: no POST while cooling down, entries kept", async () => {
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "still pending", role: "user" });
+    // Active cooldown in the future.
+    await fs.writeFile(cooldownPath(), String(Date.now() + 300_000), { mode: 0o600 });
+
+    let calls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) calls += 1;
+      return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+
+    expect(calls).toBe(0); // deferred, no POST
+    const spooled = await readSpool();
+    expect(spooled.map((e) => e.text)).toEqual(["still pending"]); // preserved
+  });
+
+  it("never-drop across repeated failing starts: entry count is non-decreasing until success", async () => {
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "durable opener", role: "user" });
+
+    // Two failing (503) server starts — the entry must survive both.
+    const failSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) {
+        return { ok: false, status: 503, headers: new Map(), text: async () => "", json: async () => ({}) };
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    process.env.MIDBRAIN_SPOOL_POST_SPACING_MS = "0";
+    try {
+      await runSelfRepair(NPX_CTX);
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      failSpy.mockRestore();
+    }
+    expect((await readSpool()).map((e) => e.text)).toEqual(["durable opener"]);
+
+    // Now a successful start drains it.
+    const okSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) {
+        return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+    try {
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      okSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+      delete process.env.MIDBRAIN_SPOOL_POST_SPACING_MS;
+    }
+    await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});

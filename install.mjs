@@ -30,6 +30,15 @@ import {
   CredentialReadError,
 } from './shared/clients/credential-writer.mjs';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
+import { MidbrainApi } from './shared/midbrain-api.mjs';
+import {
+  beginSpoolFlush,
+  finishSpoolFlush,
+  hasSpooledEntries,
+  readCooldownUntil,
+  writeCooldownUntil,
+  clearCooldown,
+} from './shared/claude-spool.mjs';
 import { writeGlobalRules, writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
 import { readGlobalKeystore, writeGlobalKeystore, globalKeystorePath } from './shared/keystore.mjs';
@@ -336,6 +345,102 @@ async function ensureCaptureClientMarker() {
   }
 }
 
+// Default cooldown applied when the flush is rate-limited (ms). The production
+// edge protection is a moving target, so this is a conservative back-off, not a
+// mirror of any specific WAF window. Env-tunable for tests.
+const SPOOL_COOLDOWN_MS = 5 * 60_000;
+// Small spacing between spool POSTs so a recovered backlog drips into the edge
+// rather than bursting. Env-tunable (0 in tests).
+const SPOOL_POST_SPACING_MS = 150;
+
+function spoolCooldownMs() {
+  const raw = Number(process.env.MIDBRAIN_SPOOL_COOLDOWN_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : SPOOL_COOLDOWN_MS;
+}
+
+function spoolPostSpacingMs() {
+  const raw = Number(process.env.MIDBRAIN_SPOOL_POST_SPACING_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : SPOOL_POST_SPACING_MS;
+}
+
+const spoolSleep = (ms) => new Promise((resolve) => (ms > 0 ? setTimeout(resolve, ms) : resolve()));
+
+/**
+ * Server-start flush of the keyless recovery spool (issue #52).
+ *
+ * On a cold NanoClaw wake the opener's hook may have spooled its payload to the
+ * durable ~/.claude surface because the key hadn't been persisted yet. Once
+ * ensureHookCredential() has run (it precedes this call in runSelfRepair), the
+ * key is available, so we drain the spool.
+ *
+ * Discipline (deliberately NOT the undisciplined episodic-cache replay — issue
+ * #53):
+ * - Runs once per server start, never in a loop and never per hook.
+ * - Single pass: each claimed entry is POSTed at most once; failures are
+ *   preserved as survivors for the next server start. Entries are NEVER dropped.
+ * - WAF-aware back-off: on a rate-limit / HTML-403 rejection the pass stops
+ *   immediately, remaining entries are preserved, and a cooldown timestamp
+ *   defers the next server-start attempt (a rapid respawn will not re-burst).
+ * - Small inter-POST spacing so a recovered backlog drips rather than bursts.
+ *
+ * Never throws — fail-open like the rest of self-repair.
+ */
+async function flushClaudeSpool() {
+  try {
+    if (!hasSpooledEntries()) return;
+    if (Date.now() < readCooldownUntil()) {
+      console.error('[midbrain] spool flush deferred (cooldown active)');
+      return;
+    }
+
+    let api;
+    try {
+      api = await MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT || 'claude'));
+    } catch {
+      return; // No key yet — leave the spool for a later start.
+    }
+
+    const flush = beginSpoolFlush();
+    if (!flush.claimed) return;
+
+    const survivors = [];
+    let rateLimited = false;
+    let sent = 0;
+    const spacing = spoolPostSpacingMs();
+
+    for (let i = 0; i < flush.entries.length; i += 1) {
+      const e = flush.entries[i];
+      if (rateLimited) { survivors.push(e); continue; }
+
+      const result = await api.postEpisodicResult(e.text, e.role, e.memory_metadata);
+      if (result === 'ok') {
+        sent += 1;
+        if (spacing > 0 && i < flush.entries.length - 1) await spoolSleep(spacing);
+      } else if (result === 'rateLimited') {
+        // Stop the pass; preserve this and every remaining entry.
+        rateLimited = true;
+        survivors.push(e);
+      } else {
+        // Ordinary failure — keep for the next server start (single pass).
+        survivors.push(e);
+      }
+    }
+
+    finishSpoolFlush(flush, survivors);
+
+    if (rateLimited) {
+      const until = Date.now() + spoolCooldownMs();
+      writeCooldownUntil(until);
+      console.error(`[midbrain] spool flush rate-limited after ${sent}; ${survivors.length} preserved, cooling down`);
+    } else {
+      if (survivors.length === 0) clearCooldown();
+      if (sent > 0) console.error(`[midbrain] spool flush recovered ${sent} entr${sent === 1 ? 'y' : 'ies'}`);
+    }
+  } catch {
+    // Non-fatal: spool flush must never affect the rest of startup.
+  }
+}
+
 /**
  * Context-gated self-repair (PRD-034 S1). Automatic repair may only run from
  * a durable location: instances launched from temp dirs, git worktrees, or CI
@@ -367,6 +472,7 @@ export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
     await ensureHooksFresh();
     await ensureHookCredential();
     await ensureCaptureClientMarker();
+    await flushClaudeSpool();
     return { skipped: false, kind: ctx.kind };
   } catch {
     return { skipped: false, kind: 'unknown' };

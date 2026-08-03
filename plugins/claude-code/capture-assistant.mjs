@@ -9,7 +9,8 @@
  * Fails silently on any error.
  */
 
-import { readStdinJSON, createApi, captureClientLabel, log, finishHook } from "./common.mjs";
+import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, log, finishHook } from "./common.mjs";
+import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 try {
@@ -19,16 +20,23 @@ try {
   if (input.stop_hook_active) await finishHook(0);
   if (!input.last_assistant_message) await finishHook(0);
 
+  const text = scrubInjectedPkContext(input.last_assistant_message);
+  const client = await captureClientLabel();
+
   let api;
   try {
-    api = await createApi(input.cwd);
+    api = await createApi(input.cwd, { waitForKey: shouldWaitForKey(client) });
   } catch {
-    log.warn("NO KEY");
+    // No key even after the bounded wait (issue #52): spool the assistant reply
+    // to the durable ~/.claude surface for a later server-start flush.
+    if (text) {
+      log.warn("NO KEY — spooling for recovery");
+      appendToSpool({ text, role: "assistant", memory_metadata: { client } });
+    }
     await finishHook(0);
   }
 
-  const text = scrubInjectedPkContext(input.last_assistant_message);
-  if (text) await api.storeEpisodic(text, "assistant", log, { client: await captureClientLabel() });
+  if (text) await api.storeEpisodic(text, "assistant", log, { client });
 } catch { /* fail silently */ }
 
 await finishHook(0);

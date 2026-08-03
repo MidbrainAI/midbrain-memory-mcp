@@ -14,23 +14,30 @@
  * turns within one session. min_score=0.5 limits repetition to relevant entries.
  */
 
-import { readStdinJSON, createApi, captureClientLabel, log, finishHook } from "./common.mjs";
+import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, log, finishHook } from "./common.mjs";
+import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
 try {
   const input = await readStdinJSON();
   if (!input?.prompt) await finishHook(0);
 
+  const client = await captureClientLabel();
+
   let api;
   try {
-    api = await createApi(input.cwd);
+    api = await createApi(input.cwd, { waitForKey: shouldWaitForKey(client) });
   } catch {
-    log.warn("NO KEY");
+    // No key even after the bounded wait (issue #52): spool the opener to the
+    // durable ~/.claude surface so a later authenticated server-start flush
+    // recovers it, instead of dropping it.
+    log.warn("NO KEY — spooling for recovery");
+    appendToSpool({ text: input.prompt, role: "user", memory_metadata: { client } });
     await finishHook(0);
   }
 
   // Episodic capture must complete before default-off exits.
-  await api.storeEpisodic(input.prompt, "user", log, { client: await captureClientLabel() });
+  await api.storeEpisodic(input.prompt, "user", log, { client });
 
   if (!isPkInjectionEnabled()) await finishHook(0);
 

@@ -363,6 +363,70 @@ describe("MidbrainApi.storeEpisodic", () => {
 });
 
 // ---------------------------------------------------------------------------
+// postEpisodicResult — disciplined single-entry POST for the spool flush (#52)
+// ---------------------------------------------------------------------------
+
+describe("MidbrainApi.postEpisodicResult", () => {
+  let fetchSpy;
+  let api;
+
+  beforeEach(() => {
+    api = new MidbrainApi("test-key", "test-source");
+  });
+
+  afterEach(() => {
+    fetchSpy?.mockRestore();
+  });
+
+  function mockResponse({ ok, status, contentType }) {
+    const headers = new Map();
+    if (contentType) headers.set("content-type", contentType);
+    return { ok, status, headers, text: async () => "", json: async () => ({}) };
+  }
+
+  it("returns 'ok' on 2xx", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: true, status: 201 }));
+    await expect(api.postEpisodicResult("hi", "user", { client: "nanoclaw" })).resolves.toBe("ok");
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({ text: "hi", role: "user", memory_metadata: { client: "nanoclaw" } });
+  });
+
+  it("returns 'rateLimited' on 429", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: false, status: 429 }));
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("rateLimited");
+  });
+
+  it("returns 'rateLimited' on an HTML-bodied 403 (WAF/edge rejection)", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ ok: false, status: 403, contentType: "text/html" }),
+    );
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("rateLimited");
+  });
+
+  it("returns 'failed' on a JSON 403 (genuine auth/permission denial)", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ ok: false, status: 403, contentType: "application/json" }),
+    );
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("failed");
+  });
+
+  it("returns 'failed' on 5xx and on a network error, never throwing", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: false, status: 503 }));
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("failed");
+    fetchSpy.mockRestore();
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("boom"));
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("failed");
+  });
+
+  it("does not touch the offline cache (no flush side effects)", async () => {
+    // A pure POST helper: only one fetch call, no cache-flush GET/POST storm.
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: true, status: 201 }));
+    await api.postEpisodicResult("hi", "user");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // storeEpisodic — cache-on-fail / flush-on-success
 // ---------------------------------------------------------------------------
 

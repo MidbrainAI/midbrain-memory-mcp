@@ -19,15 +19,70 @@ export { MidbrainApi, makeLogger };
 /** Capture-client labels must be lowercase slugs, 32 chars max. */
 const CLIENT_LABEL_RE = /^[a-z][a-z0-9-]{0,31}$/;
 
+/** Marker in the MidbrainApi.create() error thrown when no key resolves. */
+const NO_KEY_ERROR_FRAGMENT = "No API key configured";
+
+/** Default bounded key-wait budget (ms). Overridable via env for tests. */
+const KEY_WAIT_DEADLINE_MS = 20_000;
+const KEY_WAIT_POLL_MS = 500;
+
+function keyWaitDeadlineMs() {
+  const raw = Number(process.env.MIDBRAIN_KEY_WAIT_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : KEY_WAIT_DEADLINE_MS;
+}
+
+function keyWaitPollMs() {
+  const raw = Number(process.env.MIDBRAIN_KEY_WAIT_POLL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : KEY_WAIT_POLL_MS;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** True only for the specific "no key resolved" throw, not other config errors. */
+function isNoKeyError(err) {
+  return Boolean(err && typeof err.message === "string" && err.message.includes(NO_KEY_ERROR_FRAGMENT));
+}
+
 /**
  * Creates a MidbrainApi instance for the Claude Code client.
- * Accepts optional cwd (from hook stdin payload) for project-scoped key resolution.
+ *
+ * Bounded key-wait (issue #52): on a cold NanoClaw container wake the opening
+ * message's hook can fire before the MCP server has persisted the API key
+ * (~/.config/midbrain is ephemeral and repopulated by self-repair after the
+ * server connects). Rather than immediately dropping the opener, poll the full
+ * key-resolution chain (through MidbrainApi.create — never reading key files
+ * directly) until a key appears or a deadline inside the 30s hook timeout is
+ * reached. Only the specific "no key" failure is retried; any other error
+ * (bad host, malformed config) fails fast. The deadline/poll are env-tunable
+ * for tests.
+ *
+ * The wait applies ONLY when a key is expected imminently — i.e. in a NanoClaw
+ * container, detected via the resolved capture-client label ("nanoclaw"). A
+ * plain host Claude install with no key must fail open FAST (no 20s block), so
+ * when `waitForKey` is false a missing key throws on the first attempt.
+ *
  * @param {string|undefined} cwd - The project working directory from the hook payload.
+ * @param {{ waitForKey?: boolean }} [opts]
  * @returns {Promise<MidbrainApi>}
  */
-export async function createApi(cwd) {
+export async function createApi(cwd, { waitForKey = false } = {}) {
   const projectDir = cwd?.trim() || undefined;
-  return MidbrainApi.create(getClient("claude"), projectDir);
+  const client = getClient("claude");
+  const deadline = Date.now() + (waitForKey ? keyWaitDeadlineMs() : 0);
+  const pollMs = keyWaitPollMs();
+  for (;;) {
+    try {
+      return await MidbrainApi.create(client, projectDir);
+    } catch (err) {
+      if (!isNoKeyError(err) || Date.now() + pollMs > deadline) throw err;
+      await sleep(pollMs);
+    }
+  }
+}
+
+/** True when the resolved capture-client label indicates a NanoClaw container. */
+export function shouldWaitForKey(clientLabel) {
+  return clientLabel === "nanoclaw";
 }
 
 /**
