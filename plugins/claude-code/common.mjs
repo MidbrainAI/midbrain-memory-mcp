@@ -70,9 +70,19 @@ export const log = makeLogger(logFile("midbrain-claude.log"));
  */
 export async function readStdinJSON() {
   try {
-    const chunks = [];
-    for await (const chunk of process.stdin) chunks.push(chunk);
-    return JSON.parse(Buffer.concat(chunks).toString());
+    // Event-based read (rather than `for await ... of process.stdin`): the
+    // async iterator can leave a native read handle attached at the point
+    // process.exit() runs, which on Node 24 for Windows intermittently aborts
+    // teardown with STATUS_STACK_BUFFER_OVERRUN (0xC0000409). Consuming to the
+    // "end" event lets the stream release its handle before the hook exits.
+    const raw = await new Promise((resolve) => {
+      let buf = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", (chunk) => { buf += chunk; });
+      process.stdin.on("end", () => resolve(buf));
+      process.stdin.on("error", () => resolve(buf));
+    });
+    return JSON.parse(raw);
   } catch {
     return null;
   }
@@ -92,5 +102,10 @@ export async function finishHook(code = 0) {
     const { maybeSelfUpdate } = await import("../../install.mjs");
     await maybeSelfUpdate();
   } catch { /* never break the hook */ }
+  // Release any lingering stdin handle before exit. On Node 24 for Windows,
+  // calling process.exit() while the async stdin iterator still holds a native
+  // read handle can abort teardown with STATUS_STACK_BUFFER_OVERRUN
+  // (0xC0000409). Destroying stdin first makes the exit deterministic.
+  try { process.stdin.destroy(); } catch { /* best effort */ }
   process.exit(code);
 }
