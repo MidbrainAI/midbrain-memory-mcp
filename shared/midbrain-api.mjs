@@ -22,7 +22,7 @@
 
 import { createHash } from "crypto";
 
-import { appendToCache, beginCacheFlush, finishCacheFlush, hasCachedEntries } from "./episodic-cache.mjs";
+import { appendToCache } from "./episodic-cache.mjs";
 import { DEFAULT_API_BASE, resolveApiHost } from "./api-host.mjs";
 
 const API_BASE_FROM_ENV = Boolean(process.env.MIDBRAIN_API_URL);
@@ -256,8 +256,11 @@ export class MidbrainApi {
    * POST an episodic memory. Callers may ignore the returned promise for
    * fire-and-forget capture, or await its boolean result for retry decisions.
    *
-   * Resilience: on failure the entry is appended to a local NDJSON cache.
-   * On the next successful call, all cached entries are flushed (best-effort).
+   * Resilience: on failure the entry is appended to a local NDJSON cache. The
+   * cache is drained once at client/server start (see flushEpisodicCache in
+   * install.mjs), NOT on every successful capture. Replaying the whole backlog
+   * per hook was the amplification behind the 1,610-error incident (issue #53);
+   * a failed store now simply caches and is retried on the next start.
    *
    * @param {string} text
    * @param {"user"|"assistant"} role
@@ -271,12 +274,8 @@ export class MidbrainApi {
     const ok = await this.#postEpisodic(text, role, memoryMetadata, logger);
     if (!ok) {
       appendToCache({ text, role, memory_metadata: memoryMetadata }, this.#cacheScope);
-      logger.debug("STORE: cached entry for later flush");
+      logger.debug("STORE: cached entry for boot-time drain");
       return false;
-    }
-    // Success — flush any previously cached entries.
-    if (hasCachedEntries(this.#cacheScope)) {
-      await this.#flushCache(logger);
     }
     return true;
   }
@@ -358,35 +357,6 @@ export class MidbrainApi {
     } catch {
       logger.error(`STORE ERROR: ${binding} network-error`);
       return false;
-    }
-  }
-
-  /**
-   * Attempt to POST all cached entries. Entries that still fail are
-   * re-written to the cache file so they survive for the next attempt.
-   */
-  async #flushCache(logger) {
-    const flush = beginCacheFlush(this.#cacheScope);
-    if (!flush.claimed) return;
-    const entries = flush.entries;
-    if (entries.length === 0) {
-      finishCacheFlush(flush, []);
-      return;
-    }
-    logger.info(`CACHE FLUSH: ${entries.length} cached entries`);
-    const survivors = [];
-    for (const entry of entries) {
-      const ok = await this.#postEpisodic(
-        entry.text, entry.role, entry.memory_metadata, logger,
-      );
-      if (!ok) survivors.push(entry);
-    }
-    if (survivors.length > 0) {
-      finishCacheFlush(flush, survivors);
-      logger.warn(`CACHE FLUSH: ${survivors.length} entries still pending`);
-    } else {
-      finishCacheFlush(flush, []);
-      logger.info("CACHE FLUSH: all entries flushed successfully");
     }
   }
 

@@ -491,12 +491,13 @@ describe("Codex hook wrappers", () => {
     expect(result.stdout).toBe("");
   });
 
-  it("UserPromptSubmit wrapper caches outage memory and only flushes it with the original key", () => {
+  it("UserPromptSubmit wrapper caches an outage memory under the current key scope (issue #53: no per-store flush; a different key never re-POSTs it)", () => {
     const home = tempHomeWithNamedKey("key-a");
     const loaded = preloadWithRequestLog();
     const fetchLog = path.join(home, "fetch-log.ndjson");
 
     try {
+      // Capture fails for key-a -> entry is cached (never lost).
       const outage = runPersistentUserHook({
         home,
         preloadFile: loaded.file,
@@ -508,37 +509,26 @@ describe("Codex hook wrappers", () => {
       expect(outage.stdout).toBe("");
       expect(cachedTexts(home)).toContain("outage prompt from key A");
 
+      // A later successful capture under a DIFFERENT key must never re-POST
+      // key-a's cached entry (per-key scoping). The entry stays cached under
+      // key-a's scope; boot-time drain recovery is covered deterministically in
+      // tests/cache-boot-drain.test.mjs (runSelfRepair), not here.
       writeHomeKey(home, "key-b");
-      const wrongKeyRecovery = runPersistentUserHook({
+      const otherKey = runPersistentUserHook({
         home,
         preloadFile: loaded.file,
         fetchLog,
         mode: "ok",
         prompt: "fresh prompt from key B",
       });
-      expect(wrongKeyRecovery.status).toBe(0);
-      expect(cachedTexts(home)).toContain("outage prompt from key A");
+      expect(otherKey.status).toBe(0);
 
-      writeHomeKey(home, "key-a");
-      const originalKeyRecovery = runPersistentUserHook({
-        home,
-        preloadFile: loaded.file,
-        fetchLog,
-        mode: "ok",
-        prompt: "fresh prompt from key A",
-      });
-      expect(originalKeyRecovery.status).toBe(0);
-
-      const posts = readFetchLog(fetchLog);
-      expect(posts).not.toContainEqual(expect.objectContaining({
+      expect(readFetchLog(fetchLog)).not.toContainEqual(expect.objectContaining({
         authorization: "Bearer key-b",
         body: expect.objectContaining({ text: "outage prompt from key A" }),
       }));
-      expect(posts).toContainEqual(expect.objectContaining({
-        authorization: "Bearer key-a",
-        body: expect.objectContaining({ text: "outage prompt from key A" }),
-      }));
-      expect(cachedTexts(home)).not.toContain("outage prompt from key A");
+      // key-a's entry is untouched by the key-b session (still in key-a's bucket).
+      expect(cachedTexts(home)).toContain("outage prompt from key A");
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
       fs.rmSync(loaded.dir, { recursive: true, force: true });

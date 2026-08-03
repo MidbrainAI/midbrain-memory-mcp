@@ -383,3 +383,82 @@ export function inspectCachedEntries(scope) {
     cacheDir: currentCacheDir(),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Boot drain support (issue #53): enumerate ALL scope bindings so a single
+// authenticated drain at server start can recover entries orphaned by a past
+// key rotation or host change — not just the current scope.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the scope token from a base binding filename. Returns undefined for
+ * the unscoped default file (so cacheFileForScope(undefined) maps back to it).
+ * @param {string} name
+ * @returns {string|undefined}
+ */
+function scopeFromFilename(name) {
+  if (name === DEFAULT_CACHE_FILE) return undefined;
+  if (name.startsWith(SCOPED_CACHE_PREFIX) && name.endsWith(CACHE_EXT)) {
+    return name.slice(SCOPED_CACHE_PREFIX.length, -CACHE_EXT.length);
+  }
+  return undefined;
+}
+
+/**
+ * List every cache-binding scope currently on disk (live or processing),
+ * de-duplicated. Each returned value round-trips through cacheFileForScope()
+ * to the same file, so a caller can begin/finish a flush per binding.
+ * @returns {Array<string|undefined>}
+ */
+export function listCacheBindings() {
+  const seen = new Map(); // key -> scope (dedupes undefined default too)
+  for (const name of cacheBindingFiles()) {
+    const scope = scopeFromFilename(name);
+    seen.set(scope ?? "", scope);
+  }
+  return [...seen.values()];
+}
+
+/** True when ANY binding (current or orphaned) holds pending entries. */
+export function hasAnyCachedEntries() {
+  return listCacheBindings().some((scope) => hasCachedEntries(scope));
+}
+
+// ---------------------------------------------------------------------------
+// Per-scope cooldown sidecar (issue #53): a WAF rejection during the boot drain
+// persists a "do not drain before" timestamp next to the scope's cache file so
+// the next server start defers instead of re-bursting. Mirrors the spool's
+// cooldown, but scoped per binding. Never throws.
+// ---------------------------------------------------------------------------
+
+const COOLDOWN_EXT = ".cooldown";
+
+function cooldownFileForScope(scope) {
+  return `${cacheFileForScope(scope)}${COOLDOWN_EXT}`;
+}
+
+/** @returns {number} epoch-ms before which draining should be skipped; 0 when unset/corrupt. */
+export function readCacheCooldownUntil(scope) {
+  try {
+    const raw = fs.readFileSync(cooldownFileForScope(scope), "utf8").trim();
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function writeCacheCooldownUntil(scope, until) {
+  try {
+    if (!Number.isFinite(until) || until <= 0) return;
+    ensureCacheDir();
+    fs.writeFileSync(cooldownFileForScope(scope), String(Math.floor(until)), { encoding: "utf8", mode: 0o600 });
+    try { fs.chmodSync(cooldownFileForScope(scope), 0o600); } catch { /* ignore */ }
+  } catch {
+    // Best effort.
+  }
+}
+
+export function clearCacheCooldown(scope) {
+  try { fs.unlinkSync(cooldownFileForScope(scope)); } catch { /* ignore */ }
+}

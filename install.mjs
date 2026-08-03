@@ -32,6 +32,7 @@ import {
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
 import { globalConfigDir } from './shared/state-dir.mjs';
 import { MidbrainApi } from './shared/midbrain-api.mjs';
+import { runFlush } from './shared/flush-runner.mjs';
 import {
   beginSpoolFlush,
   finishSpoolFlush,
@@ -40,6 +41,15 @@ import {
   writeCooldownUntil,
   clearCooldown,
 } from './shared/claude-spool.mjs';
+import {
+  listCacheBindings,
+  beginCacheFlush,
+  finishCacheFlush,
+  readCacheCooldownUntil,
+  writeCacheCooldownUntil,
+  clearCacheCooldown,
+  hasAnyCachedEntries,
+} from './shared/episodic-cache.mjs';
 import { writeGlobalRules, writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
 import { readGlobalKeystore, writeGlobalKeystore, globalKeystorePath } from './shared/keystore.mjs';
@@ -364,7 +374,20 @@ function spoolPostSpacingMs() {
   return Number.isFinite(raw) && raw >= 0 ? raw : SPOOL_POST_SPACING_MS;
 }
 
-const spoolSleep = (ms) => new Promise((resolve) => (ms > 0 ? setTimeout(resolve, ms) : resolve()));
+// Default cooldown/spacing for the offline episodic-cache drain (#53). Same
+// discipline as the spool; separate env knobs so they can be tuned apart.
+const CACHE_COOLDOWN_MS = 5 * 60_000;
+const CACHE_POST_SPACING_MS = 150;
+
+function cacheCooldownMs() {
+  const raw = Number(process.env.MIDBRAIN_CACHE_COOLDOWN_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : CACHE_COOLDOWN_MS;
+}
+
+function cachePostSpacingMs() {
+  const raw = Number(process.env.MIDBRAIN_CACHE_POST_SPACING_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : CACHE_POST_SPACING_MS;
+}
 
 /**
  * Server-start flush of the keyless recovery spool (issue #52).
@@ -372,27 +395,12 @@ const spoolSleep = (ms) => new Promise((resolve) => (ms > 0 ? setTimeout(resolve
  * On a cold NanoClaw wake the opener's hook may have spooled its payload to the
  * durable ~/.claude surface because the key hadn't been persisted yet. Once
  * ensureHookCredential() has run (it precedes this call in runSelfRepair), the
- * key is available, so we drain the spool.
- *
- * Discipline (deliberately NOT the undisciplined episodic-cache replay — issue
- * #53):
- * - Runs once per server start, never in a loop and never per hook.
- * - Single pass: each claimed entry is POSTed at most once; failures are
- *   preserved as survivors for the next server start. Entries are NEVER dropped.
- * - WAF-aware back-off: on a rate-limit / HTML-403 rejection the pass stops
- *   immediately, remaining entries are preserved, and a cooldown timestamp
- *   defers the next server-start attempt (a rapid respawn will not re-burst).
- * - Small inter-POST spacing so a recovered backlog drips rather than bursts.
- *
- * Never throws — fail-open like the rest of self-repair.
+ * key is available, so we drain the spool through the shared disciplined runner
+ * (single-pass, WAF-aware, cooldown-gated). Never throws.
  */
 async function flushClaudeSpool() {
   try {
     if (!hasSpooledEntries()) return;
-    if (Date.now() < readCooldownUntil()) {
-      console.error('[midbrain] spool flush deferred (cooldown active)');
-      return;
-    }
 
     let api;
     try {
@@ -401,44 +409,78 @@ async function flushClaudeSpool() {
       return; // No key yet — leave the spool for a later start.
     }
 
-    const flush = beginSpoolFlush();
-    if (!flush.claimed) return;
-
-    const survivors = [];
-    let rateLimited = false;
-    let sent = 0;
-    const spacing = spoolPostSpacingMs();
-
-    for (let i = 0; i < flush.entries.length; i += 1) {
-      const e = flush.entries[i];
-      if (rateLimited) { survivors.push(e); continue; }
-
-      const result = await api.postEpisodicResult(e.text, e.role, e.memory_metadata);
-      if (result === 'ok') {
-        sent += 1;
-        if (spacing > 0 && i < flush.entries.length - 1) await spoolSleep(spacing);
-      } else if (result === 'rateLimited') {
-        // Stop the pass; preserve this and every remaining entry.
-        rateLimited = true;
-        survivors.push(e);
-      } else {
-        // Ordinary failure — keep for the next server start (single pass).
-        survivors.push(e);
-      }
-    }
-
-    finishSpoolFlush(flush, survivors);
-
-    if (rateLimited) {
-      const until = Date.now() + spoolCooldownMs();
-      writeCooldownUntil(until);
-      console.error(`[midbrain] spool flush rate-limited after ${sent}; ${survivors.length} preserved, cooling down`);
-    } else {
-      if (survivors.length === 0) clearCooldown();
-      if (sent > 0) console.error(`[midbrain] spool flush recovered ${sent} entr${sent === 1 ? 'y' : 'ies'}`);
-    }
+    await runFlush({
+      source: {
+        begin: beginSpoolFlush,
+        finish: finishSpoolFlush,
+        readCooldownUntil,
+        writeCooldownUntil,
+        clearCooldown,
+      },
+      post: (e) => api.postEpisodicResult(e.text, e.role, e.memory_metadata),
+      spacingMs: spoolPostSpacingMs(),
+      cooldownMs: spoolCooldownMs(),
+      log: (msg) => console.error(msg),
+      label: 'spool flush',
+    });
   } catch {
     // Non-fatal: spool flush must never affect the rest of startup.
+  }
+}
+
+/**
+ * Server-start drain of the offline episodic cache (issue #53).
+ *
+ * The cache no longer flushes on every capture (that amplification replayed the
+ * whole backlog per hook and produced the 1,610-error incident). Instead we
+ * drain it once at boot, throttled, through the same shared runner as the
+ * spool. There is no permanent failure: a rotated/absent key, a 4xx, a 5xx, or
+ * a WAF rejection all leave the entry cached to retry on the next start —
+ * nothing is dropped, capped, or quarantined.
+ *
+ * Drains EVERY scope binding in the cache dir (not just the current scope) with
+ * the current authenticated key, so entries orphaned by a past key rotation are
+ * recovered automatically.
+ *
+ * Never throws — fail-open like the rest of self-repair.
+ */
+async function flushEpisodicCache() {
+  try {
+    if (!hasAnyCachedEntries()) return;
+
+    let api;
+    try {
+      api = await MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT || 'claude'));
+    } catch {
+      return; // No key yet — leave the cache for a later start.
+    }
+
+    const post = (e) => api.postEpisodicResult(e.text, e.role, e.memory_metadata);
+    const spacingMs = cachePostSpacingMs();
+    const cooldownMs = cacheCooldownMs();
+
+    // Drain every binding (current scope + orphans from past keys/hosts).
+    for (const scope of listCacheBindings()) {
+      const result = await runFlush({
+        source: {
+          begin: () => beginCacheFlush(scope),
+          finish: (flush, survivors) => finishCacheFlush(flush, survivors),
+          readCooldownUntil: () => readCacheCooldownUntil(scope),
+          writeCooldownUntil: (until) => writeCacheCooldownUntil(scope, until),
+          clearCooldown: () => clearCacheCooldown(scope),
+        },
+        post,
+        spacingMs,
+        cooldownMs,
+        log: (msg) => console.error(msg),
+        label: 'cache drain',
+      });
+      // Stop touching further bindings once the edge signals rate-limiting —
+      // one cooldown protects the whole drain, no cross-binding burst.
+      if (result.rateLimited) break;
+    }
+  } catch {
+    // Non-fatal: cache drain must never affect the rest of startup.
   }
 }
 
@@ -474,6 +516,7 @@ export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
     await ensureHookCredential();
     await ensureCaptureClientMarker();
     await flushClaudeSpool();
+    await flushEpisodicCache();
     return { skipped: false, kind: ctx.kind };
   } catch {
     return { skipped: false, kind: 'unknown' };

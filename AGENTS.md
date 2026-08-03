@@ -231,7 +231,8 @@ Claude Code:
   in the group MCP env.
 - Spool flush (`flushClaudeSpool` in `install.mjs`, called from `runSelfRepair`
   after `ensureHookCredential`): once the key is persisted, it drains the spool
-  in a single server-start pass via `MidbrainApi.postEpisodicResult` (a
+  in a single server-start pass via the shared `runFlush`
+  (`shared/flush-runner.mjs`) using `MidbrainApi.postEpisodicResult` (a
   controlled POST that does NOT trigger the offline-cache replay). Entries are
   NEVER dropped: successes are removed, failures are preserved as survivors for
   the next start. It is WAF-aware — a 429 or an HTML-bodied 403 (the issue #53
@@ -240,6 +241,29 @@ Claude Code:
   start defers instead of re-bursting. Small inter-POST spacing keeps a
   recovered backlog dripping rather than bursting. Cooldown/spacing are
   env-tunable (`MIDBRAIN_SPOOL_COOLDOWN_MS`, `MIDBRAIN_SPOOL_POST_SPACING_MS`).
+
+Offline episodic cache discipline (issue #53):
+
+- `storeEpisodic` caches a failed POST but NO LONGER flushes the backlog on the
+  next successful store. Replaying the whole cache on every hook was the
+  amplification behind the 1,610-error incident (the same ~26 rejected entries
+  re-sent across ~60 flush cycles). A failed store now simply caches and is
+  retried at the next client/server start.
+- The cache drains once at boot via `flushEpisodicCache` in `runSelfRepair`
+  (right after `flushClaudeSpool`), through the SAME shared `runFlush` runner —
+  single-pass, WAF-aware, cooldown-gated, inter-POST spacing. The spool and the
+  cache share identical policy: never drop, retry next boot, back off on WAF.
+- There is no permanent failure and no quarantine/cap/expiry: a rotated/absent
+  key, a 4xx, a 5xx, a network error, or a WAF rejection all leave the entry
+  cached to retry on the next start. Nothing is dropped, capped, or aged out.
+  (The deleted-then-restored agent-key case recovers automatically this way.)
+- The boot drain sweeps EVERY scope binding in the cache dir, not just the
+  current scope (`listCacheBindings`), so entries orphaned by a past key/host
+  rotation — the cache filename is `sha256(apiBase\0key)`-scoped — are recovered
+  by the current key. Per-scope cooldown lives in a `<cache-file>.cooldown`
+  sidecar; `MIDBRAIN_CACHE_COOLDOWN_MS` / `MIDBRAIN_CACHE_POST_SPACING_MS` tune
+  it. `memory_diagnostics` still surfaces pending + `other_cache_bindings`
+  counts (which now auto-drain at boot).
 
 Codex:
 
