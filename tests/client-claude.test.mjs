@@ -511,6 +511,124 @@ describe("Claude capture-assistant hook wrapper", () => {
 });
 
 // ===================================================================
+// capture-client label resolution (issue #48)
+// ===================================================================
+
+describe("Claude capture hooks client label (issue #48)", () => {
+  const CAPTURE_ENV = "MIDBRAIN_CAPTURE_CLIENT";
+  const MARKER_REL = path.join(".claude", ".midbrain-capture-client");
+
+  function tempHomeWithKey({ marker, markerAsDirectory = false } = {}) {
+    const home = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-label-home-"));
+    const keyDir = path.join(home, ".config", "midbrain");
+    fsSync.mkdirSync(keyDir, { recursive: true });
+    fsSync.writeFileSync(path.join(keyDir, ".midbrain-key"), "test-key\n", { mode: 0o600 });
+    const markerPath = path.join(home, MARKER_REL);
+    if (markerAsDirectory) {
+      // readFile on a directory fails (EISDIR) — the "unreadable marker" case.
+      fsSync.mkdirSync(markerPath, { recursive: true });
+    } else if (marker !== undefined) {
+      fsSync.mkdirSync(path.dirname(markerPath), { recursive: true });
+      fsSync.writeFileSync(markerPath, marker);
+    }
+    return home;
+  }
+
+  /**
+   * Spawns a real capture script with a body-logging fetch preload and returns
+   * the episodic POST it made: { raw, body }. Proves the label actually flows
+   * into the stored memory_metadata, not just out of a helper function.
+   */
+  function capturedEpisodic(script, homeOpts = {}, extraEnv = {}) {
+    const home = tempHomeWithKey(homeOpts);
+    const logPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-label-log-")), "fetch.jsonl");
+    const preloadDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-label-preload-"));
+    const preloadFile = path.join(preloadDir, "fetch-preload.mjs");
+    fsSync.writeFileSync(preloadFile, `
+      import fs from "node:fs";
+      globalThis.fetch = async (url, opts = {}) => {
+        fs.appendFileSync(${JSON.stringify(logPath)},
+          JSON.stringify({ url: String(url), body: opts.body ?? null }) + "\\n");
+        return { ok: true, status: 201 };
+      };
+    `);
+    const input = script === "capture-user.mjs"
+      ? { prompt: "label probe", cwd: "/repo" }
+      : { last_assistant_message: "label probe", cwd: "/repo" };
+    const result = spawnSync(process.execPath, [
+      "--import", pathToFileURL(preloadFile).href,
+      path.join(REPO_ROOT, "plugins", "claude-code", script),
+    ], {
+      input: JSON.stringify(input),
+      encoding: "utf8",
+      env: { ...process.env, HOME: home, USERPROFILE: home,
+             [PK_ENV]: undefined, [CAPTURE_ENV]: undefined, ...extraEnv },
+    });
+    expect(result.status).toBe(0);
+    const episodic = fsSync.readFileSync(logPath, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line))
+      .find((entry) => entry.url.includes("/memories/episodic"));
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
+    fsSync.rmSync(preloadDir, { recursive: true, force: true });
+    expect(episodic).toBeDefined();
+    return { raw: episodic.body, body: JSON.parse(episodic.body) };
+  }
+
+  function capturedClient(script, homeOpts = {}, extraEnv = {}) {
+    return capturedEpisodic(script, homeOpts, extraEnv).body.memory_metadata?.client;
+  }
+
+  it("marker present: episodic POST body carries client nanoclaw", () => {
+    const { raw, body } = capturedEpisodic("capture-user.mjs", { marker: "nanoclaw\n" });
+    expect(raw).toContain('"client":"nanoclaw"');
+    expect(body.memory_metadata.client).toBe("nanoclaw");
+  });
+
+  it("marker labels assistant captures too", () => {
+    expect(capturedClient("capture-assistant.mjs", { marker: "nanoclaw\n" })).toBe("nanoclaw");
+  });
+
+  it("defaults to claude when no marker exists", () => {
+    expect(capturedClient("capture-user.mjs")).toBe("claude");
+  });
+
+  it("MIDBRAIN_CAPTURE_CLIENT env wins over the marker", () => {
+    const client = capturedClient("capture-user.mjs", { marker: "nanoclaw\n" },
+      { [CAPTURE_ENV]: "host-label" });
+    expect(client).toBe("host-label");
+  });
+
+  it("invalid env value is ignored and the marker still applies", () => {
+    const client = capturedClient("capture-user.mjs", { marker: "nanoclaw\n" },
+      { [CAPTURE_ENV]: "Not Valid!" });
+    expect(client).toBe("nanoclaw");
+  });
+
+  it("reads only the marker's first line, trimmed", () => {
+    expect(capturedClient("capture-user.mjs", { marker: " nanoclaw \nsecond line\n" })).toBe("nanoclaw");
+  });
+
+  it("falls back to claude on invalid marker content", () => {
+    const invalid = [
+      "NanoClaw\n",            // uppercase
+      "nano claw\n",           // spaces
+      "../escape\n",           // path chars
+      "",                      // empty
+      `${"a".repeat(33)}\n`,   // longer than 32 chars
+    ];
+    for (const marker of invalid) {
+      expect({ marker, client: capturedClient("capture-user.mjs", { marker }) })
+        .toEqual({ marker, client: "claude" });
+    }
+  });
+
+  it("falls back to claude when the marker is unreadable", () => {
+    expect(capturedClient("capture-user.mjs", { markerAsDirectory: true })).toBe("claude");
+  });
+});
+
+// ===================================================================
 // installProject
 // ===================================================================
 

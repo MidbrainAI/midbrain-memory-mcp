@@ -6,11 +6,18 @@
  * Hook scripts import from this file — their imports don't change.
  */
 
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
 import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 
 export { MidbrainApi, makeLogger };
+
+/** Capture-client labels must be lowercase slugs, 32 chars max. */
+const CLIENT_LABEL_RE = /^[a-z][a-z0-9-]{0,31}$/;
 
 /**
  * Creates a MidbrainApi instance for the Claude Code client.
@@ -21,6 +28,32 @@ export { MidbrainApi, makeLogger };
 export async function createApi(cwd) {
   const projectDir = cwd?.trim() || undefined;
   return MidbrainApi.create(getClient("claude"), projectDir);
+}
+
+/**
+ * Resolves the client label attached to captured episodic memories.
+ *
+ * Inside a NanoClaw container the runtime IS Claude Code and hook child
+ * processes receive no env, so the label cannot come from container env.
+ * Precedence:
+ *   1. MIDBRAIN_CAPTURE_CLIENT env — host topologies where env reaches hooks.
+ *   2. ~/.claude/.midbrain-capture-client marker (first line, trimmed) — the
+ *      only durable in-container surface; NanoClaw's skill writes "nanoclaw"
+ *      into the mounted .claude-shared directory.
+ *   3. "claude".
+ * A value that fails the slug charset is treated as absent (fall through).
+ * Never throws — capture hooks are fail-open.
+ * @returns {Promise<string>}
+ */
+export async function captureClientLabel() {
+  const fromEnv = process.env.MIDBRAIN_CAPTURE_CLIENT?.trim();
+  if (fromEnv && CLIENT_LABEL_RE.test(fromEnv)) return fromEnv;
+  try {
+    const markerPath = path.join(os.homedir(), ".claude", ".midbrain-capture-client");
+    const firstLine = (await fs.readFile(markerPath, "utf8")).split("\n", 1)[0].trim();
+    if (CLIENT_LABEL_RE.test(firstLine)) return firstLine;
+  } catch { /* missing or unreadable marker — fall through */ }
+  return "claude";
 }
 
 /**

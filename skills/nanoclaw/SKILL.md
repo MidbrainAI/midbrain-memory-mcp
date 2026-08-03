@@ -206,6 +206,21 @@ The resulting settings must contain commands equivalent to this shape:
 }
 ```
 
+### Capture Client Label
+
+After the settings merge, label this group's captures as NanoClaw by writing
+the capture-client marker into the mounted settings directory (no key
+material involved):
+
+```bash
+printf 'nanoclaw\n' > "$SETTINGS_DIR/.midbrain-capture-client"
+```
+
+Capture hooks read the marker's first line and attach `client: nanoclaw` to
+episodic metadata; when the marker is absent or invalid they fall back to the
+generic `claude` label. Host topologies where hook processes inherit env can
+override the label with `MIDBRAIN_CAPTURE_CLIENT` instead.
+
 ### Legacy form (pre-0.4.8)
 
 Older installs wrote inline-key npx hook commands —
@@ -328,4 +343,4 @@ Do not approve stale pending requests that mention a pinned MidBrain version.
 
 ## Removing MidBrain Memory
 
-Remove the MidBrain MCP server from the selected group, remove only MidBrain hook entries from `data/v2-sessions/<group-id>/.claude-shared/settings.json`, remove local key env entries, and restart with operator approval.
+Remove the MidBrain MCP server from the selected group, remove only MidBrain hook entries from `data/v2-sessions/<group-id>/.claude-shared/settings.json`, remove the `.midbrain-capture-client` marker from the same `.claude-shared` directory, remove local key env entries, and restart with operator approval.

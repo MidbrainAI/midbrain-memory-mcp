@@ -14,7 +14,7 @@
  * turns within one session. min_score=0.5 limits repetition to relevant entries.
  */
 
-import { readStdinJSON, createApi, log, finishHook } from "./common.mjs";
+import { readStdinJSON, createApi, captureClientLabel, log, finishHook } from "./common.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
 try {
@@ -30,7 +30,7 @@ try {
   }
 
   // Episodic capture must complete before default-off exits.
-  await api.storeEpisodic(input.prompt, "user", log, { client: "claude" });
+  await api.storeEpisodic(input.prompt, "user", log, { client: await captureClientLabel() });
 
   if (!isPkInjectionEnabled()) await finishHook(0);
 

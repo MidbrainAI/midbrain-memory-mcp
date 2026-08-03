@@ -9,7 +9,7 @@
  * Fails silently on any error.
  */
 
-import { readStdinJSON, createApi, log, finishHook } from "./common.mjs";
+import { readStdinJSON, createApi, captureClientLabel, log, finishHook } from "./common.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 try {
@@ -28,7 +28,7 @@ try {
   }
 
   const text = scrubInjectedPkContext(input.last_assistant_message);
-  if (text) await api.storeEpisodic(text, "assistant", log, { client: "claude" });
+  if (text) await api.storeEpisodic(text, "assistant", log, { client: await captureClientLabel() });
 } catch { /* fail silently */ }
 
 await finishHook(0);
