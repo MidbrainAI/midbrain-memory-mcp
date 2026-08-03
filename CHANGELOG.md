@@ -3,6 +3,41 @@
 All notable public release changes for `midbrain-memory-mcp` are tracked here.
 Full release-note bodies live in `docs/releases/`.
 
+## 0.4.8
+
+Full notes: [docs/releases/v0.4.8.md](docs/releases/v0.4.8.md)
+
+### Added
+
+- Added a `memory_diagnostics` MCP tool for authentication and
+  capture-failure visibility.
+- Added an account-management keystore for storing and switching between
+  multiple account credentials; capture-hook credential resolution never
+  consults it.
+
+### Changed
+
+- Made the MCP server and capture hooks resolve the API host identically so
+  self-hosted configurations cannot split across origins.
+
+### Fixed
+
+- Restored NanoClaw/containerized episodic capture silently broken by
+  v0.4.7's hook migration: the MCP server now persists its environment API
+  key to the global key file at startup — absence-only, atomic, skipped for
+  self-hosted `MIDBRAIN_API_URL` configurations and when a file credential
+  is already active — so environment-less hook children can authenticate.
+  Broken installs self-heal on the first fresh container after updating.
+- Added a validated, fail-open capture-client marker so containerized
+  Claude Code captures can carry their host agent's label (the NanoClaw
+  skill writes `nanoclaw`); hosts without the marker are unchanged.
+- Routed every credential write through one guarded atomic writer and
+  removed installer credential promotion across scopes.
+
+### Internal
+
+- Hardened test-suite credential isolation and sandbox containment.
+
 ## 0.4.7
 
 Full notes: [docs/releases/v0.4.7.md](docs/releases/v0.4.7.md)
