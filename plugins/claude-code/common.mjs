@@ -102,10 +102,10 @@ export async function finishHook(code = 0) {
     const { maybeSelfUpdate } = await import("../../install.mjs");
     await maybeSelfUpdate();
   } catch { /* never break the hook */ }
-  // Release any lingering stdin handle before exit. On Node 24 for Windows,
-  // calling process.exit() while the async stdin iterator still holds a native
-  // read handle can abort teardown with STATUS_STACK_BUFFER_OVERRUN
-  // (0xC0000409). Destroying stdin first makes the exit deterministic.
+  // Node 24 for Windows intermittently aborts teardown with
+  // STATUS_STACK_BUFFER_OVERRUN (0xC0000409) when process.exit() runs while a
+  // native stdin read handle is still open. Destroying stdin first makes the
+  // exit deterministic for the common (piped) case.
   try { process.stdin.destroy(); } catch { /* best effort */ }
   process.exit(code);
 }
