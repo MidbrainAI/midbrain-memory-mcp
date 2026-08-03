@@ -18,7 +18,7 @@ import fs from "fs/promises";
 import path from "path";
 import { pathToFileURL } from "node:url";
 
-import { makeTestEnv, assertSandboxed } from "./helpers/test-env.mjs";
+import { makeTestEnv, assertSandboxed, snapshotTree, diffSnapshots } from "./helpers/test-env.mjs";
 import { runSelfRepair } from "../install.mjs";
 import { installShim, stableShimPath, shellQuote } from "../shared/clients/shim.mjs";
 
@@ -69,6 +69,20 @@ function stderrText() {
 
 async function readGlobalKey() {
   return fs.readFile(env.paths.globalKey, "utf8");
+}
+
+/**
+ * The capture-client marker lives on the only durable in-container surface:
+ * ~/.claude (host .claude-shared, mounted RW). Everything else under /home/node
+ * is ephemeral on a NanoClaw --rm spawn, so this is where a label migration
+ * must land. Mirrors captureClientLabel() in plugins/claude-code/common.mjs.
+ */
+function markerPath() {
+  return path.join(env.home, ".claude", ".midbrain-capture-client");
+}
+
+async function readMarker() {
+  return fs.readFile(markerPath(), "utf8");
 }
 
 // ===================================================================
@@ -314,5 +328,179 @@ describe.skipIf(IS_WIN)("PRD-039 AC-1 — NanoClaw topology end-to-end", () => {
     expect(result.status).toBe(0); // fail-open contract
     const episodic = (await readFetchLog()).filter((r) => r.url.includes("/memories/episodic"));
     expect(episodic).toHaveLength(0);
+  });
+});
+
+// ===================================================================
+// Issue #51 — self-repair migrates existing NanoClaw groups to the
+// `nanoclaw` capture label by seeding the .midbrain-capture-client marker.
+//
+// The gate is a positive, MCP-server-visible NanoClaw signal:
+// MIDBRAIN_CAPTURE_CLIENT=nanoclaw, which NanoClaw supplies via the group's
+// container.json mcpServers.<name>.env (that env reaches the MCP server
+// process; hook children are env-stripped, so the durable marker is the
+// only way the label reaches the hook). A plain host Claude install never
+// sets this, so it is never relabeled.
+// ===================================================================
+
+describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => {
+  /** A pre-v0.4.8 group state: shim-form hooks already migrated, no marker. */
+  async function seedExistingGroup() {
+    await fs.writeFile(
+      env.paths.claudeSettings,
+      JSON.stringify(migratedClaudeSettings(), null, 2) + "\n",
+    );
+  }
+
+  it("cold upgrade: existing group with the nanoclaw signal but no marker → seeds nanoclaw marker (0600, sandboxed)", async () => {
+    await seedExistingGroup();
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+
+    await runSelfRepair(NPX_CTX);
+
+    await assertSandboxed(env, markerPath());
+    expect(await readMarker()).toBe("nanoclaw\n");
+    if (!IS_WIN) {
+      const { mode } = await fs.stat(markerPath());
+      expect(mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("negative — plain host Claude (no nanoclaw signal) → no marker written, label stays claude", async () => {
+    await seedExistingGroup();
+    // No MIDBRAIN_CAPTURE_CLIENT set.
+
+    await runSelfRepair(NPX_CTX);
+
+    await expect(fs.stat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("negative — a non-nanoclaw capture-client value is not treated as the gate", async () => {
+    await seedExistingGroup();
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "codex";
+
+    await runSelfRepair(NPX_CTX);
+
+    await expect(fs.stat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("idempotent: a second repair pass produces no content or mtime churn", async () => {
+    await seedExistingGroup();
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+    await runSelfRepair(NPX_CTX);
+
+    const before = await snapshotTree(env.home);
+    await runSelfRepair(NPX_CTX);
+    const after = await snapshotTree(env.home);
+
+    expect(diffSnapshots(before, after)).toEqual([]);
+  });
+
+  it("preserves a user/dev-authored marker with a different valid value", async () => {
+    await seedExistingGroup();
+    await fs.mkdir(path.dirname(markerPath()), { recursive: true });
+    await fs.writeFile(markerPath(), "my-custom-label\n", { mode: 0o600 });
+    const beforeStat = await fs.stat(markerPath());
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+
+    await runSelfRepair(NPX_CTX);
+
+    expect(await readMarker()).toBe("my-custom-label\n");
+    const afterStat = await fs.stat(markerPath());
+    expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+  });
+
+  it.each([
+    ["tmp", "/private/tmp/some-checkout"],
+    ["worktree", "/Users/u/dev/some-worktree"],
+    ["ci", "/home/runner/work/checkout"],
+  ])("%s launch context → migration skipped, no marker write", async (kind, ctxPath) => {
+    await seedExistingGroup();
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+
+    await runSelfRepair({ context: { kind, path: ctxPath } });
+
+    await expect(fs.stat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+// ===================================================================
+// Issue #51 e2e — after migration a hook child (env-stripped) resolves the
+// marker and stores the capture with client: "nanoclaw".
+// ===================================================================
+
+describe.skipIf(IS_WIN)("Issue #51 e2e — migrated marker labels the capture nanoclaw", () => {
+  let fetchLog;
+  let workspace;
+
+  beforeEach(async () => {
+    await fs.writeFile(
+      env.paths.claudeSettings,
+      JSON.stringify(migratedClaudeSettings(), null, 2) + "\n",
+    );
+    workspace = path.join(env.home, "workspace");
+    await fs.mkdir(workspace, { recursive: true });
+
+    fetchLog = path.join(env.tmp, "fetch-log-51.ndjson");
+    const preload = path.join(env.tmp, "fetch-preload-51.mjs");
+    await fs.writeFile(preload, `
+      import fs from "node:fs";
+      globalThis.fetch = async (url, opts = {}) => {
+        const headers = opts.headers || {};
+        const record = {
+          url: String(url),
+          hasAuth: typeof headers.Authorization === "string" && headers.Authorization.length > 0,
+          body: opts.body ? JSON.parse(opts.body) : undefined,
+        };
+        fs.appendFileSync(process.env.MIDBRAIN_TEST_FETCH_LOG, JSON.stringify(record) + "\\n");
+        if (String(url).includes("/memories/episodic")) {
+          return { ok: true, status: 201, text: async () => "", json: async () => ({}) };
+        }
+        return { ok: false, status: 404, text: async () => "not found", json: async () => ({}) };
+      };
+    `);
+    env.preloadUrl = pathToFileURL(preload).href;
+
+    await installShim("claude", { mode: "install", isDev: true });
+  });
+
+  async function readFetchLog() {
+    try {
+      return (await fs.readFile(fetchLog, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
+    } catch {
+      return [];
+    }
+  }
+
+  function runShim(role, input) {
+    return spawnSync("/bin/sh", [stableShimPath("claude"), role], {
+      input: JSON.stringify(input),
+      encoding: "utf8",
+      timeout: 30_000,
+      // childEnv() strips MIDBRAIN_* — exactly what NanoClaw does to hook
+      // children. The marker seeded by self-repair is the only label source.
+      env: env.childEnv({
+        NODE_OPTIONS: `--import ${env.preloadUrl}`,
+        MIDBRAIN_TEST_FETCH_LOG: fetchLog,
+      }),
+    });
+  }
+
+  it("server start (with nanoclaw signal) seeds the marker; the env-less hook child captures client: nanoclaw", async () => {
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+    await runSelfRepair(NPX_CTX);
+    // The hook child inherits neither the key nor the capture-client env.
+    delete process.env.MIDBRAIN_API_KEY;
+
+    expect(await readMarker()).toBe("nanoclaw\n");
+    expect(env.childEnv()).not.toHaveProperty("MIDBRAIN_CAPTURE_CLIENT");
+
+    const result = runShim("user", { prompt: "issue 51 marker migration e2e", cwd: workspace });
+
+    expect(result.status).toBe(0);
+    const episodic = (await readFetchLog()).filter((r) => r.url.includes("/memories/episodic"));
+    expect(episodic).toHaveLength(1);
+    expect(episodic[0].body?.memory_metadata?.client).toBe("nanoclaw");
   });
 });

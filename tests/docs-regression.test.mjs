@@ -392,6 +392,16 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(agents).toContain("MIDBRAIN_CAPTURE_CLIENT");
   });
 
+  it("D-30: NanoClaw skill sets MIDBRAIN_CAPTURE_CLIENT=nanoclaw so existing groups self-heal the label (issue #51)", async () => {
+    const { agents, skill } = await readNanoClawDocParts();
+    // The group MCP env carries the server-visible ownership signal that gates
+    // self-repair marker migration for pre-v0.4.8 groups.
+    expect(skill).toContain('MIDBRAIN_CAPTURE_CLIENT: "nanoclaw"');
+    expect(skill).toContain('"MIDBRAIN_CAPTURE_CLIENT": "nanoclaw"');
+    // AGENTS documents the self-repair migration path for existing groups.
+    expect(agents).toMatch(/self-repair|migrat/i);
+  });
+
   it("D-28: NanoClaw skill never dumps or echoes raw settings (inline-key safety, PR #47)", async () => {
     const skill = await fs.readFile(NANOCLAW_SKILL, "utf8");
     // Raw dumps of the mounted settings can print legacy inline keys into an

@@ -259,6 +259,83 @@ async function ensureHookCredential() {
   }
 }
 
+// Capture-client label slug — mirrors CLIENT_LABEL_RE in
+// plugins/claude-code/common.mjs so a value this migration writes is one the
+// hook will accept, and a pre-existing value we must preserve is recognized.
+const CAPTURE_CLIENT_RE = /^[a-z][a-z0-9-]{0,31}$/;
+const CAPTURE_CLIENT_MARKER = '.midbrain-capture-client';
+const NANOCLAW_CAPTURE_LABEL = 'nanoclaw';
+
+/**
+ * Migrate an existing NanoClaw group to the `nanoclaw` capture label (issue
+ * #51). Groups configured before v0.4.8 have no `.midbrain-capture-client`
+ * marker, so on a natural MCP upgrade the env-stripped Claude hook falls back
+ * to `claude`. This seeds the marker on the only durable in-container surface
+ * (~/.claude, host `.claude-shared`) so the hook resolves `nanoclaw`.
+ *
+ * Ownership gate: the migration runs only when this MCP server process itself
+ * sees MIDBRAIN_CAPTURE_CLIENT=nanoclaw. NanoClaw supplies that via the group's
+ * container.json `mcpServers.<name>.env`, which reaches the server process
+ * (hook children do not inherit it — hence the durable marker). A plain host
+ * Claude install never sets it, so it is never relabeled.
+ *
+ * Safe and idempotent:
+ * - Absence-only: an existing marker with any other valid value (user/dev) is
+ *   preserved untouched.
+ * - No churn: a marker already equal to `nanoclaw\n` is left as-is (no rewrite,
+ *   no mtime change).
+ * - Symlink-reject + atomic temp-rename write at mode 0600.
+ *
+ * Never throws — self-repair is fail-open.
+ */
+async function ensureCaptureClientMarker() {
+  try {
+    const label = (process.env.MIDBRAIN_CAPTURE_CLIENT || '').trim();
+    if (label !== NANOCLAW_CAPTURE_LABEL) return;
+
+    const claudeDir = path.join(os.homedir(), '.claude');
+    const markerPath = path.join(claudeDir, CAPTURE_CLIENT_MARKER);
+    const desired = `${NANOCLAW_CAPTURE_LABEL}\n`;
+
+    // Preserve any existing marker: identical → no-op (no churn); a different
+    // valid slug is user/dev-authored and must not be clobbered. Only an
+    // absent (ENOENT) marker is seeded.
+    let existing = null;
+    try {
+      existing = await fs.readFile(markerPath, 'utf8');
+    } catch (readErr) {
+      if (readErr?.code !== 'ENOENT') return; // unreadable/EACCES: leave untouched
+    }
+    if (existing !== null) {
+      if (existing === desired) return; // already migrated — no rewrite
+      const firstLine = existing.split('\n', 1)[0].trim();
+      if (CAPTURE_CLIENT_RE.test(firstLine)) return; // user/dev value — preserve
+      // else: malformed marker → fall through and seed the canonical value
+    }
+
+    await fs.mkdir(claudeDir, { recursive: true });
+
+    // Reject a symlink at the target: never follow it to write elsewhere.
+    try {
+      const lst = await fs.lstat(markerPath);
+      if (lst.isSymbolicLink()) return;
+    } catch { /* absent — normal path */ }
+
+    const tmp = `${markerPath}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, desired, { mode: 0o600 });
+    try {
+      await fs.rename(tmp, markerPath);
+    } catch (renameErr) {
+      try { await fs.unlink(tmp); } catch { /* ignore */ }
+      throw renameErr;
+    }
+    try { await fs.chmod(markerPath, 0o600); } catch { /* best effort */ }
+    console.error('[midbrain] capture-client marker migrated (nanoclaw)');
+  } catch {
+    // Non-fatal: marker migration must never affect the rest of startup.
+  }
+}
+
 /**
  * Context-gated self-repair (PRD-034 S1). Automatic repair may only run from
  * a durable location: instances launched from temp dirs, git worktrees, or CI
@@ -289,6 +366,7 @@ export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
     // FIFO at the key path) must never delay or suppress config repair.
     await ensureHooksFresh();
     await ensureHookCredential();
+    await ensureCaptureClientMarker();
     return { skipped: false, kind: ctx.kind };
   } catch {
     return { skipped: false, kind: 'unknown' };

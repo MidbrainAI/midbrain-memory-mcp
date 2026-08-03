@@ -63,6 +63,7 @@ add_mcp_server({
   args: ["-y", "midbrain-memory-mcp@latest"],
   env: {
     MIDBRAIN_CLIENT: "claude",
+    MIDBRAIN_CAPTURE_CLIENT: "nanoclaw",
     MIDBRAIN_API_KEY: "<redacted>"
   }
 })
@@ -221,6 +222,13 @@ episodic metadata; when the marker is absent or invalid they fall back to the
 generic `claude` label. Host topologies where hook processes inherit env can
 override the label with `MIDBRAIN_CAPTURE_CLIENT` instead.
 
+The `MIDBRAIN_CAPTURE_CLIENT: "nanoclaw"` set in the group MCP env (Phase 3) is
+what lets the MCP server self-heal this marker for groups configured before
+v0.4.8: on a normal startup the server sees that env and seeds the marker into
+`~/.claude` if it is missing, so existing groups migrate to the `nanoclaw`
+label without rerunning `/add-midbrain`. Hook children never inherit that env,
+so the durable marker written here remains the label source they read.
+
 ### Legacy form (pre-0.4.8)
 
 Older installs wrote inline-key npx hook commands —
@@ -336,7 +344,7 @@ bash bin/ncl groups config add-mcp-server \
   --name midbrain-memory \
   --command npx \
   --args '["-y", "midbrain-memory-mcp@latest"]' \
-  --env '{"MIDBRAIN_CLIENT": "claude", "MIDBRAIN_API_KEY": "<redacted>"}'
+  --env '{"MIDBRAIN_CLIENT": "claude", "MIDBRAIN_CAPTURE_CLIENT": "nanoclaw", "MIDBRAIN_API_KEY": "<redacted>"}'
 ```
 
 Do not approve stale pending requests that mention a pinned MidBrain version.

@@ -230,6 +230,18 @@ NanoClaw:
   `~/.claude/.midbrain-capture-client` marker (first line, validated slug),
   then `claude`. The skill writes `nanoclaw` into the mounted
   `.claude-shared` marker so group captures are labeled `nanoclaw`.
+- Existing-group label migration (issue #51): hook children are env-stripped, so
+  the marker is the only label surface reaching them, and pre-v0.4.8 groups have
+  none. The group MCP env carries `MIDBRAIN_CAPTURE_CLIENT=nanoclaw` — which the
+  MCP server process (unlike hook children) does see. On startup self-repair,
+  `ensureCaptureClientMarker()` uses that server-visible signal as a positive
+  NanoClaw ownership gate and seeds `~/.claude/.midbrain-capture-client` with
+  `nanoclaw` when absent, so existing groups migrate to the `nanoclaw` label
+  without rerunning `/add-midbrain`. It is absence-only (a different valid
+  user/dev value is preserved), churn-free (an already-`nanoclaw` marker is left
+  untouched), symlink-rejecting, mode-0600, context-gated with the rest of
+  self-repair, and fail-open. A plain host Claude install never sets the signal,
+  so it is never relabeled.
 
 Hermes Agent:
 
