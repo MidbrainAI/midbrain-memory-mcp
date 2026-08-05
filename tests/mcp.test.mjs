@@ -24,19 +24,6 @@ import { createServer } from "../index.js";
 // there (the key file is still written; only the permission bits differ).
 const IS_WIN = process.platform === "win32";
 
-// Node 24 for Windows intermittently aborts process teardown with
-// STATUS_STACK_BUFFER_OVERRUN (0xC0000409 = 3221226505) when process.exit()
-// runs while native handles (async stdin read, undici keep-alive sockets from
-// the throttled self-update fetch) are still closing. The hook has already
-// done its job by then — no stdout, no MCP server start — so this teardown
-// abort is not a logic failure. Accept exit 0 always, and the Windows crash
-// code only on Windows, without masking a real non-zero exit on POSIX.
-const WIN_TEARDOWN_ABORT = 3221226505;
-function expectCleanHookExit(status) {
-  if (IS_WIN && status === WIN_TEARDOWN_ABORT) return;
-  expect(status).toBe(0);
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const SERVER_PATH = path.resolve(path.dirname(__filename), "..", "index.js");
 
@@ -1572,14 +1559,14 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
 
   it("NanoClaw hook dispatch: claude user exits 0 without starting MCP when stdin is empty", () => {
     const result = spawnServer(["hook", "claude", "user"]);
-    expectCleanHookExit(result.status);
+    expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
     expect(result.stderr).not.toMatch(/MCP server running/);
   });
 
   it("NanoClaw hook dispatch: claude assistant exits 0 without starting MCP when stdin is empty", () => {
     const result = spawnServer(["hook", "claude", "assistant"]);
-    expectCleanHookExit(result.status);
+    expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
     expect(result.stderr).not.toMatch(/MCP server running/);
   });
