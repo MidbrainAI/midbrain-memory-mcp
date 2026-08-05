@@ -259,12 +259,60 @@ async function ensureHookCredential() {
   }
 }
 
-// Capture-client label slug — mirrors CLIENT_LABEL_RE in
-// plugins/claude-code/common.mjs so a value this migration writes is one the
-// hook will accept, and a pre-existing value we must preserve is recognized.
-const CAPTURE_CLIENT_RE = /^[a-z][a-z0-9-]{0,31}$/;
 const CAPTURE_CLIENT_MARKER = '.midbrain-capture-client';
 const NANOCLAW_CAPTURE_LABEL = 'nanoclaw';
+const NANOCLAW_CONTAINER_CONFIG = '/workspace/agent/container.json';
+const NANOCLAW_MCP_NAME = 'midbrain-memory';
+const NANOCLAW_MCP_PACKAGE = 'midbrain-memory-mcp@latest';
+
+/** Positive ownership proof already present in pre-v0.4.8 NanoClaw groups. */
+async function isLegacyNanoClawProcess(configPath) {
+  try {
+    const stat = await fs.lstat(configPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    const config = JSON.parse(await fs.readFile(configPath, 'utf8'));
+    const entry = config?.mcpServers?.[NANOCLAW_MCP_NAME];
+    if (entry?.command !== 'npx' || !Array.isArray(entry.args)) return false;
+    if (!entry.args.includes(NANOCLAW_MCP_PACKAGE)) return false;
+    if (entry.env?.MIDBRAIN_CLIENT !== 'claude') return false;
+    return Boolean(entry.env?.MIDBRAIN_API_KEY)
+      && process.env.MIDBRAIN_CLIENT === entry.env.MIDBRAIN_CLIENT
+      && process.env.MIDBRAIN_API_KEY === entry.env.MIDBRAIN_API_KEY;
+  } catch {
+    return false;
+  }
+}
+
+async function ownsNanoClawCapture(configPath) {
+  const label = (process.env.MIDBRAIN_CAPTURE_CLIENT || '').trim();
+  if (label) return label === NANOCLAW_CAPTURE_LABEL;
+  return isLegacyNanoClawProcess(configPath);
+}
+
+/** Create the marker exactly once; every pre-existing target wins. */
+async function createCaptureClientMarker(markerPath) {
+  try {
+    await fs.lstat(markerPath);
+    return false;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return false;
+  }
+  await fs.mkdir(path.dirname(markerPath), { recursive: true });
+  let handle;
+  try {
+    handle = await fs.open(markerPath, 'wx', 0o600);
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false;
+    throw error;
+  }
+  try {
+    await handle.chmod(0o600);
+    await handle.writeFile(`${NANOCLAW_CAPTURE_LABEL}\n`, 'utf8');
+  } finally {
+    await handle.close();
+  }
+  return true;
+}
 
 /**
  * Migrate an existing NanoClaw group to the `nanoclaw` capture label (issue
@@ -273,64 +321,31 @@ const NANOCLAW_CAPTURE_LABEL = 'nanoclaw';
  * to `claude`. This seeds the marker on the only durable in-container surface
  * (~/.claude, host `.claude-shared`) so the hook resolves `nanoclaw`.
  *
- * Ownership gate: the migration runs only when this MCP server process itself
- * sees MIDBRAIN_CAPTURE_CLIENT=nanoclaw. NanoClaw supplies that via the group's
- * container.json `mcpServers.<name>.env`, which reaches the server process
- * (hook children do not inherit it — hence the durable marker). A plain host
- * Claude install never sets it, so it is never relabeled.
+ * Ownership gate: new groups may set MIDBRAIN_CAPTURE_CLIENT=nanoclaw. For a
+ * real pre-v0.4.8 group that lacks that new env key, the migration instead
+ * verifies NanoClaw's mounted /workspace/agent/container.json: its exact
+ * MidBrain MCP entry must use the old documented env and match this process.
+ * A plain host Claude install has no such mounted NanoClaw config.
  *
  * Safe and idempotent:
- * - Absence-only: an existing marker with any other valid value (user/dev) is
- *   preserved untouched.
- * - No churn: a marker already equal to `nanoclaw\n` is left as-is (no rewrite,
- *   no mtime change).
- * - Symlink-reject + atomic temp-rename write at mode 0600.
+ * - Strictly absence-only: every existing target is preserved byte-for-byte.
+ * - No churn: every subsequent repair returns before opening marker content.
+ * - Non-regular targets are rejected by lstat; creation uses exclusive `wx`
+ *   at mode 0600, so a concurrent creator wins without being overwritten.
  *
  * Never throws — self-repair is fail-open.
  */
-async function ensureCaptureClientMarker() {
+async function ensureCaptureClientMarker({
+  nanoclawConfigPath = NANOCLAW_CONTAINER_CONFIG,
+} = {}) {
   try {
-    const label = (process.env.MIDBRAIN_CAPTURE_CLIENT || '').trim();
-    if (label !== NANOCLAW_CAPTURE_LABEL) return;
+    if (!await ownsNanoClawCapture(nanoclawConfigPath)) return;
 
     const claudeDir = path.join(os.homedir(), '.claude');
     const markerPath = path.join(claudeDir, CAPTURE_CLIENT_MARKER);
-    const desired = `${NANOCLAW_CAPTURE_LABEL}\n`;
-
-    // Preserve any existing marker: identical → no-op (no churn); a different
-    // valid slug is user/dev-authored and must not be clobbered. Only an
-    // absent (ENOENT) marker is seeded.
-    let existing = null;
-    try {
-      existing = await fs.readFile(markerPath, 'utf8');
-    } catch (readErr) {
-      if (readErr?.code !== 'ENOENT') return; // unreadable/EACCES: leave untouched
+    if (await createCaptureClientMarker(markerPath)) {
+      console.error('[midbrain] capture-client marker migrated (nanoclaw)');
     }
-    if (existing !== null) {
-      if (existing === desired) return; // already migrated — no rewrite
-      const firstLine = existing.split('\n', 1)[0].trim();
-      if (CAPTURE_CLIENT_RE.test(firstLine)) return; // user/dev value — preserve
-      // else: malformed marker → fall through and seed the canonical value
-    }
-
-    await fs.mkdir(claudeDir, { recursive: true });
-
-    // Reject a symlink at the target: never follow it to write elsewhere.
-    try {
-      const lst = await fs.lstat(markerPath);
-      if (lst.isSymbolicLink()) return;
-    } catch { /* absent — normal path */ }
-
-    const tmp = `${markerPath}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, desired, { mode: 0o600 });
-    try {
-      await fs.rename(tmp, markerPath);
-    } catch (renameErr) {
-      try { await fs.unlink(tmp); } catch { /* ignore */ }
-      throw renameErr;
-    }
-    try { await fs.chmod(markerPath, 0o600); } catch { /* best effort */ }
-    console.error('[midbrain] capture-client marker migrated (nanoclaw)');
   } catch {
     // Non-fatal: marker migration must never affect the rest of startup.
   }
@@ -350,9 +365,15 @@ async function ensureCaptureClientMarker() {
  * @param {string} [opts.repoRoot] - Root to classify when no context is
  *   given (default: this package's own root). Lets tests drive the real
  *   classification seam with real fixture directories.
+ * @param {string} [opts.nanoclawConfigPath] - Injectable NanoClaw mounted
+ *   config path for topology tests; production uses /workspace/agent/container.json.
  * @returns {Promise<{skipped: boolean, kind: string}>}
  */
-export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
+export async function runSelfRepair({
+  context,
+  repoRoot = REPO_ROOT,
+  nanoclawConfigPath = NANOCLAW_CONTAINER_CONFIG,
+} = {}) {
   try {
     const ctx = context ?? classifyInstallContext(repoRoot);
     if (shouldSkipSelfRepair(ctx)) {
@@ -366,7 +387,7 @@ export async function runSelfRepair({ context, repoRoot = REPO_ROOT } = {}) {
     // FIFO at the key path) must never delay or suppress config repair.
     await ensureHooksFresh();
     await ensureHookCredential();
-    await ensureCaptureClientMarker();
+    await ensureCaptureClientMarker({ nanoclawConfigPath });
     return { skipped: false, kind: ctx.kind };
   } catch {
     return { skipped: false, kind: 'unknown' };
