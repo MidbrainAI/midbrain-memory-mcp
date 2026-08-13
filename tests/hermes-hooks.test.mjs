@@ -35,13 +35,19 @@ describe("captureUser", () => {
   it("stores the trimmed user prompt with hermes metadata", async () => {
     const { deps, stored } = makeDeps();
     await captureUser({ extra: { user_message: "  hello world  " }, cwd: "/proj" }, deps);
-    expect(stored).toEqual([{ text: "hello world", role: "user", metadata: { client: "hermes" } }]);
+    expect(stored).toEqual([{ text: "hello world", role: "user", metadata: { client: "hermes", cwd: "/proj" } }]);
   });
 
   it("passes cwd through as the project dir for key resolution", async () => {
     const { deps } = makeDeps();
     await captureUser({ extra: { user_message: "hi" }, cwd: "/proj" }, deps);
     expect(deps.createApi).toHaveBeenCalledWith("/proj");
+  });
+
+  it("forwards the top-level session_id into metadata", async () => {
+    const { deps, stored } = makeDeps();
+    await captureUser({ extra: { user_message: "hi" }, cwd: "/proj", session_id: "sess_42" }, deps);
+    expect(stored[0].metadata).toEqual({ client: "hermes", cwd: "/proj", session_id: "sess_42" });
   });
 
   it("accepts alternative payload field names", async () => {

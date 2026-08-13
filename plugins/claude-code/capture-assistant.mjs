@@ -3,7 +3,8 @@
  * Claude Code hook: Stop
  * Captures the assistant's final response as episodic memory.
  *
- * Stdin JSON: { last_assistant_message: "...", transcript_path, stop_hook_active, ... }
+ * Stdin JSON: { last_assistant_message: "...", transcript_path, stop_hook_active, session_id, cwd, ... }
+ * session_id and cwd are forwarded into episodic memory_metadata for scoping.
  * If stop_hook_active, skips capture to prevent loops, then completes the
  * non-fatal hook finish/update path.
  * Fails silently on any error.
@@ -13,6 +14,7 @@ import fs from "node:fs/promises";
 
 import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
+import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 const NANOCLAW_SEND_MESSAGE = "mcp__nanoclaw__send_message";
@@ -76,7 +78,11 @@ async function captureAssistant() {
     return;
   }
 
-  if (text) await api.storeEpisodic(text, "assistant", log, { client });
+  if (text) await api.storeEpisodic(text, "assistant", log, buildCaptureMetadata({
+    client,
+    cwd: input.cwd,
+    sessionId: input.session_id,
+  }));
 }
 
 try {

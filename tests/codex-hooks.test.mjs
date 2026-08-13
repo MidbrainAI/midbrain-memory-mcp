@@ -69,7 +69,7 @@ describe("Codex hook capture", () => {
       "remember this",
       "user",
       deps.logger,
-      { client: "codex" },
+      { client: "codex", cwd: "/repo" },
     ]);
   });
 
@@ -121,7 +121,7 @@ describe("Codex hook capture", () => {
       "done",
       "assistant",
       deps.logger,
-      { client: "codex" },
+      { client: "codex", cwd: "/repo" },
     ]);
   });
 
@@ -255,7 +255,7 @@ describe("Codex hook capture", () => {
     expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(1);
     const [summary, role, , metadata] = firstStore(deps);
     expect(role).toBe("assistant");
-    expect(metadata).toEqual({ client: "codex" });
+    expect(metadata).toEqual({ client: "codex", session_id: "s1" });
     expect(summary).toContain("Tool activity summary");
     expect(summary).toContain("Bash x1");
     expect(summary).toContain("apply_patch x1");

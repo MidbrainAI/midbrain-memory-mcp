@@ -3,5 +3,6 @@
 export { MidbrainApi } from '../../shared/midbrain-api.mjs';
 export { makeLogger, logFile, logDir } from '../../shared/logger.mjs';
 export { homeRelativePath } from '../../shared/diagnostics.mjs';
+export { buildCaptureMetadata } from '../../shared/capture-metadata.mjs';
 export { getClient } from '../../shared/clients/registry.mjs';
 export { extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from '../../shared/pk-inject.mjs';

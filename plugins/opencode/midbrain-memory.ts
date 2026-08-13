@@ -22,7 +22,7 @@
 
 import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
-import { MidbrainApi, makeLogger, logFile, homeRelativePath, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
+import { MidbrainApi, makeLogger, logFile, homeRelativePath, buildCaptureMetadata, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
 
 const OPENCODE_HISTORY_TIMEOUT_MS = 500;
 
@@ -107,15 +107,16 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
       if (!text) return;
 
+      const sessionID = (input as Record<string, unknown>).sessionID as string | undefined;
+
       log.info(`USER: id=${messageID} len=${text.length}`);
       storedMessages.add(messageID);
-      api.storeEpisodic(text, "user", log, { client: "opencode" });
+      api.storeEpisodic(text, "user", log, buildCaptureMetadata({ client: "opencode", cwd: directory, sessionId: sessionID }));
 
       if (!isPkInjectionEnabled()) return;
 
       // Opt-in legacy PK injection: search and prepend relevant procedural context.
       try {
-        const sessionID = (input as Record<string, unknown>).sessionID as string | undefined;
         let excludeIds: number[] = [];
 
         if (sessionID) {
@@ -197,7 +198,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
         if (!safeText) return;
 
         log.info(`ASSISTANT: storing id=${msgID} len=${safeText.length}`);
-        api.storeEpisodic(safeText, "assistant", log, { client: "opencode" });
+        api.storeEpisodic(safeText, "assistant", log, buildCaptureMetadata({ client: "opencode", cwd: directory, sessionId: sessionID }));
       } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
         log.error(`ASSISTANT ERROR: ${errMsg}`);

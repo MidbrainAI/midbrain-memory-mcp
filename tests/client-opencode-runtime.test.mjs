@@ -72,6 +72,17 @@ describe("OpenCode plugin bundle", () => {
     expect(client.id).toBe("opencode");
   });
 
+  it("bundle buildCaptureMetadata builds client/cwd/session_id metadata", async () => {
+    const bundle = await import(pathToFileURL(BUNDLE_PATH).href);
+    const cwd = path.join(os.homedir(), "proj");
+    expect(bundle.buildCaptureMetadata({ client: "opencode", cwd, sessionId: "s1" })).toEqual({
+      client: "opencode",
+      cwd: "~/proj",
+      session_id: "s1",
+    });
+    expect(bundle.buildCaptureMetadata({ client: "opencode" })).toEqual({ client: "opencode" });
+  });
+
   it("dev shim re-exports the same symbols as the bundle", async () => {
     const shim = await import(pathToFileURL(SHIM_PATH).href);
     expect(typeof shim.MidbrainApi).toBe("function");

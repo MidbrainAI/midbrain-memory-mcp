@@ -182,6 +182,13 @@ Key-write policy at install time:
 
 ## Capture Paths
 
+All capture paths build episodic `memory_metadata` through
+`shared/capture-metadata.mjs` (`buildCaptureMetadata`). The originating
+`client` is always sent; `cwd` (home-relative working directory via
+`homeRelativePath`) and `session_id` (the harness session/conversation id) are
+added only when the harness payload provides them. Values are strings; absent
+fields are omitted, never sent empty.
+
 OpenCode:
 
 - `plugins/opencode/midbrain-memory.ts` runs in Bun.

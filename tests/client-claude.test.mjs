@@ -648,8 +648,8 @@ describe("Claude capture hooks client label (issue #48)", () => {
       };
     `);
     const input = script === "capture-user.mjs"
-      ? { prompt: "label probe", cwd: "/repo" }
-      : { last_assistant_message: "label probe", cwd: "/repo" };
+      ? { prompt: "label probe", cwd: "/repo", session_id: "sess_claude" }
+      : { last_assistant_message: "label probe", cwd: "/repo", session_id: "sess_claude" };
     const result = spawnSync(process.execPath, [
       "--import", pathToFileURL(preloadFile).href,
       path.join(REPO_ROOT, "plugins", "claude-code", script),
@@ -682,6 +682,14 @@ describe("Claude capture hooks client label (issue #48)", () => {
 
   it("marker labels assistant captures too", () => {
     expect(capturedClient("capture-assistant.mjs", { marker: "nanoclaw\n" })).toBe("nanoclaw");
+  });
+
+  it("episodic POST body carries cwd and session_id scoping fields", () => {
+    for (const script of ["capture-user.mjs", "capture-assistant.mjs"]) {
+      const { body } = capturedEpisodic(script);
+      expect(body.memory_metadata.cwd).toBe("/repo");
+      expect(body.memory_metadata.session_id).toBe("sess_claude");
+    }
   });
 
   it("defaults to claude when no marker exists", () => {
