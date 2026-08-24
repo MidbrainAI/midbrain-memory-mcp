@@ -258,7 +258,9 @@ describe("appendToSpool", () => {
     }
 
     expect(bindingFlags.length).toBeGreaterThanOrEqual(3);
-    expect(bindingFlags.every((flags) => (flags & fs.constants.O_NONBLOCK) !== 0)).toBe(true);
+    if (fs.constants.O_NONBLOCK) {
+      expect(bindingFlags.every((flags) => (flags & fs.constants.O_NONBLOCK) !== 0)).toBe(true);
+    }
   });
 });
 
