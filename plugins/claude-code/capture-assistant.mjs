@@ -12,23 +12,27 @@
 import { readStdinJSON, createApi, captureClientLabel, log, finishHook } from "./common.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
-try {
+async function captureAssistant() {
   const input = await readStdinJSON();
   // input.cwd is confirmed present in Claude Desktop's Stop payload
-  if (!input) await finishHook(0);
-  if (input.stop_hook_active) await finishHook(0);
-  if (!input.last_assistant_message) await finishHook(0);
+  if (!input) return;
+  if (input.stop_hook_active) return;
+  if (!input.last_assistant_message) return;
 
   let api;
   try {
     api = await createApi(input.cwd);
   } catch {
     log.warn("NO KEY");
-    await finishHook(0);
+    return;
   }
 
   const text = scrubInjectedPkContext(input.last_assistant_message);
   if (text) await api.storeEpisodic(text, "assistant", log, { client: await captureClientLabel() });
+}
+
+try {
+  await captureAssistant();
 } catch { /* fail silently */ }
 
 await finishHook(0);

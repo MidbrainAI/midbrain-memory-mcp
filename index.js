@@ -11,11 +11,31 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createServer } from "./mcp.mjs";
-import { PKG_VERSION, checkForUpdate } from "./install.mjs";
+import { PKG_VERSION, checkForUpdate, prepareCaptureClientMigration } from "./install.mjs";
 import { realpathSync } from "fs";
 import { fileURLToPath } from "url";
 
 export { createServer };
+
+/** Start the real MCP stdio path with only capture-label migration pre-ready. */
+export async function startMcpServer({
+  serverFactory = createServer,
+  transportFactory = () => new StdioServerTransport(),
+  prepareCaptureClientMigrationFn = prepareCaptureClientMigration,
+  checkForUpdateFn = checkForUpdate,
+  prepareOptions,
+  log = console.error,
+} = {}) {
+  await prepareCaptureClientMigrationFn(prepareOptions);
+  const server = serverFactory(PKG_VERSION);
+  const transport = transportFactory();
+  await server.connect(transport);
+  log(`MCP server running (midbrain-memory-mcp v${PKG_VERSION})`);
+  try {
+    const update = checkForUpdateFn();
+    if (update?.catch) update.catch(() => {});
+  } catch { /* never break the connected server */ }
+}
 
 const isMain = process.argv[1] &&
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
@@ -51,10 +71,6 @@ if (isMain) {
     const { runUserKeyCli } = await import("./install.mjs");
     await runUserKeyCli(process.argv.slice(3));
   } else {
-    const server = createServer(PKG_VERSION);
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error(`MCP server running (midbrain-memory-mcp v${PKG_VERSION})`);
-    checkForUpdate();
+    await startMcpServer();
   }
 }

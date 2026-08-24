@@ -1708,7 +1708,7 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     expect(matches.length).toBe(1);
   });
 
-  it("R-2: dispatch ordering: --version < hook < install < createServer < checkForUpdate", () => {
+  it("R-2: dispatch and startup ordering keeps migration before readiness and repair after", () => {
     const lines = serverSrc.split("\n");
     const idxVersion = lines.findIndex((l) =>
       /process\.argv\.includes\(["']--version["']\)/.test(l)
@@ -1719,15 +1719,17 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     const idxInstall = lines.findIndex((l) =>
       /process\.argv\[2\]\s*===\s*["']install["']/.test(l)
     );
-    const idxCreate = lines.findIndex((l) => /createServer\(/.test(l) && !/function createServer/.test(l));
-    const idxUpdate = lines.findIndex((l) => /checkForUpdate\(/.test(l) && !/function checkForUpdate/.test(l) && !/async function checkForUpdate/.test(l));
+    const idxStart = lines.findIndex((l) => /await startMcpServer\(/.test(l));
+    const idxPrepare = lines.findIndex((l) => /await prepareCaptureClientMigrationFn\(/.test(l));
+    const idxCreate = lines.findIndex((l) => /const server = serverFactory\(/.test(l));
+    const idxUpdate = lines.findIndex((l) => /checkForUpdateFn\(/.test(l));
 
     expect(idxVersion).toBeGreaterThan(-1);
     expect(idxHook).toBeGreaterThan(idxVersion);
     expect(idxInstall).toBeGreaterThan(idxHook);
-    // createServer call site must come AFTER install dispatch line
-    // (the definition of createServer is earlier — we filtered it out)
-    expect(idxCreate).toBeGreaterThan(idxInstall);
+    expect(idxStart).toBeGreaterThan(idxInstall);
+    expect(idxPrepare).toBeGreaterThan(-1);
+    expect(idxCreate).toBeGreaterThan(idxPrepare);
     expect(idxUpdate).toBeGreaterThan(idxCreate);
   });
 
@@ -1749,6 +1751,16 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     expect(dynamicMatches.length).toBe(2);
     expect(serverSrc).toMatch(/runInstallerCli/);
     expect(serverSrc).toMatch(/runUserKeyCli/);
+  });
+
+  it("R-5: Claude hook completion uses natural process exit after stdin teardown", () => {
+    const commonSrc = fs.readFileSync(
+      path.resolve(path.dirname(SERVER_PATH), "plugins", "claude-code", "common.mjs"),
+      "utf8",
+    );
+    expect(commonSrc).not.toMatch(/process\.stdin\.destroy\(/);
+    expect(commonSrc).not.toMatch(/process\.exit\(/);
+    expect(commonSrc).toMatch(/process\.exitCode\s*=\s*code/);
   });
 });
 

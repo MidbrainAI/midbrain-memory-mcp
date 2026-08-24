@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { makeTestEnv } from "./helpers/test-env.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CHILD_PROCESS_E2E_TIMEOUT_MS = 15_000;
 const LOGGER_SOURCE = `({
   info() {},
   debug() {},
@@ -144,7 +145,7 @@ describe("API-host MCP/capture parity", () => {
         "/api/v1/memories/search/semantic?query=plugin-read",
         "/api/v1/memories/episodic",
       ]));
-  });
+  }, CHILD_PROCESS_E2E_TIMEOUT_MS);
 
   it.each([
     ["unset", undefined],
@@ -203,6 +204,7 @@ describe("API-host MCP/capture parity", () => {
       expect(requests.map((request) => request.method).sort())
         .toEqual(["GET", "GET", "POST", "POST"]);
     },
+    CHILD_PROCESS_E2E_TIMEOUT_MS,
   );
 
   it("records host and scope in the OpenCode INIT log", async () => {
