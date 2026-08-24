@@ -144,6 +144,30 @@ describe("appendToSpool", () => {
     expect(fs.readFileSync(victim, "utf8")).toBe("victim\n");
   });
 
+  it.skipIf(IS_WIN || !fs.constants.O_NOFOLLOW)("keeps sidecar symlink refusal when no-follow flags are unavailable", () => {
+    const binding = "0".repeat(64);
+    const victim = path.join(tmpDir, "binding-fallback-victim");
+    fs.writeFileSync(victim, `${binding}\n`, { mode: 0o644 });
+    fs.unlinkSync(spoolBindingPath());
+    fs.symlinkSync(victim, spoolBindingPath());
+    const before = fs.readFileSync(victim);
+    const realOpen = fs.openSync.bind(fs);
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation((file, flags, ...args) => {
+      const fallbackFlags = typeof flags === "number"
+        ? flags & ~fs.constants.O_NOFOLLOW
+        : flags;
+      return realOpen(file, fallbackFlags, ...args);
+    });
+    try {
+      expect(establishSpoolBinding(binding).ok).toBe(false);
+    } finally {
+      openSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(victim)).toEqual(before);
+    expect(fs.lstatSync(spoolBindingPath()).isSymbolicLink()).toBe(true);
+  });
+
   it("preserves malformed existing binding state instead of treating it as absent", () => {
     fs.writeFileSync(spoolBindingPath(), "malformed-existing-binding\n", { mode: 0o600 });
 
@@ -212,6 +236,29 @@ describe("spool flush claim", () => {
     // The in-flight append survives in the live file.
     expect(countSpooledEntries()).toBe(1);
     expect(beginSpoolFlush().entries.map((e) => e.text)).toEqual(["during"]);
+  });
+
+  it.skipIf(IS_WIN || !fs.constants.O_NOFOLLOW)("preserves processing when survivor target is a symlink without no-follow support", () => {
+    appendToSpool(entry("survivor"));
+    const flush = beginSpoolFlush();
+    const victim = path.join(tmpDir, "survivor-fallback-victim");
+    fs.writeFileSync(victim, "sentinel\n");
+    fs.symlinkSync(victim, spoolFilePath());
+    const realOpen = fs.openSync.bind(fs);
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation((file, flags, ...args) => {
+      const fallbackFlags = typeof flags === "number"
+        ? flags & ~fs.constants.O_NOFOLLOW
+        : flags;
+      return realOpen(file, fallbackFlags, ...args);
+    });
+    try {
+      finishSpoolFlush(flush, flush.entries);
+    } finally {
+      openSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(victim, "utf8")).toBe("sentinel\n");
+    expect(fs.existsSync(`${spoolFilePath()}.processing`)).toBe(true);
   });
 
   it("skips malformed lines without dropping valid ones", () => {

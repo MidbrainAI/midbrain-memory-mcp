@@ -107,6 +107,7 @@ function inspectSpoolBinding() {
   let fd;
   try {
     const file = spoolBindingPath();
+    if (isSymlink(file)) return { kind: "invalid", value: null };
     const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
     fd = fs.openSync(file, flags);
     const stat = fs.fstatSync(fd);
@@ -268,6 +269,7 @@ function recordsFromRaw(raw) {
 
 function appendBufferSafely(file, buffer) {
   if (buffer.length === 0) return true;
+  if (isSymlink(file)) return false;
   let fd;
   try {
     const flags = fs.constants.O_RDWR
