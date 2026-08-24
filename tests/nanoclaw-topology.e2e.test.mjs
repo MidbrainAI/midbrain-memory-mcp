@@ -20,6 +20,8 @@ import { pathToFileURL } from "node:url";
 
 import { makeTestEnv, assertSandboxed, snapshotTree, diffSnapshots } from "./helpers/test-env.mjs";
 import { runSelfRepair } from "../install.mjs";
+import { startMcpServer } from "../index.js";
+import { captureClientLabel } from "../plugins/claude-code/common.mjs";
 import { installShim, stableShimPath, shellQuote } from "../shared/clients/shim.mjs";
 
 const IS_WIN = process.platform === "win32";
@@ -60,6 +62,7 @@ afterEach(async () => {
   delete process.env.MIDBRAIN_USER_API_KEY;
   delete process.env.MIDBRAIN_API_URL;
   delete process.env.MIDBRAIN_CLIENT;
+  delete process.env.MIDBRAIN_CAPTURE_CLIENT;
   await env.restore();
 });
 
@@ -344,19 +347,80 @@ describe.skipIf(IS_WIN)("PRD-039 AC-1 — NanoClaw topology end-to-end", () => {
 // ===================================================================
 
 describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => {
-  /** A pre-v0.4.8 group state: shim-form hooks already migrated, no marker. */
-  async function seedExistingGroup() {
+  function containerConfigPath() {
+    return path.join(env.root, "workspace", "agent", "container.json");
+  }
+
+  /**
+   * Actual pre-v0.4.8 group state: shim-form hooks, old MCP env, no marker and
+   * no MIDBRAIN_CAPTURE_CLIENT gate. NanoClaw mounts this config read-only at
+   * /workspace/agent/container.json and the MCP process receives its env.
+   */
+  async function seedPre048Group() {
     await fs.writeFile(
       env.paths.claudeSettings,
       JSON.stringify(migratedClaudeSettings(), null, 2) + "\n",
     );
+    await fs.mkdir(path.dirname(containerConfigPath()), { recursive: true });
+    await fs.writeFile(containerConfigPath(), JSON.stringify({
+      mcpServers: {
+        "midbrain-memory": {
+          command: "npx",
+          args: ["-y", "midbrain-memory-mcp@latest"],
+          env: {
+            MIDBRAIN_CLIENT: "claude",
+            MIDBRAIN_API_KEY: TEST_KEY,
+          },
+        },
+      },
+    }, null, 2) + "\n");
+    process.env.MIDBRAIN_CLIENT = "claude";
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
   }
 
-  it("cold upgrade: existing group with the nanoclaw signal but no marker → seeds nanoclaw marker (0600, sandboxed)", async () => {
-    await seedExistingGroup();
-    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+  async function seedHostClaude() {
+    await fs.writeFile(
+      env.paths.claudeSettings,
+      JSON.stringify(migratedClaudeSettings(), null, 2) + "\n",
+    );
+    process.env.MIDBRAIN_CLIENT = "claude";
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+  }
 
-    await runSelfRepair(NPX_CTX);
+  function repairPre048Group() {
+    return runSelfRepair({ ...NPX_CTX, nanoclawConfigPath: containerConfigPath() });
+  }
+
+  function failMarkerWriteAfterPartialCreate() {
+    const realOpen = fs.open.bind(fs);
+    let injected = false;
+    const spy = vi.spyOn(fs, "open").mockImplementation(async (file, flags, ...rest) => {
+      const handle = await realOpen(file, flags, ...rest);
+      const isMarkerCreate = file === markerPath()
+        || String(file).startsWith(`${markerPath()}.stage-`);
+      if (injected || !isMarkerCreate || flags !== "wx") return handle;
+      injected = true;
+      return new Proxy(handle, {
+        get(target, prop) {
+          if (prop === "writeFile") {
+            return async () => {
+              await target.writeFile("nano", "utf8");
+              throw new Error("injected marker write failure");
+            };
+          }
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    return { spy, wasInjected: () => injected };
+  }
+
+  it("cold upgrade: actual pre-v0.4.8 group with no new gate and no marker → seeds nanoclaw marker (0600, sandboxed)", async () => {
+    await seedPre048Group();
+    expect(process.env.MIDBRAIN_CAPTURE_CLIENT).toBeUndefined();
+
+    await repairPre048Group();
 
     await assertSandboxed(env, markerPath());
     expect(await readMarker()).toBe("nanoclaw\n");
@@ -366,9 +430,130 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
     }
   });
 
-  it("negative — plain host Claude (no nanoclaw signal) → no marker written, label stays claude", async () => {
-    await seedExistingGroup();
-    // No MIDBRAIN_CAPTURE_CLIENT set.
+  it("actual index.js startup completes legacy marker migration before MCP readiness while unrelated repair stays pending", async () => {
+    await seedPre048Group();
+    const events = [];
+    let releaseRepair;
+    const pendingRepair = new Promise((resolve) => { releaseRepair = resolve; });
+
+    await startMcpServer({
+      serverFactory: () => ({
+        async connect() {
+          events.push("connect");
+          expect(await captureClientLabel()).toBe("nanoclaw");
+        },
+      }),
+      transportFactory: () => ({}),
+      prepareOptions: { ...NPX_CTX, nanoclawConfigPath: containerConfigPath() },
+      checkForUpdateFn: () => {
+        events.push("repair");
+        return pendingRepair;
+      },
+      log: () => events.push("ready"),
+    });
+
+    expect(await readMarker()).toBe("nanoclaw\n");
+    expect(events).toEqual(["connect", "ready", "repair"]);
+    releaseRepair();
+  });
+
+  it("removes only its partial marker after an injected post-create write failure so the next repair succeeds", async () => {
+    await seedPre048Group();
+    const failure = failMarkerWriteAfterPartialCreate();
+    try {
+      await repairPre048Group();
+    } finally {
+      failure.spy.mockRestore();
+    }
+
+    expect(failure.wasInjected()).toBe(true);
+    await expect(fs.lstat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
+
+    await repairPre048Group();
+    expect(await readMarker()).toBe("nanoclaw\n");
+    if (!IS_WIN) expect((await fs.stat(markerPath())).mode & 0o777).toBe(0o600);
+  });
+
+  it("never unlinks the published marker path while recovering from a failed initialization", async () => {
+    await seedPre048Group();
+    const failure = failMarkerWriteAfterPartialCreate();
+    const realUnlink = fs.unlink.bind(fs);
+    let markerUnlinkAttempted = false;
+    const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (file, ...rest) => {
+      if (file === markerPath()) {
+        markerUnlinkAttempted = true;
+        await fs.rename(file, `${file}.owned-partial`);
+        await fs.writeFile(file, "concurrent-owner\n", { mode: 0o640 });
+      }
+      return realUnlink(file, ...rest);
+    });
+    try {
+      await repairPre048Group();
+    } finally {
+      unlinkSpy.mockRestore();
+      failure.spy.mockRestore();
+    }
+
+    expect(failure.wasInjected()).toBe(true);
+    expect(markerUnlinkAttempted).toBe(false);
+    await expect(fs.lstat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves a marker created concurrently at the atomic publication boundary", async () => {
+    await seedPre048Group();
+    const realLink = fs.link.bind(fs);
+    let replacementInjected = false;
+    const linkSpy = vi.spyOn(fs, "link").mockImplementation(async (source, target) => {
+      if (!replacementInjected && target === markerPath()) {
+        await fs.writeFile(target, "concurrent-owner\n", { mode: 0o640 });
+        replacementInjected = true;
+      }
+      return realLink(source, target);
+    });
+    try {
+      await repairPre048Group();
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    expect(replacementInjected).toBe(true);
+    expect(await readMarker()).toBe("concurrent-owner\n");
+    if (!IS_WIN) expect((await fs.stat(markerPath())).mode & 0o777).toBe(0o640);
+  });
+
+  it("rejects a legacy topology config replaced after lstat instead of reading the replacement", async () => {
+    await seedPre048Group();
+    const realLstat = fs.lstat.bind(fs);
+    let replacementInjected = false;
+    const lstatSpy = vi.spyOn(fs, "lstat").mockImplementation(async (file, ...rest) => {
+      const stat = await realLstat(file, ...rest);
+      if (!replacementInjected && file === containerConfigPath()) {
+        await fs.rename(file, `${file}.original`);
+        await fs.writeFile(file, JSON.stringify({
+          mcpServers: {
+            "midbrain-memory": {
+              command: "npx",
+              args: ["-y", "midbrain-memory-mcp@latest"],
+              env: { MIDBRAIN_CLIENT: "claude", MIDBRAIN_API_KEY: TEST_KEY },
+            },
+          },
+        }));
+        replacementInjected = true;
+      }
+      return stat;
+    });
+    try {
+      await repairPre048Group();
+    } finally {
+      lstatSpy.mockRestore();
+    }
+
+    expect(replacementInjected).toBe(true);
+    await expect(fs.lstat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("negative — host Claude with the same client/env-key shape but no NanoClaw topology → no marker written", async () => {
+    await seedHostClaude();
 
     await runSelfRepair(NPX_CTX);
 
@@ -376,7 +561,7 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
   });
 
   it("negative — a non-nanoclaw capture-client value is not treated as the gate", async () => {
-    await seedExistingGroup();
+    await seedHostClaude();
     process.env.MIDBRAIN_CAPTURE_CLIENT = "codex";
 
     await runSelfRepair(NPX_CTX);
@@ -385,29 +570,111 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
   });
 
   it("idempotent: a second repair pass produces no content or mtime churn", async () => {
-    await seedExistingGroup();
-    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
-    await runSelfRepair(NPX_CTX);
+    await seedPre048Group();
+    await repairPre048Group();
 
     const before = await snapshotTree(env.home);
-    await runSelfRepair(NPX_CTX);
+    await repairPre048Group();
     const after = await snapshotTree(env.home);
 
     expect(diffSnapshots(before, after)).toEqual([]);
   });
 
   it("preserves a user/dev-authored marker with a different valid value", async () => {
-    await seedExistingGroup();
+    await seedPre048Group();
     await fs.mkdir(path.dirname(markerPath()), { recursive: true });
     await fs.writeFile(markerPath(), "my-custom-label\n", { mode: 0o600 });
     const beforeStat = await fs.stat(markerPath());
-    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
-
-    await runSelfRepair(NPX_CTX);
+    await repairPre048Group();
 
     expect(await readMarker()).toBe("my-custom-label\n");
     const afterStat = await fs.stat(markerPath());
     expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+  });
+
+  it("preserves every byte of an existing malformed regular marker", async () => {
+    await seedPre048Group();
+    const malformed = Buffer.from("INVALID USER VALUE\n\0keep-these-bytes", "utf8");
+    await fs.mkdir(path.dirname(markerPath()), { recursive: true });
+    await fs.writeFile(markerPath(), malformed, { mode: 0o640 });
+    const before = await fs.stat(markerPath());
+
+    await repairPre048Group();
+
+    expect(await fs.readFile(markerPath())).toEqual(malformed);
+    const after = await fs.stat(markerPath());
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+    if (!IS_WIN) expect(after.mode & 0o777).toBe(0o640);
+  });
+
+  it.skipIf(IS_WIN)("returns promptly and preserves an existing FIFO marker", async () => {
+    await seedPre048Group();
+    await fs.mkdir(path.dirname(markerPath()), { recursive: true });
+    const fifo = spawnSync("mkfifo", [markerPath()], { encoding: "utf8" });
+    expect(fifo.status).toBe(0);
+    const installUrl = new URL("../install.mjs", import.meta.url).href;
+    const script = `
+      import { runSelfRepair } from ${JSON.stringify(installUrl)};
+      await runSelfRepair(${JSON.stringify({ ...NPX_CTX, nanoclawConfigPath: containerConfigPath() })});
+    `;
+
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      env: env.childEnv({
+        MIDBRAIN_CLIENT: "claude",
+        MIDBRAIN_API_KEY: TEST_KEY,
+      }),
+      encoding: "utf8",
+      timeout: 3000,
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect((await fs.lstat(markerPath())).isFIFO()).toBe(true);
+  });
+
+  it("preserves directories and symlinks without reading their contents", async () => {
+    await seedPre048Group();
+    await fs.mkdir(markerPath(), { recursive: true });
+    await repairPre048Group();
+    expect((await fs.lstat(markerPath())).isDirectory()).toBe(true);
+
+    await fs.rmdir(markerPath());
+    const victim = path.join(env.home, "marker-victim.txt");
+    await fs.writeFile(victim, "victim-bytes\n");
+    await fs.symlink(victim, markerPath());
+    await repairPre048Group();
+    expect((await fs.lstat(markerPath())).isSymbolicLink()).toBe(true);
+    expect(await fs.readFile(victim, "utf8")).toBe("victim-bytes\n");
+  });
+
+  it.skipIf(IS_WIN || process.getuid?.() === 0)("preserves an unreadable marker and its permissions", async () => {
+    await seedPre048Group();
+    await fs.mkdir(path.dirname(markerPath()), { recursive: true });
+    await fs.writeFile(markerPath(), "unreadable-user-state\n", { mode: 0o600 });
+    await fs.chmod(markerPath(), 0o000);
+    try {
+      await repairPre048Group();
+      expect((await fs.stat(markerPath())).mode & 0o777).toBe(0o000);
+    } finally {
+      await fs.chmod(markerPath(), 0o600);
+    }
+    expect(await fs.readFile(markerPath(), "utf8")).toBe("unreadable-user-state\n");
+  });
+
+  it("ignores a planted legacy predictable-temp symlink and never touches its victim", async () => {
+    await seedPre048Group();
+    await fs.mkdir(path.dirname(markerPath()), { recursive: true });
+    const victim = path.join(env.home, "temp-victim.txt");
+    const planted = `${markerPath()}.${process.pid}.tmp`;
+    await fs.writeFile(victim, "victim-original\n", { mode: 0o644 });
+    await fs.symlink(victim, planted);
+
+    await repairPre048Group();
+
+    expect(await readMarker()).toBe("nanoclaw\n");
+    expect((await fs.lstat(markerPath())).isFile()).toBe(true);
+    expect(await fs.readFile(victim, "utf8")).toBe("victim-original\n");
+    expect((await fs.lstat(planted)).isSymbolicLink()).toBe(true);
   });
 
   it.each([
@@ -415,10 +682,12 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
     ["worktree", "/Users/u/dev/some-worktree"],
     ["ci", "/home/runner/work/checkout"],
   ])("%s launch context → migration skipped, no marker write", async (kind, ctxPath) => {
-    await seedExistingGroup();
-    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+    await seedPre048Group();
 
-    await runSelfRepair({ context: { kind, path: ctxPath } });
+    await runSelfRepair({
+      context: { kind, path: ctxPath },
+      nanoclawConfigPath: containerConfigPath(),
+    });
 
     await expect(fs.stat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -440,6 +709,19 @@ describe.skipIf(IS_WIN)("Issue #51 e2e — migrated marker labels the capture na
     );
     workspace = path.join(env.home, "workspace");
     await fs.mkdir(workspace, { recursive: true });
+
+    const configPath = path.join(env.root, "workspace", "agent", "container.json");
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify({
+      mcpServers: {
+        "midbrain-memory": {
+          command: "npx",
+          args: ["-y", "midbrain-memory-mcp@latest"],
+          env: { MIDBRAIN_CLIENT: "claude", MIDBRAIN_API_KEY: TEST_KEY },
+        },
+      },
+    }, null, 2) + "\n");
+    env.nanoclawConfigPath = configPath;
 
     fetchLog = path.join(env.tmp, "fetch-log-51.ndjson");
     const preload = path.join(env.tmp, "fetch-preload-51.mjs");
@@ -486,10 +768,11 @@ describe.skipIf(IS_WIN)("Issue #51 e2e — migrated marker labels the capture na
     });
   }
 
-  it("server start (with nanoclaw signal) seeds the marker; the env-less hook child captures client: nanoclaw", async () => {
+  it("pre-v0.4.8 server start (without the new gate) seeds the marker; the env-less hook child captures client: nanoclaw", async () => {
     process.env.MIDBRAIN_API_KEY = TEST_KEY;
-    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
-    await runSelfRepair(NPX_CTX);
+    process.env.MIDBRAIN_CLIENT = "claude";
+    expect(process.env.MIDBRAIN_CAPTURE_CLIENT).toBeUndefined();
+    await runSelfRepair({ ...NPX_CTX, nanoclawConfigPath: env.nanoclawConfigPath });
     // The hook child inherits neither the key nor the capture-client env.
     delete process.env.MIDBRAIN_API_KEY;
 

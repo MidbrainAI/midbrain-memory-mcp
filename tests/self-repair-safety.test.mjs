@@ -19,6 +19,8 @@ const DURABLE = { context: { kind: "durable", path: "/durable/install" } };
 const NPX_CTX = {
   context: { kind: "npx-cache", path: "/Users/u/.npm/_npx/abc123/node_modules/midbrain-memory-mcp" },
 };
+const STALE_TMP_CHECKOUT = "/private/tmp/midbrain-pr33-hermes-setup-headless/repo";
+const STALE_OPENCODE_CHECKOUT = "/private/tmp/old-clone";
 
 /** The incident state: direct script paths at volatile locations, 10s timeouts. */
 function staleClaudeSettings() {
@@ -32,7 +34,7 @@ function staleClaudeSettings() {
           hooks: [{
             type: "command",
             command:
-              "/Users/u/hermes-agent/node /private/tmp/midbrain-pr33-hermes-setup-headless/repo/plugins/claude-code/capture-user.mjs",
+              `/Users/u/hermes-agent/node ${STALE_TMP_CHECKOUT}/plugins/claude-code/capture-user.mjs`,
             timeout: 10,
           }],
         },
@@ -98,7 +100,7 @@ async function seedStaleEverything(env) {
   await fs.writeFile(path.join(env.paths.opencodePlugins, "midbrain-memory.ts"), "// stale plugin\n");
   await fs.writeFile(path.join(env.paths.opencodePlugins, "midbrain-shared.mjs"), "// stale bundle\n");
   await fs.writeFile(path.join(env.paths.opencodePlugins, ".midbrain-repo-root"),
-    "midbrain-memory-mcp@0.0.1:/private/tmp/old-clone\n");
+    `midbrain-memory-mcp@0.0.1:${STALE_OPENCODE_CHECKOUT}\n`);
   // nanoclaw: stale installed skill
   await fs.mkdir(path.dirname(env.paths.nanoclawSkill), { recursive: true });
   await fs.writeFile(env.paths.nanoclawSkill, "stale skill\n");
@@ -253,12 +255,12 @@ describe("AC-3 — repaired surfaces carry no volatile or checkout paths", () =>
       await fs.readFile(env.paths.claudeSettings, "utf8"),
       await fs.readFile(env.paths.claudeShim, "utf8"),
     ].join("\n");
-    // the seeded stale state contained _npx and /private/tmp — repair must
-    // have removed every one of them (midbrain-owned surfaces only)
+    // The seeded stale state contained package checkout paths. The canonical
+    // stable shim may legitimately live below a sandboxed /private/tmp HOME.
     const midbrainLines = written.split("\n").filter((l) => l.includes("midbrain") || l.includes("claude-hook"));
     for (const line of midbrainLines) {
       expect(line).not.toContain("_npx");
-      expect(line).not.toContain("/private/tmp");
+      expect(line).not.toContain(STALE_TMP_CHECKOUT);
       expect(line).not.toContain(REPO_ROOT);
     }
   });
@@ -334,10 +336,11 @@ describe("S2d/AC-3 — no repaired surface carries volatile or checkout paths", 
       const midbrainLines = content.split("\n").filter((l) =>
         l.includes("midbrain") || l.includes("-hook"));
       for (const line of midbrainLines) {
-        // user-authored stale lines were removed by repair; midbrain-owned
-        // lines must never contain volatile or checkout locations
+        // User-authored stale package paths were removed by repair. The
+        // canonical stable shim path itself may sit in a sandboxed tmp HOME.
         expect(line, `${surface}: ${line}`).not.toContain("_npx");
-        expect(line, `${surface}: ${line}`).not.toContain("/private/tmp");
+        expect(line, `${surface}: ${line}`).not.toContain(STALE_TMP_CHECKOUT);
+        expect(line, `${surface}: ${line}`).not.toContain(STALE_OPENCODE_CHECKOUT);
         expect(line, `${surface}: ${line}`).not.toContain(REPO_ROOT);
       }
     }
@@ -620,10 +623,14 @@ describe("B20 / AC-15 — cross-client convergence in one startup", () => {
 
     await runSelfRepair(DURABLE);
 
-    // 1. canonical convergence: no volatile path survives anywhere in the home
+    // 1. canonical convergence: no stale package checkout survives. Stable
+    // shims and explicitly preserved dev shims may live below the sandbox's
+    // /private/tmp HOME by design.
     for (const file of await walkFiles(env.home)) {
       const content = await fs.readFile(file, "utf8");
-      expect(content, `volatile path leaked into ${file}`).not.toMatch(/_npx|\/private\/tmp\/|\/old\/plugins\//);
+      expect(content, `volatile path leaked into ${file}`).not.toContain(STALE_TMP_CHECKOUT);
+      expect(content, `volatile path leaked into ${file}`).not.toContain(STALE_OPENCODE_CHECKOUT);
+      expect(content, `volatile path leaked into ${file}`).not.toMatch(/_npx|\/old\/plugins\//);
     }
 
     // 2. per-client canonical state

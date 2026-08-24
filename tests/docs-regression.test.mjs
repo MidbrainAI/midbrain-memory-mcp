@@ -398,8 +398,12 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     // self-repair marker migration for pre-v0.4.8 groups.
     expect(skill).toContain('MIDBRAIN_CAPTURE_CLIENT: "nanoclaw"');
     expect(skill).toContain('"MIDBRAIN_CAPTURE_CLIENT": "nanoclaw"');
+    expect(skill).toContain('/workspace/agent/container.json');
+    expect(skill).toMatch(/Pre-v0\.4\.8 groups do not have\s+that key/);
     // AGENTS documents the self-repair migration path for existing groups.
-    expect(agents).toMatch(/self-repair|migrat/i);
+    expect(agents).toContain('/workspace/agent/container.json');
+    expect(agents).toMatch(/strictly absence-only and race-safe/i);
+    expect(agents).toMatch(/before MCP\s+readiness/i);
   });
 
   it("D-28: NanoClaw skill never dumps or echoes raw settings (inline-key safety, PR #47)", async () => {

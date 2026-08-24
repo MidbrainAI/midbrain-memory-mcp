@@ -18,10 +18,9 @@ import { classifyInstallContext } from "../shared/install-context.mjs";
 const NO_ENV = { env: {} };
 const roots = [];
 
-// Default fixtures live under os.tmpdir(). Tests that assert the DURABLE
-// (non-tmp) classification must pass a base outside any tmp root, otherwise
-// on Linux (os.tmpdir() === /tmp) the classifier's literal /tmp check wins
-// regardless of the injected tmpdir.
+// This base may itself be below a literal tmp root when the whole checkout is
+// isolated under /private/tmp. Tests must preserve that enclosing topology
+// instead of assuming process.cwd() is durable.
 const NON_TMP_BASE = path.join(process.cwd(), ".tmp-test-fixtures");
 
 async function makeDir(structure = {}, { base = os.tmpdir() } = {}) {
@@ -75,12 +74,17 @@ describe("classifyInstallContext — kinds (AC-2)", () => {
     expect(classifyInstallContext(dir, { env: {}, tmpdir: "/nonexistent-tmp" }).kind).toBe("worktree");
   });
 
-  it("does not classify a .git DIRECTORY as worktree (real checkout → durable)", async () => {
-    const dir = await makeDir(
+  it("does not classify a .git DIRECTORY as worktree or override the enclosing path kind", async () => {
+    const dirWithGitDirectory = await makeDir(
       { ".git/HEAD": "ref: refs/heads/main\n" },
       { base: NON_TMP_BASE },
     );
-    expect(classifyInstallContext(dir, { env: {}, tmpdir: "/nonexistent-tmp" }).kind).toBe("durable");
+    const peerDirectory = await makeDir({}, { base: NON_TMP_BASE });
+    const opts = { env: {}, tmpdir: "/nonexistent-tmp" };
+    const withGitDirectory = classifyInstallContext(dirWithGitDirectory, opts);
+    const withoutGitDirectory = classifyInstallContext(peerDirectory, opts);
+    expect(withGitDirectory.kind).toBe(withoutGitDirectory.kind);
+    expect(withGitDirectory.kind).not.toBe("worktree");
   });
 
   it.each(["1", "true", "TRUE", "yes"])("classifies CI=%s as ci", (v) => {

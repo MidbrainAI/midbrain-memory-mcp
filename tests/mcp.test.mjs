@@ -24,19 +24,6 @@ import { createServer } from "../index.js";
 // there (the key file is still written; only the permission bits differ).
 const IS_WIN = process.platform === "win32";
 
-// Node 24 for Windows intermittently aborts process teardown with
-// STATUS_STACK_BUFFER_OVERRUN (0xC0000409 = 3221226505) when process.exit()
-// runs while native handles (async stdin read, undici keep-alive sockets from
-// the throttled self-update fetch) are still closing. The hook has already
-// done its job by then — no stdout, no MCP server start — so this teardown
-// abort is not a logic failure. Accept exit 0 always, and the Windows crash
-// code only on Windows, without masking a real non-zero exit on POSIX.
-const WIN_TEARDOWN_ABORT = 3221226505;
-function expectCleanHookExit(status) {
-  if (IS_WIN && status === WIN_TEARDOWN_ABORT) return;
-  expect(status).toBe(0);
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const SERVER_PATH = path.resolve(path.dirname(__filename), "..", "index.js");
 
@@ -1572,14 +1559,14 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
 
   it("NanoClaw hook dispatch: claude user exits 0 without starting MCP when stdin is empty", () => {
     const result = spawnServer(["hook", "claude", "user"]);
-    expectCleanHookExit(result.status);
+    expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
     expect(result.stderr).not.toMatch(/MCP server running/);
   });
 
   it("NanoClaw hook dispatch: claude assistant exits 0 without starting MCP when stdin is empty", () => {
     const result = spawnServer(["hook", "claude", "assistant"]);
-    expectCleanHookExit(result.status);
+    expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
     expect(result.stderr).not.toMatch(/MCP server running/);
   });
@@ -1721,7 +1708,7 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     expect(matches.length).toBe(1);
   });
 
-  it("R-2: dispatch ordering: --version < hook < install < createServer < checkForUpdate", () => {
+  it("R-2: dispatch and startup ordering keeps migration before readiness and repair after", () => {
     const lines = serverSrc.split("\n");
     const idxVersion = lines.findIndex((l) =>
       /process\.argv\.includes\(["']--version["']\)/.test(l)
@@ -1732,15 +1719,17 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     const idxInstall = lines.findIndex((l) =>
       /process\.argv\[2\]\s*===\s*["']install["']/.test(l)
     );
-    const idxCreate = lines.findIndex((l) => /createServer\(/.test(l) && !/function createServer/.test(l));
-    const idxUpdate = lines.findIndex((l) => /checkForUpdate\(/.test(l) && !/function checkForUpdate/.test(l) && !/async function checkForUpdate/.test(l));
+    const idxStart = lines.findIndex((l) => /await startMcpServer\(/.test(l));
+    const idxPrepare = lines.findIndex((l) => /await prepareCaptureClientMigrationFn\(/.test(l));
+    const idxCreate = lines.findIndex((l) => /const server = serverFactory\(/.test(l));
+    const idxUpdate = lines.findIndex((l) => /checkForUpdateFn\(/.test(l));
 
     expect(idxVersion).toBeGreaterThan(-1);
     expect(idxHook).toBeGreaterThan(idxVersion);
     expect(idxInstall).toBeGreaterThan(idxHook);
-    // createServer call site must come AFTER install dispatch line
-    // (the definition of createServer is earlier — we filtered it out)
-    expect(idxCreate).toBeGreaterThan(idxInstall);
+    expect(idxStart).toBeGreaterThan(idxInstall);
+    expect(idxPrepare).toBeGreaterThan(-1);
+    expect(idxCreate).toBeGreaterThan(idxPrepare);
     expect(idxUpdate).toBeGreaterThan(idxCreate);
   });
 
@@ -1762,6 +1751,16 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     expect(dynamicMatches.length).toBe(2);
     expect(serverSrc).toMatch(/runInstallerCli/);
     expect(serverSrc).toMatch(/runUserKeyCli/);
+  });
+
+  it("R-5: Claude hook completion uses natural process exit after stdin teardown", () => {
+    const commonSrc = fs.readFileSync(
+      path.resolve(path.dirname(SERVER_PATH), "plugins", "claude-code", "common.mjs"),
+      "utf8",
+    );
+    expect(commonSrc).not.toMatch(/process\.stdin\.destroy\(/);
+    expect(commonSrc).not.toMatch(/process\.exit\(/);
+    expect(commonSrc).toMatch(/process\.exitCode\s*=\s*code/);
   });
 });
 

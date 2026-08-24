@@ -18,9 +18,9 @@ import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, log, fi
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
-try {
+async function captureUser() {
   const input = await readStdinJSON();
-  if (!input?.prompt) await finishHook(0);
+  if (!input?.prompt) return;
 
   const client = await captureClientLabel();
 
@@ -33,13 +33,13 @@ try {
     // recovers it, instead of dropping it.
     log.warn("NO KEY — spooling for recovery");
     appendToSpool({ text: input.prompt, role: "user", memory_metadata: { client } });
-    await finishHook(0);
+    return;
   }
 
   // Episodic capture must complete before default-off exits.
   await api.storeEpisodic(input.prompt, "user", log, { client });
 
-  if (!isPkInjectionEnabled()) await finishHook(0);
+  if (!isPkInjectionEnabled()) return;
 
   // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
   const entries = await api.searchProcedural({ query: input.prompt, excludeIds: [] });
@@ -53,6 +53,10 @@ try {
       },
     }));
   }
+}
+
+try {
+  await captureUser();
 } catch { /* fail silently */ }
 
 await finishHook(0);

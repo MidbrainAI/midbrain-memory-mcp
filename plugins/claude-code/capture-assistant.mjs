@@ -13,12 +13,12 @@ import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, log, fi
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
-try {
+async function captureAssistant() {
   const input = await readStdinJSON();
   // input.cwd is confirmed present in Claude Desktop's Stop payload
-  if (!input) await finishHook(0);
-  if (input.stop_hook_active) await finishHook(0);
-  if (!input.last_assistant_message) await finishHook(0);
+  if (!input) return;
+  if (input.stop_hook_active) return;
+  if (!input.last_assistant_message) return;
 
   const text = scrubInjectedPkContext(input.last_assistant_message);
   const client = await captureClientLabel();
@@ -33,10 +33,14 @@ try {
       log.warn("NO KEY — spooling for recovery");
       appendToSpool({ text, role: "assistant", memory_metadata: { client } });
     }
-    await finishHook(0);
+    return;
   }
 
   if (text) await api.storeEpisodic(text, "assistant", log, { client });
+}
+
+try {
+  await captureAssistant();
 } catch { /* fail silently */ }
 
 await finishHook(0);
