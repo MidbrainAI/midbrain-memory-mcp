@@ -32,7 +32,8 @@ import {
   CredentialReadError,
 } from './shared/clients/credential-writer.mjs';
 import { detectClients, allClients, getClient } from './shared/clients/registry.mjs';
-import { globalConfigDir } from './shared/state-dir.mjs';
+import { activateNanoClawStateDir, globalConfigDir } from './shared/state-dir.mjs';
+import { historicalShimPath, installShim } from './shared/clients/shim.mjs';
 import { MidbrainApi } from './shared/midbrain-api.mjs';
 import {
   beginSpoolFlush,
@@ -41,6 +42,7 @@ import {
   readCooldownUntil,
   writeCooldownUntil,
   clearCooldown,
+  establishSpoolBinding,
 } from './shared/claude-spool.mjs';
 import { writeGlobalRules, writeProjectRules } from './shared/agent-rules.mjs';
 import { deviceCodeLogin } from './shared/device-auth.mjs';
@@ -369,17 +371,24 @@ async function createCaptureClientMarker(markerPath) {
  */
 async function ensureCaptureClientMarker({
   nanoclawConfigPath = NANOCLAW_CONTAINER_CONFIG,
+  owned,
 } = {}) {
+  const isOwned = owned ?? await ownsNanoClawCapture(nanoclawConfigPath);
+  if (!isOwned) return false;
   try {
-    if (!await ownsNanoClawCapture(nanoclawConfigPath)) return;
-
     const claudeDir = path.join(os.homedir(), '.claude');
     const markerPath = path.join(claudeDir, CAPTURE_CLIENT_MARKER);
     if (await createCaptureClientMarker(markerPath)) {
       console.error('[midbrain] capture-client marker migrated (nanoclaw)');
     }
+    const stat = await fs.lstat(markerPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('invalid marker');
+    const firstLine = (await fs.readFile(markerPath, 'utf8')).split('\n', 1)[0].trim();
+    if (firstLine !== NANOCLAW_CAPTURE_LABEL) throw new Error('invalid marker');
+    return true;
   } catch {
-    // Non-fatal: marker migration must never affect the rest of startup.
+    if (owned) throw new Error('NanoClaw capture marker preparation failed');
+    return false;
   }
 }
 
@@ -423,8 +432,9 @@ const spoolSleep = (ms) => new Promise((resolve) => (ms > 0 ? setTimeout(resolve
  *
  * Never throws — fail-open like the rest of self-repair.
  */
-async function flushClaudeSpool() {
+async function flushClaudeSpool({ binding, adoptUnbound = false } = {}) {
   try {
+    if (!binding) return;
     if (!hasSpooledEntries()) return;
     if (Date.now() < readCooldownUntil()) {
       console.error('[midbrain] spool flush deferred (cooldown active)');
@@ -449,6 +459,10 @@ async function flushClaudeSpool() {
     for (let i = 0; i < flush.entries.length; i += 1) {
       const e = flush.entries[i];
       if (rateLimited) { survivors.push(e); continue; }
+      if (e.binding !== binding && !(adoptUnbound && !e.binding)) {
+        survivors.push(e);
+        continue;
+      }
 
       const result = await api.postEpisodicResult(e.text, e.role, e.memory_metadata);
       if (result === 'ok') {
@@ -501,12 +515,15 @@ export async function runSelfRepair({
   context,
   repoRoot = REPO_ROOT,
   nanoclawConfigPath = NANOCLAW_CONTAINER_CONFIG,
+  preparation,
+  isDev = false,
 } = {}) {
-  const prepared = await prepareCaptureClientMigration({
-    context,
-    repoRoot,
-    nanoclawConfigPath,
-  });
+  let prepared;
+  try {
+    prepared = preparation ?? await prepareCaptureClientMigration({ context, repoRoot, nanoclawConfigPath, isDev });
+  } catch {
+    return { skipped: false, kind: 'unknown', blocked: true };
+  }
   if (prepared.skipped) {
     console.error(
       `[midbrain] self-repair skipped: running from ${prepared.kind} (${prepared.path}); ` +
@@ -519,7 +536,9 @@ export async function runSelfRepair({
     // before any potentially slow unrelated repair reaches this point.
     await ensureHooksFresh();
     await ensureHookCredential();
-    await flushClaudeSpool();
+    if (prepared.owned) {
+      await flushClaudeSpool({ binding: prepared.binding, adoptUnbound: prepared.adoptUnbound });
+    }
     return { skipped: false, kind: prepared.kind };
   } catch {
     return { skipped: false, kind: 'unknown' };
@@ -535,16 +554,46 @@ export async function prepareCaptureClientMigration({
   context,
   repoRoot = REPO_ROOT,
   nanoclawConfigPath = NANOCLAW_CONTAINER_CONFIG,
+  isDev = false,
 } = {}) {
+  let ctx;
   try {
-    const ctx = context ?? classifyInstallContext(repoRoot);
+    ctx = context ?? classifyInstallContext(repoRoot);
     if (shouldSkipSelfRepair(ctx)) {
-      return { skipped: true, kind: ctx.kind, path: ctx.path };
+      return { skipped: true, owned: false, kind: ctx.kind, path: ctx.path };
     }
-    await ensureCaptureClientMarker({ nanoclawConfigPath });
-    return { skipped: false, kind: ctx.kind, path: ctx.path };
   } catch {
-    return { skipped: false, kind: 'unknown', path: repoRoot };
+    return { skipped: false, owned: false, kind: 'unknown', path: repoRoot };
+  }
+
+  const owned = await ownsNanoClawCapture(nanoclawConfigPath);
+  if (!owned) return { skipped: false, owned: false, kind: ctx.kind, path: ctx.path };
+
+  try {
+    const stateDir = activateNanoClawStateDir();
+    await ensureCaptureClientMarker({ nanoclawConfigPath, owned: true });
+    const claude = getClient('claude');
+    if (typeof claude.prepareOwnedHooks !== 'function') throw new Error('hook preparation unavailable');
+    await claude.prepareOwnedHooks({ isDev });
+    await installShim('claude', {
+      mode: isDev ? 'install' : 'repair',
+      isDev,
+      targetPath: historicalShimPath('claude'),
+      stateDir,
+    });
+    const api = await MidbrainApi.create(claude);
+    const sidecar = establishSpoolBinding(api.cacheScope);
+    if (!sidecar.ok) throw new Error('spool binding unavailable');
+    return {
+      skipped: false,
+      owned: true,
+      kind: ctx.kind,
+      path: ctx.path,
+      binding: api.cacheScope,
+      adoptUnbound: sidecar.previous === null || sidecar.previous === api.cacheScope,
+    };
+  } catch {
+    throw new Error('NanoClaw capture preparation failed before readiness');
   }
 }
 

@@ -26,13 +26,13 @@ export async function startMcpServer({
   prepareOptions,
   log = console.error,
 } = {}) {
-  await prepareCaptureClientMigrationFn(prepareOptions);
+  const preparation = await prepareCaptureClientMigrationFn(prepareOptions);
   const server = serverFactory(PKG_VERSION);
   const transport = transportFactory();
   await server.connect(transport);
   log(`MCP server running (midbrain-memory-mcp v${PKG_VERSION})`);
   try {
-    const update = checkForUpdateFn();
+    const update = checkForUpdateFn({ ...prepareOptions, preparation });
     if (update?.catch) update.catch(() => {});
   } catch { /* never break the connected server */ }
 }

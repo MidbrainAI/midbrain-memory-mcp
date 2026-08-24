@@ -278,6 +278,34 @@ export class Claude extends BaseClient {
     return ['  ~ Claude Code hooks repaired (stable claude-hook shim installed)'];
   }
 
+  /**
+   * Strict NanoClaw pre-ready preparation. The caller has already proved
+   * NanoClaw ownership, so a missing/unreadable settings file or missing owned
+   * hook is an incomplete prerequisite rather than a host-wide repair no-op.
+   */
+  async prepareOwnedHooks({ isDev = false } = {}) {
+    const csp = claudeSettingsPath();
+    const data = await readJson(csp);
+    if (!data || !hooksAlreadyPresent(data)) {
+      throw new Error('NanoClaw MidBrain hook settings are unavailable');
+    }
+    patchHooks(data);
+    await installShim('claude', { mode: isDev ? 'install' : 'repair', isDev });
+    await writeJsonIfChanged(csp, data);
+
+    const verified = await readJson(csp);
+    if (!verified || !hooksAlreadyPresent(verified) || !(await shimStatus('claude')).fresh) {
+      throw new Error('NanoClaw MidBrain hooks are incomplete');
+    }
+    for (const [event, role] of Object.entries(HOOK_EVENTS)) {
+      const hooks = (verified.hooks?.[event] || []).flatMap((group) => group.hooks || []);
+      const owned = hooks.filter((hook) => isMidbrainHook(hook));
+      if (owned.length !== 1 || owned[0].command !== buildHookCommand(role)) {
+        throw new Error('NanoClaw MidBrain hooks are incomplete');
+      }
+    }
+  }
+
   // --- Private helpers ---
 
   async _installClaudeJson(summary, { isDev }) {
