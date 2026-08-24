@@ -236,12 +236,29 @@ function makeToken() {
   return `${process.pid}:${Date.now()}:${randomBytes(8).toString("hex")}`;
 }
 
-function readLock(lockFile) {
+function parseLock(raw) {
+  let lock;
   try {
-    return JSON.parse(fs.readFileSync(lockFile, "utf8"));
+    lock = JSON.parse(raw.toString("utf8"));
   } catch {
     return null;
   }
+  if (
+    !lock
+    || typeof lock !== "object"
+    || Array.isArray(lock)
+    || typeof lock.token !== "string"
+    || lock.token.length === 0
+    || !Number.isInteger(lock.pid)
+    || lock.pid <= 0
+    || !Number.isFinite(lock.ts)
+  ) return null;
+  return lock;
+}
+
+function inspectLock(lockFile) {
+  const source = readRegularSource(lockFile);
+  return source ? { source, lock: parseLock(source.raw) } : null;
 }
 
 function isProcessAlive(pid) {
@@ -254,33 +271,27 @@ function isProcessAlive(pid) {
   }
 }
 
-function removeStaleMalformedLock(lockFile) {
-  const source = readRegularSource(lockFile);
-  if (!source || Date.now() - source.stat.mtimeMs < MALFORMED_LOCK_STALE_MS) return false;
-  try {
-    JSON.parse(source.raw.toString("utf8"));
-    return false;
-  } catch {
-    if (!pathMatchesFile(lockFile, source.stat)) return false;
-    try {
-      fs.unlinkSync(lockFile);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
-
-function removeDeadLock(lockFile) {
-  const lock = readLock(lockFile);
-  if (!lock) return removeStaleMalformedLock(lockFile);
-  if (isProcessAlive(lock.pid)) return false;
+function removeLockFile(lockFile, source) {
+  if (!pathMatchesFile(lockFile, source.stat)) return false;
   try {
     fs.unlinkSync(lockFile);
     return true;
   } catch {
     return false;
   }
+}
+
+function removeStaleMalformedLock(lockFile, source) {
+  if (!source || Date.now() - source.stat.mtimeMs < MALFORMED_LOCK_STALE_MS) return false;
+  return removeLockFile(lockFile, source);
+}
+
+function removeDeadLock(lockFile) {
+  const inspected = inspectLock(lockFile);
+  if (!inspected) return false;
+  if (!inspected.lock) return removeStaleMalformedLock(lockFile, inspected.source);
+  if (isProcessAlive(inspected.lock.pid)) return false;
+  return removeLockFile(lockFile, inspected.source);
 }
 
 function acquireLock(lockFile) {
@@ -305,7 +316,7 @@ function acquireLock(lockFile) {
 }
 
 function ownsLock(flush) {
-  const lock = readLock(flush.lockFile);
+  const lock = inspectLock(flush.lockFile)?.lock;
   return Boolean(lock && lock.token === flush.token && lock.pid === process.pid);
 }
 
