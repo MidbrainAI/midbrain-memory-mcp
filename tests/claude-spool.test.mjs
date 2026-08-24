@@ -536,6 +536,10 @@ describe("spool flush claim", () => {
     expect(secondAppend).toBe(true);
     finishSpoolFlush(claimed, []);
     expect(countSpooledEntries()).toBe(2);
+    const rows = [spoolFilePath(), `${spoolFilePath()}.processing`]
+      .flatMap((file) => fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse));
+    expect(new Set(rows.map((row) => row.spool_id)).size).toBe(2);
+    expect(rows.every((row) => row.memory_metadata.spool_id === undefined)).toBe(true);
   });
 
   it.each(["live", "processing"])("refuses a %s spool source symlink", (source) => {

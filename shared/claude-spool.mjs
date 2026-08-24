@@ -22,7 +22,7 @@
  * cooldown timestamp defers the next attempt — entries are kept, not lost.
  *
  * Format: ~/.claude/.midbrain-spool.ndjson — one JSON object per line:
- *   { text, role, memory_metadata?, ts }
+ *   { text, role, memory_metadata?, spool_id, ts }
  *
  * Node 20 + Bun compatible. No npm deps. Every export is best-effort and never
  * throws (capture and self-repair are fail-open).
@@ -39,6 +39,7 @@ const LOCK_EXT = ".lock";
 const COOLDOWN_FILENAME = ".midbrain-spool-cooldown";
 const BINDING_FILENAME = ".midbrain-spool-binding";
 const BINDING_RE = /^[a-f0-9]{64}$/;
+const SPOOL_ID_RE = /^[a-f0-9]{32}$/;
 const MALFORMED_LOCK_STALE_MS = 30_000;
 
 function defaultSpoolDir() {
@@ -347,6 +348,12 @@ function recordsFromRaw(raw) {
   return records;
 }
 
+function hasOccurrenceIds(raw) {
+  const records = recordsFromRaw(raw);
+  return records.length > 0 && records.every((record) =>
+    record.entry && SPOOL_ID_RE.test(record.entry.spool_id));
+}
+
 function appendBufferSafely(file, buffer) {
   if (buffer.length === 0) return true;
   if (isSymlink(file)) return false;
@@ -393,7 +400,8 @@ export function appendToSpool(entry) {
     // A non-serializable entry must be dropped rather than crash the caller,
     // but that is a programming error, not a lost memory in practice (the hook
     // always passes a plain {text, role, memory_metadata}).
-    const line = Buffer.from(JSON.stringify({ ...entry, binding, ts: Date.now() }) + "\n");
+    const spoolId = randomBytes(16).toString("hex");
+    const line = Buffer.from(JSON.stringify({ ...entry, binding, spool_id: spoolId, ts: Date.now() }) + "\n");
     ensureSpoolDir();
     const spoolFile = spoolFilePath();
     if (isSymlink(spoolFile)) return; // never write through a symlink
@@ -485,6 +493,7 @@ export function finishSpoolFlush(flush, survivors) {
     if (current.raw.length < snapshot.length || !current.raw.subarray(0, snapshot.length).equals(snapshot)) return;
     const appendedTail = current.raw.subarray(snapshot.length);
     if (appendedTail.length > 0) {
+      if (!hasOccurrenceIds(appendedTail)) return;
       const live = readRegularSource(flush.liveFile);
       if (!live || live.raw.indexOf(appendedTail) === -1) return;
     }
