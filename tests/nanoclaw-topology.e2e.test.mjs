@@ -461,7 +461,9 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
     releaseRepair();
   });
 
-  it("first legacy wake prepares durable and cached hook paths before readiness without a warm-up", async () => {
+  // NanoClaw's container topology is Linux; Windows shim bytes have separate
+  // unit coverage and cannot be executed through this /bin/sh harness.
+  it.skipIf(IS_WIN)("first legacy wake prepares durable and cached hook paths before readiness without a warm-up", async () => {
     await seedPre048Group();
     const durableRoot = path.join(env.home, ".claude", ".midbrain");
     const durableShim = path.join(durableRoot, "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
@@ -484,18 +486,12 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
       NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
       MIDBRAIN_TEST_FETCH_LOG: fetchLog,
     });
-    const runHook = (shim, role, input) => {
-      const command = IS_WIN ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
-      const args = IS_WIN
-        ? ["/d", "/s", "/c", `"${shim}" ${role}`]
-        : [shim, role];
-      return spawnSync(command, args, {
-        input: JSON.stringify(input),
-        encoding: "utf8",
-        timeout: 30_000,
-        env: childEnv,
-      });
-    };
+    const runHook = (shim, role, input) => spawnSync("/bin/sh", [shim, role], {
+      input: JSON.stringify(input),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: childEnv,
+    });
     expect(childEnv).not.toHaveProperty("MIDBRAIN_API_KEY");
     expect(childEnv).not.toHaveProperty("MIDBRAIN_STATE_DIR");
 
