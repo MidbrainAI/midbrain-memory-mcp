@@ -17,22 +17,22 @@
 import { readStdinJSON, createApi, captureClientLabel, log, finishHook } from "./common.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
-try {
+async function captureUser() {
   const input = await readStdinJSON();
-  if (!input?.prompt) await finishHook(0);
+  if (!input?.prompt) return;
 
   let api;
   try {
     api = await createApi(input.cwd);
   } catch {
     log.warn("NO KEY");
-    await finishHook(0);
+    return;
   }
 
   // Episodic capture must complete before default-off exits.
   await api.storeEpisodic(input.prompt, "user", log, { client: await captureClientLabel() });
 
-  if (!isPkInjectionEnabled()) await finishHook(0);
+  if (!isPkInjectionEnabled()) return;
 
   // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
   const entries = await api.searchProcedural({ query: input.prompt, excludeIds: [] });
@@ -46,6 +46,10 @@ try {
       },
     }));
   }
+}
+
+try {
+  await captureUser();
 } catch { /* fail silently */ }
 
 await finishHook(0);

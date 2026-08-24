@@ -71,10 +71,9 @@ export const log = makeLogger(logFile("midbrain-claude.log"));
 export async function readStdinJSON() {
   try {
     // Event-based read (rather than `for await ... of process.stdin`): the
-    // async iterator can leave a native read handle attached at the point
-    // process.exit() runs, which on Node 24 for Windows intermittently aborts
-    // teardown with STATUS_STACK_BUFFER_OVERRUN (0xC0000409). Consuming to the
-    // "end" event lets the stream release its handle before the hook exits.
+    // async iterator can leave a native read handle attached during forced
+    // teardown on Node 24 for Windows. Consuming to the "end" event lets the
+    // stream release its handle before the hook exits naturally.
     const raw = await new Promise((resolve) => {
       let buf = "";
       process.stdin.setEncoding("utf8");
@@ -93,19 +92,15 @@ export async function readStdinJSON() {
  * throttled npx self-update check, then exit. The update path may delay hook
  * exit by up to install.mjs's UPDATE_FETCH_TIMEOUT_MS; failures are non-fatal.
  *
- * Call this at every hook exit point instead of process.exit(0) directly.
+ * Call this once after hook work completes; it deliberately avoids forced exit.
  * @param {number} [code=0] - Exit code.
- * @returns {Promise<never>}
+ * @returns {Promise<void>}
  */
 export async function finishHook(code = 0) {
   try {
     const { maybeSelfUpdate } = await import("../../install.mjs");
     await maybeSelfUpdate();
   } catch { /* never break the hook */ }
-  // Node 24 for Windows intermittently aborts teardown with
-  // STATUS_STACK_BUFFER_OVERRUN (0xC0000409) when process.exit() runs while a
-  // native stdin read handle is still open. Destroying stdin first makes the
-  // exit deterministic for the common (piped) case.
-  try { process.stdin.destroy(); } catch { /* best effort */ }
-  process.exit(code);
+  // Natural exit lets Node release native stdin handles cleanly on Windows.
+  process.exitCode = code;
 }
