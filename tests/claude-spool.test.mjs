@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { execFileSync, spawnSync } from "child_process";
 
 import {
   appendToSpool,
@@ -25,6 +26,7 @@ import {
   writeCooldownUntil,
   spoolFilePath,
   spoolBindingPath,
+  readSpoolBinding,
   establishSpoolBinding,
   _setSpoolDir,
 } from "../shared/claude-spool.mjs";
@@ -43,9 +45,31 @@ afterEach(() => {
 });
 
 const IS_WIN = process.platform === "win32";
+const SPOOL_MODULE_URL = new URL("../shared/claude-spool.mjs", import.meta.url).href;
 
 function entry(text, role = "user", meta) {
   return { text, role, memory_metadata: meta || { client: "nanoclaw" } };
+}
+
+function probeFifoBinding(operation) {
+  const expression = operation === "read"
+    ? "readSpoolBinding()"
+    : 'establishSpoolBinding("e".repeat(64))';
+  const script = `
+    import {
+      _setSpoolDir,
+      readSpoolBinding,
+      establishSpoolBinding,
+    } from ${JSON.stringify(SPOOL_MODULE_URL)};
+    _setSpoolDir(process.env.MIDBRAIN_TEST_SPOOL_DIR);
+    process.stdout.write(JSON.stringify(${expression}));
+  `;
+  return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, MIDBRAIN_TEST_SPOOL_DIR: tmpDir },
+    encoding: "utf8",
+    timeout: 1_000,
+    killSignal: "SIGKILL",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +207,26 @@ describe("appendToSpool", () => {
     expect(establishSpoolBinding(binding).ok).toBe(true);
     expect(fs.statSync(spoolBindingPath()).mode & 0o777).toBe(0o600);
   });
+
+  it.skipIf(IS_WIN).each(["read", "establish"])(
+    "returns promptly when %s sees a FIFO binding sidecar",
+    (operation) => {
+      fs.unlinkSync(spoolBindingPath());
+      execFileSync("mkfifo", [spoolBindingPath()]);
+
+      const probe = probeFifoBinding(operation);
+
+      expect(probe.error).toBeUndefined();
+      expect(probe.status).toBe(0);
+      expect(JSON.parse(probe.stdout)).toEqual(operation === "read"
+        ? null
+        : { ok: false, previous: null, conflict: true });
+    },
+  );
+
+  it("reads an unchanged valid binding through the guarded source path", () => {
+    expect(readSpoolBinding()).toBe("0".repeat(64));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -211,6 +255,49 @@ describe("spool flush claim", () => {
     finishSpoolFlush(flush, []);
     expect(hasSpooledEntries()).toBe(false);
     expect(countSpooledEntries()).toBe(0);
+  });
+
+  it("detects processing entries when an interrupted append left an empty live file", () => {
+    appendToSpool(entry("recoverable-processing-row"));
+    const flush = beginSpoolFlush();
+    expect(flush.claimed).toBe(true);
+    fs.writeFileSync(spoolFilePath(), "", { mode: 0o600 });
+
+    expect(hasSpooledEntries()).toBe(true);
+  });
+
+  it("reclaims an aged crash-truncated lock and recovers the pending batch", () => {
+    appendToSpool(entry("recover-after-lock-crash"));
+    const lockFile = `${spoolFilePath()}.lock`;
+    fs.writeFileSync(lockFile, "{", { mode: 0o600 });
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockFile, old, old);
+
+    const flush = beginSpoolFlush();
+
+    expect(flush.claimed).toBe(true);
+    expect(flush.entries.map((item) => item.text)).toEqual(["recover-after-lock-crash"]);
+  });
+
+  it("does not steal a fresh crash-truncated lock from its active write window", () => {
+    appendToSpool(entry("pending-behind-fresh-lock"));
+    const lockFile = `${spoolFilePath()}.lock`;
+    fs.writeFileSync(lockFile, "{", { mode: 0o600 });
+
+    expect(beginSpoolFlush()).toMatchObject({ claimed: false, entries: [] });
+    expect(fs.readFileSync(lockFile, "utf8")).toBe("{");
+  });
+
+  it("does not steal an aged valid lock owned by a live writer", () => {
+    appendToSpool(entry("pending-behind-active-lock"));
+    const lockFile = `${spoolFilePath()}.lock`;
+    const active = JSON.stringify({ token: "active", pid: process.pid, ts: Date.now() - 60_000 });
+    fs.writeFileSync(lockFile, active, { mode: 0o600 });
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockFile, old, old);
+
+    expect(beginSpoolFlush()).toMatchObject({ claimed: false, entries: [] });
+    expect(fs.readFileSync(lockFile, "utf8")).toBe(active);
   });
 
   it("finish with survivors preserves them for the next flush (never dropped)", () => {
