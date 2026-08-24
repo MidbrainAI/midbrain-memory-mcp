@@ -483,6 +483,61 @@ describe("spool flush claim", () => {
     expect(beginSpoolFlush().entries.map((e) => e.text)).toEqual(["racing"]);
   });
 
+  it("preserves duplicate-byte occurrences when a moved-write reappend fails", () => {
+    fs.writeFileSync(spoolFilePath(), "", { mode: 0o600 });
+    const duplicate = entry("same bytes");
+    const realOpen = fs.openSync.bind(fs);
+    const realWriteFile = fs.writeFileSync.bind(fs);
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    let claimed;
+    let intercepted = false;
+    let failCompensatingOpen = false;
+    let secondAppend;
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation((file, flags, ...args) => {
+      if (
+        failCompensatingOpen
+        && file === spoolFilePath()
+        && typeof flags === "number"
+        && (flags & fs.constants.O_APPEND) !== 0
+      ) {
+        failCompensatingOpen = false;
+        const error = new Error("simulated compensating append failure");
+        error.code = "EACCES";
+        throw error;
+      }
+      return realOpen(file, flags, ...args);
+    });
+    const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, ...args) => {
+      if (!intercepted && typeof file === "number") {
+        const opened = fs.fstatSync(file);
+        const live = fs.statSync(spoolFilePath());
+        if (opened.dev === live.dev && opened.ino === live.ino) {
+          intercepted = true;
+          claimed = beginSpoolFlush();
+          secondAppend = appendToSpool(duplicate);
+          failCompensatingOpen = true;
+        }
+      }
+      return realWriteFile(file, data, ...args);
+    });
+
+    let firstAppend;
+    try {
+      firstAppend = appendToSpool(duplicate);
+    } finally {
+      writeSpy.mockRestore();
+      openSpy.mockRestore();
+      nowSpy.mockRestore();
+    }
+
+    expect(intercepted).toBe(true);
+    expect(claimed.entries).toEqual([]);
+    expect(firstAppend).toBe(false);
+    expect(secondAppend).toBe(true);
+    finishSpoolFlush(claimed, []);
+    expect(countSpooledEntries()).toBe(2);
+  });
+
   it.each(["live", "processing"])("refuses a %s spool source symlink", (source) => {
     if (IS_WIN) return;
     const victim = path.join(tmpDir, `${source}-source-victim.ndjson`);
