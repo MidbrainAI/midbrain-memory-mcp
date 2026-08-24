@@ -239,10 +239,11 @@ NanoClaw:
   It seeds `~/.claude/.midbrain-capture-client` with `nanoclaw` before MCP
   readiness, without rerunning `/add-midbrain` or waiting for unrelated hook,
   credential, or update repair. Creation is strictly absence-only and race-safe:
-  every existing target is preserved without a content read, and an exclusive
-  mode-0600 create lets a concurrent creator win. A failed initialization
-  removes only the same regular-file identity created by that attempt. The path
-  is churn-free, context-gated with the rest of self-repair, and fail-open.
+  every existing target is preserved without a content read, and a fully
+  initialized mode-0600 stage is atomically hard-linked into place so a
+  concurrent creator wins. A failed initialization never publishes or unlinks
+  the marker path. The path is churn-free, context-gated with the rest of
+  self-repair, and fail-open.
   Plain host Claude has no mounted NanoClaw config and is never relabeled.
 
 Hermes Agent:

@@ -18,9 +18,11 @@
  */
 
 import fs from 'fs/promises';
+import { constants as fsConstants } from 'fs';
 import path from 'path';
 import os from 'os';
 import readline from 'readline';
+import { randomBytes } from 'crypto';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { readKeyFile } from './shared/clients/base.mjs';
@@ -267,10 +269,16 @@ const NANOCLAW_MCP_PACKAGE = 'midbrain-memory-mcp@latest';
 
 /** Positive ownership proof already present in pre-v0.4.8 NanoClaw groups. */
 async function isLegacyNanoClawProcess(configPath) {
+  let handle;
   try {
-    const stat = await fs.lstat(configPath);
-    if (!stat.isFile() || stat.isSymbolicLink()) return false;
-    const config = JSON.parse(await fs.readFile(configPath, 'utf8'));
+    const pathStat = await fs.lstat(configPath);
+    if (!pathStat.isFile() || pathStat.isSymbolicLink()) return false;
+    handle = await fs.open(configPath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile()
+      || openedStat.dev !== pathStat.dev
+      || openedStat.ino !== pathStat.ino) return false;
+    const config = JSON.parse(await handle.readFile('utf8'));
     const entry = config?.mcpServers?.[NANOCLAW_MCP_NAME];
     if (entry?.command !== 'npx' || !Array.isArray(entry.args)) return false;
     if (!entry.args.includes(NANOCLAW_MCP_PACKAGE)) return false;
@@ -280,6 +288,10 @@ async function isLegacyNanoClawProcess(configPath) {
       && process.env.MIDBRAIN_API_KEY === entry.env.MIDBRAIN_API_KEY;
   } catch {
     return false;
+  } finally {
+    if (handle) {
+      try { await handle.close(); } catch { /* ownership probe is fail-open */ }
+    }
   }
 }
 
@@ -298,33 +310,28 @@ async function createCaptureClientMarker(markerPath) {
     if (error?.code !== 'ENOENT') return false;
   }
   await fs.mkdir(path.dirname(markerPath), { recursive: true });
+  const stagePath = `${markerPath}.stage-${process.pid}-${randomBytes(12).toString('hex')}`;
   let handle;
   try {
-    handle = await fs.open(markerPath, 'wx', 0o600);
-  } catch (error) {
-    if (error?.code === 'EEXIST') return false;
-    throw error;
-  }
-  const createdStat = await handle.stat();
-  try {
+    handle = await fs.open(stagePath, 'wx', 0o600);
     await handle.chmod(0o600);
     await handle.writeFile(`${NANOCLAW_CAPTURE_LABEL}\n`, 'utf8');
-  } catch (error) {
-    try { await handle.close(); } catch { /* cleanup continues by identity */ }
+    await handle.sync();
+    await handle.close();
     handle = undefined;
     try {
-      const currentStat = await fs.lstat(markerPath);
-      const sameIdentity = currentStat.isFile()
-        && !currentStat.isSymbolicLink()
-        && currentStat.dev === createdStat.dev
-        && currentStat.ino === createdStat.ino;
-      if (sameIdentity) await fs.unlink(markerPath);
-    } catch { /* preserve anything whose ownership cannot be proven */ }
-    throw error;
+      await fs.link(stagePath, markerPath);
+    } catch (error) {
+      if (error?.code === 'EEXIST') return false;
+      throw error;
+    }
+    return true;
   } finally {
-    if (handle) await handle.close();
+    if (handle) {
+      try { await handle.close(); } catch { /* preserve the original failure */ }
+    }
+    try { await fs.unlink(stagePath); } catch { /* randomized mode-0600 residue is safer than path-unsafe cleanup */ }
   }
-  return true;
 }
 
 /**
@@ -343,10 +350,10 @@ async function createCaptureClientMarker(markerPath) {
  * Safe and idempotent:
  * - Strictly absence-only: every existing target is preserved byte-for-byte.
  * - No churn: every subsequent repair returns before opening marker content.
- * - Existing targets are preserved after lstat; creation uses exclusive `wx`
- *   at mode 0600, so a concurrent creator wins without being overwritten.
- * - Failed initialization removes only the same regular-file identity opened
- *   by this attempt; replacements and unprovable targets are preserved.
+ * - A randomized mode-0600 stage is fully initialized, then hard-linked to the
+ *   absent marker path; the atomic link lets every concurrent creator win.
+ * - Initialization failures never publish or unlink the marker path, so they
+ *   cannot poison migration or delete a concurrent replacement.
  *
  * Never throws — self-repair is fail-open.
  */

@@ -396,7 +396,9 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
     let injected = false;
     const spy = vi.spyOn(fs, "open").mockImplementation(async (file, flags, ...rest) => {
       const handle = await realOpen(file, flags, ...rest);
-      if (injected || file !== markerPath() || flags !== "wx") return handle;
+      const isMarkerCreate = file === markerPath()
+        || String(file).startsWith(`${markerPath()}.stage-`);
+      if (injected || !isMarkerCreate || flags !== "wx") return handle;
       injected = true;
       return new Proxy(handle, {
         get(target, prop) {
@@ -472,35 +474,82 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
     if (!IS_WIN) expect((await fs.stat(markerPath())).mode & 0o777).toBe(0o600);
   });
 
-  it("preserves a concurrent replacement when owned-marker failure cleanup cannot prove path identity", async () => {
+  it("never unlinks the published marker path while recovering from a failed initialization", async () => {
     await seedPre048Group();
     const failure = failMarkerWriteAfterPartialCreate();
+    const realUnlink = fs.unlink.bind(fs);
+    let markerUnlinkAttempted = false;
+    const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (file, ...rest) => {
+      if (file === markerPath()) {
+        markerUnlinkAttempted = true;
+        await fs.rename(file, `${file}.owned-partial`);
+        await fs.writeFile(file, "concurrent-owner\n", { mode: 0o640 });
+      }
+      return realUnlink(file, ...rest);
+    });
+    try {
+      await repairPre048Group();
+    } finally {
+      unlinkSpy.mockRestore();
+      failure.spy.mockRestore();
+    }
+
+    expect(failure.wasInjected()).toBe(true);
+    expect(markerUnlinkAttempted).toBe(false);
+    await expect(fs.lstat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves a marker created concurrently at the atomic publication boundary", async () => {
+    await seedPre048Group();
+    const realLink = fs.link.bind(fs);
+    let replacementInjected = false;
+    const linkSpy = vi.spyOn(fs, "link").mockImplementation(async (source, target) => {
+      if (!replacementInjected && target === markerPath()) {
+        await fs.writeFile(target, "concurrent-owner\n", { mode: 0o640 });
+        replacementInjected = true;
+      }
+      return realLink(source, target);
+    });
+    try {
+      await repairPre048Group();
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    expect(replacementInjected).toBe(true);
+    expect(await readMarker()).toBe("concurrent-owner\n");
+    if (!IS_WIN) expect((await fs.stat(markerPath())).mode & 0o777).toBe(0o640);
+  });
+
+  it("rejects a legacy topology config replaced after lstat instead of reading the replacement", async () => {
+    await seedPre048Group();
     const realLstat = fs.lstat.bind(fs);
     let replacementInjected = false;
     const lstatSpy = vi.spyOn(fs, "lstat").mockImplementation(async (file, ...rest) => {
-      if (file === markerPath()) {
-        try {
-          await realLstat(file, ...rest);
-          if (!replacementInjected) {
-            await fs.rename(file, `${file}.owned-partial`);
-            await fs.writeFile(file, "concurrent-owner\n", { mode: 0o640 });
-            replacementInjected = true;
-          }
-        } catch { /* initial absence probe */ }
+      const stat = await realLstat(file, ...rest);
+      if (!replacementInjected && file === containerConfigPath()) {
+        await fs.rename(file, `${file}.original`);
+        await fs.writeFile(file, JSON.stringify({
+          mcpServers: {
+            "midbrain-memory": {
+              command: "npx",
+              args: ["-y", "midbrain-memory-mcp@latest"],
+              env: { MIDBRAIN_CLIENT: "claude", MIDBRAIN_API_KEY: TEST_KEY },
+            },
+          },
+        }));
+        replacementInjected = true;
       }
-      return realLstat(file, ...rest);
+      return stat;
     });
     try {
       await repairPre048Group();
     } finally {
       lstatSpy.mockRestore();
-      failure.spy.mockRestore();
     }
 
-    expect(failure.wasInjected()).toBe(true);
     expect(replacementInjected).toBe(true);
-    expect(await readMarker()).toBe("concurrent-owner\n");
-    if (!IS_WIN) expect((await fs.stat(markerPath())).mode & 0o777).toBe(0o640);
+    await expect(fs.lstat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("negative — host Claude with the same client/env-key shape but no NanoClaw topology → no marker written", async () => {
@@ -626,30 +675,6 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
     expect((await fs.lstat(markerPath())).isFile()).toBe(true);
     expect(await fs.readFile(victim, "utf8")).toBe("victim-original\n");
     expect((await fs.lstat(planted)).isSymbolicLink()).toBe(true);
-  });
-
-  it("does not clobber a marker created concurrently after the absence check", async () => {
-    await seedPre048Group();
-    const realOpen = fs.open.bind(fs);
-    let injected = false;
-    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (file, flags, ...rest) => {
-      if (!injected && file === markerPath() && flags === "wx") {
-        injected = true;
-        const handle = await realOpen(file, "wx", 0o640);
-        await handle.writeFile("concurrent-owner\n", "utf8");
-        await handle.close();
-      }
-      return realOpen(file, flags, ...rest);
-    });
-    try {
-      await repairPre048Group();
-    } finally {
-      openSpy.mockRestore();
-    }
-
-    expect(injected).toBe(true);
-    expect(await readMarker()).toBe("concurrent-owner\n");
-    if (!IS_WIN) expect((await fs.stat(markerPath())).mode & 0o777).toBe(0o640);
   });
 
   it.each([

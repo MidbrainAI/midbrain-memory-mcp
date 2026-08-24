@@ -362,7 +362,8 @@ reverted by automatic repair; run a plain `install` to restore canonical.
 
 The narrowly gated legacy NanoClaw capture-label migration completes before MCP
 readiness so the first hook cannot race the marker. All unrelated hook, client,
-and update repair remains silent and fire-and-forget after startup. If something
+and update repair remains fire-and-forget after startup. Successful repairs may
+still report their normal summary on stderr. If something
 goes wrong, the server continues normally; repair failures never crash it.
 
 Codex has an extra trust step: it trusts command hooks by their command
