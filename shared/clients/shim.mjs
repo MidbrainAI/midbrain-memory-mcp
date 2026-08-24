@@ -70,14 +70,18 @@ function statefulDevBody(content, stateDir, platform) {
   if (!stateDir || typeof content !== 'string') return content;
   if (platform === 'win32') {
     const line = `set "MIDBRAIN_STATE_DIR=${stateDir}"\r\n`;
-    if (content.includes(line)) return content;
     const marker = `${DEV_MARKER_WIN}\r\n`;
-    return content.includes(marker) ? content.replace(marker, `${marker}${line}`) : content;
+    if (!content.includes(marker)) return content;
+    const start = content.indexOf(marker) + marker.length;
+    const remainder = content.slice(start).replace(/^set "MIDBRAIN_STATE_DIR=[^\r\n]*"\r\n/, '');
+    return `${content.slice(0, start)}${line}${remainder}`;
   }
   const lines = `MIDBRAIN_STATE_DIR=${shellQuote(stateDir)}\nexport MIDBRAIN_STATE_DIR\n`;
-  if (content.includes(lines)) return content;
   const marker = `${DEV_MARKER_POSIX}\n`;
-  return content.includes(marker) ? content.replace(marker, `${marker}${lines}`) : content;
+  if (!content.includes(marker)) return content;
+  const start = content.indexOf(marker) + marker.length;
+  const remainder = content.slice(start).replace(/^MIDBRAIN_STATE_DIR=.*\nexport MIDBRAIN_STATE_DIR\n/, '');
+  return `${content.slice(0, start)}${lines}${remainder}`;
 }
 
 /**

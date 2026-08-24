@@ -267,6 +267,25 @@ describe("installShim (sandboxed)", () => {
       await env.restore();
     }
   });
+
+  it.skipIf(IS_WIN)("repair replaces the generated dev state assignment instead of leaving stale state effective", async () => {
+    const env = await makeTestEnv();
+    try {
+      const firstState = path.join(env.home, "state-one");
+      const secondState = path.join(env.home, "state-two");
+      await installShim("claude", { mode: "install", isDev: true, stateDir: firstState });
+
+      const result = await installShim("claude", { mode: "repair", stateDir: secondState });
+      const body = await fs.readFile(stableShimPath("claude"), "utf8");
+
+      expect(result.written).toBe(true);
+      expect(body.match(/^MIDBRAIN_STATE_DIR=/gm)).toHaveLength(1);
+      expect(body).toContain(`MIDBRAIN_STATE_DIR='${secondState}'`);
+      expect(body).not.toContain(firstState);
+    } finally {
+      await env.restore();
+    }
+  });
 });
 
 describe("shimStatus (AC-11)", () => {
