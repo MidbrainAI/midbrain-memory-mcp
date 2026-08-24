@@ -30,8 +30,11 @@ async function captureAssistant() {
     // No key even after the bounded wait (issue #52): spool the assistant reply
     // to the durable ~/.claude surface for a later server-start flush.
     if (text) {
-      log.warn("NO KEY — spooling for recovery");
-      appendToSpool({ text, role: "assistant", memory_metadata: { client } });
+      if (client === "nanoclaw" && appendToSpool({
+        text,
+        role: "assistant",
+        memory_metadata: { client },
+      })) log.warn("NO KEY — spooling for recovery");
     }
     return;
   }

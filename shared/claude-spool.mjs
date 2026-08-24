@@ -37,6 +37,8 @@ const SPOOL_FILENAME = ".midbrain-spool.ndjson";
 const PROCESSING_EXT = ".processing";
 const LOCK_EXT = ".lock";
 const COOLDOWN_FILENAME = ".midbrain-spool-cooldown";
+const BINDING_FILENAME = ".midbrain-spool-binding";
+const BINDING_RE = /^[a-f0-9]{64}$/;
 
 function defaultSpoolDir() {
   return path.join(os.homedir(), ".claude");
@@ -66,6 +68,10 @@ export function spoolFilePath() {
   return path.join(currentSpoolDir(), SPOOL_FILENAME);
 }
 
+export function spoolBindingPath() {
+  return path.join(currentSpoolDir(), BINDING_FILENAME);
+}
+
 function processingFilePath() {
   return `${spoolFilePath()}${PROCESSING_EXT}`;
 }
@@ -90,6 +96,52 @@ function isSymlink(target) {
     return fs.lstatSync(target).isSymbolicLink();
   } catch {
     return false;
+  }
+}
+
+function validBinding(value) {
+  return typeof value === "string" && BINDING_RE.test(value);
+}
+
+export function readSpoolBinding() {
+  try {
+    const file = spoolBindingPath();
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) return null;
+    const value = fs.readFileSync(file, "utf8").trim();
+    return validBinding(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Atomically establish the current nonsecret API binding sidecar. */
+export function establishSpoolBinding(binding) {
+  if (!validBinding(binding)) return { ok: false, previous: null, conflict: false };
+  const target = spoolBindingPath();
+  const previous = readSpoolBinding();
+  if (previous === binding) return { ok: true, previous, conflict: false };
+  let stage;
+  try {
+    ensureSpoolDir();
+    if (isSymlink(target)) return { ok: false, previous, conflict: Boolean(previous) };
+    stage = `${target}.stage-${process.pid}-${randomBytes(8).toString("hex")}`;
+    const fd = fs.openSync(stage, "wx", 0o600);
+    try {
+      fs.writeFileSync(fd, `${binding}\n`, "utf8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(stage, target);
+    try { fs.chmodSync(target, 0o600); } catch { /* ignore */ }
+    return { ok: readSpoolBinding() === binding, previous, conflict: Boolean(previous && previous !== binding) };
+  } catch {
+    return { ok: false, previous, conflict: Boolean(previous && previous !== binding) };
+  } finally {
+    if (stage) {
+      try { fs.unlinkSync(stage); } catch { /* ignore */ }
+    }
   }
 }
 
@@ -160,19 +212,46 @@ function releaseLock(flush) {
   }
 }
 
-function validEntriesFromRaw(raw) {
-  return raw
-    .split("\n")
-    .filter((line) => line.trim())
-    .map((line) => {
-      try { return JSON.parse(line); } catch { return null; }
-    })
-    .filter((entry) => entry && typeof entry.text === "string" && typeof entry.role === "string");
+function recordsFromRaw(raw) {
+  const records = [];
+  let start = 0;
+  for (let i = 0; i < raw.length; i += 1) {
+    if (raw[i] !== 0x0a) continue;
+    const bytes = raw.subarray(start, i + 1);
+    const line = bytes.subarray(0, -1).toString("utf8");
+    let entry = null;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed.text === "string" && typeof parsed.role === "string") entry = parsed;
+    } catch { /* malformed complete line is preserved */ }
+    records.push({ bytes: Buffer.from(bytes), entry });
+    start = i + 1;
+  }
+  if (start < raw.length) records.push({ bytes: Buffer.from(raw.subarray(start)), entry: null });
+  return records;
 }
 
-function serializeEntries(entries) {
-  if (entries.length === 0) return "";
-  return entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+function appendBufferSafely(file, buffer) {
+  if (buffer.length === 0 || isSymlink(file)) return buffer.length === 0;
+  let prefix = Buffer.alloc(0);
+  try {
+    const size = fs.statSync(file).size;
+    if (size > 0) {
+      const fd = fs.openSync(file, "r");
+      const last = Buffer.alloc(1);
+      try { fs.readSync(fd, last, 0, 1, size - 1); } finally { fs.closeSync(fd); }
+      if (last[0] !== 0x0a) prefix = Buffer.from("\n");
+    }
+  } catch { /* absent live file needs no separator */ }
+  const fd = fs.openSync(file, "a", 0o600);
+  try {
+    fs.writeFileSync(fd, Buffer.concat([prefix, buffer]));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try { fs.chmodSync(file, 0o600); } catch { /* ignore */ }
+  return true;
 }
 
 /**
@@ -183,17 +262,21 @@ function serializeEntries(entries) {
  */
 export function appendToSpool(entry) {
   try {
+    if (entry?.memory_metadata?.client !== "nanoclaw") return false;
+    const binding = readSpoolBinding();
+    if (!binding) return false;
     // A non-serializable entry must be dropped rather than crash the caller,
     // but that is a programming error, not a lost memory in practice (the hook
     // always passes a plain {text, role, memory_metadata}).
-    const line = JSON.stringify({ ...entry, ts: Date.now() }) + "\n";
+    const line = Buffer.from(JSON.stringify({ ...entry, binding, ts: Date.now() }) + "\n");
     ensureSpoolDir();
     const spoolFile = spoolFilePath();
     if (isSymlink(spoolFile)) return; // never write through a symlink
-    fs.appendFileSync(spoolFile, line, { encoding: "utf8", mode: 0o600 });
-    try { fs.chmodSync(spoolFile, 0o600); } catch { /* ignore */ }
+    if (!appendBufferSafely(spoolFile, line)) return false;
+    return true;
   } catch {
     // Best effort — never crash capture over spooling.
+    return false;
   }
 }
 
@@ -224,8 +307,8 @@ export function beginSpoolFlush() {
         return empty;
       }
     }
-    const raw = fs.readFileSync(processingFile, "utf8");
-    return { ...flush, entries: validEntriesFromRaw(raw) };
+    const records = recordsFromRaw(fs.readFileSync(processingFile));
+    return { ...flush, records, entries: records.flatMap((record) => record.entry ? [record.entry] : []) };
   } catch {
     if (flush) releaseLock(flush);
     return empty;
@@ -244,12 +327,12 @@ export function beginSpoolFlush() {
 export function finishSpoolFlush(flush, survivors) {
   if (!flush || !flush.claimed || !ownsLock(flush)) return;
   try {
-    if (survivors.length > 0) {
+    const survivorSet = new Set(survivors);
+    const preserved = Buffer.concat((flush.records || []).flatMap((record) =>
+      !record.entry || survivorSet.has(record.entry) ? [record.bytes] : []));
+    if (preserved.length > 0) {
       ensureSpoolDir();
-      if (!isSymlink(flush.liveFile)) {
-        fs.appendFileSync(flush.liveFile, serializeEntries(survivors), { encoding: "utf8", mode: 0o600 });
-        try { fs.chmodSync(flush.liveFile, 0o600); } catch { /* ignore */ }
-      }
+      if (!appendBufferSafely(flush.liveFile, preserved)) return;
     }
     fs.unlinkSync(flush.processingFile);
   } catch {
@@ -276,7 +359,7 @@ export function hasSpooledEntries() {
 
 function countEntriesInFile(filePath) {
   try {
-    return validEntriesFromRaw(fs.readFileSync(filePath, "utf8")).length;
+    return recordsFromRaw(fs.readFileSync(filePath)).filter((record) => record.entry).length;
   } catch {
     return 0;
   }

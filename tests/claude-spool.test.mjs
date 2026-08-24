@@ -24,6 +24,8 @@ import {
   readCooldownUntil,
   writeCooldownUntil,
   spoolFilePath,
+  spoolBindingPath,
+  establishSpoolBinding,
   _setSpoolDir,
 } from "../shared/claude-spool.mjs";
 
@@ -32,6 +34,7 @@ let tmpDir;
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-spool-test-"));
   _setSpoolDir(tmpDir);
+  establishSpoolBinding("0".repeat(64));
 });
 
 afterEach(() => {
@@ -42,7 +45,7 @@ afterEach(() => {
 const IS_WIN = process.platform === "win32";
 
 function entry(text, role = "user", meta) {
-  return meta ? { text, role, memory_metadata: meta } : { text, role };
+  return { text, role, memory_metadata: meta || { client: "nanoclaw" } };
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +53,19 @@ function entry(text, role = "user", meta) {
 // ---------------------------------------------------------------------------
 
 describe("appendToSpool", () => {
+  it("requires a valid binding sidecar and stamps the opaque binding", () => {
+    const binding = "a".repeat(64);
+    fs.unlinkSync(spoolBindingPath());
+    expect(appendToSpool(entry("unbound", "user", { client: "nanoclaw" }))).toBe(false);
+    expect(fs.existsSync(spoolFilePath())).toBe(false);
+
+    expect(establishSpoolBinding(binding)).toMatchObject({ ok: true, previous: null });
+    expect(appendToSpool(entry("bound", "user", { client: "nanoclaw" }))).toBe(true);
+    const line = JSON.parse(fs.readFileSync(spoolFilePath(), "utf8").trim());
+    expect(line.binding).toBe(binding);
+    expect(fs.statSync(spoolBindingPath()).mode & 0o777).toBe(IS_WIN ? (fs.statSync(spoolBindingPath()).mode & 0o777) : 0o600);
+  });
+
   it("creates the spool file on first append and records the entry", () => {
     appendToSpool(entry("opening message", "user", { client: "nanoclaw" }));
     expect(fs.existsSync(spoolFilePath())).toBe(true);
@@ -92,6 +108,17 @@ describe("appendToSpool", () => {
 
     // The symlink target must be untouched.
     expect(fs.readFileSync(outside, "utf8")).toBe("sentinel\n");
+  });
+
+  it("refuses to replace a binding sidecar symlink", () => {
+    if (IS_WIN) return;
+    const victim = path.join(tmpDir, "binding-victim");
+    fs.writeFileSync(victim, "victim\n");
+    fs.unlinkSync(spoolBindingPath());
+    fs.symlinkSync(victim, spoolBindingPath());
+
+    expect(establishSpoolBinding("c".repeat(64)).ok).toBe(false);
+    expect(fs.readFileSync(victim, "utf8")).toBe("victim\n");
   });
 });
 
@@ -157,6 +184,23 @@ describe("spool flush claim", () => {
     );
     const flush = beginSpoolFlush();
     expect(flush.entries.map((e) => e.text)).toEqual(["good"]);
+  });
+
+  it("removes only successful valid rows and preserves malformed and torn bytes", () => {
+    const binding = "b".repeat(64);
+    establishSpoolBinding(binding);
+    const valid = JSON.stringify({ ...entry("good", "user"), binding });
+    const malformed = "not json\n";
+    const torn = '{"text":"torn"';
+    fs.writeFileSync(spoolFilePath(), `${valid}\n${malformed}${torn}`, { mode: 0o600 });
+
+    const flush = beginSpoolFlush();
+    expect(flush.entries.map((e) => e.text)).toEqual(["good"]);
+    finishSpoolFlush(flush, []);
+
+    const remaining = fs.readFileSync(spoolFilePath());
+    expect(remaining.includes(Buffer.from(malformed))).toBe(true);
+    expect(remaining.includes(Buffer.from(torn))).toBe(true);
   });
 });
 

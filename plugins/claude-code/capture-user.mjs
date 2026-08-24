@@ -31,8 +31,11 @@ async function captureUser() {
     // No key even after the bounded wait (issue #52): spool the opener to the
     // durable ~/.claude surface so a later authenticated server-start flush
     // recovers it, instead of dropping it.
-    log.warn("NO KEY — spooling for recovery");
-    appendToSpool({ text: input.prompt, role: "user", memory_metadata: { client } });
+    if (client === "nanoclaw" && appendToSpool({
+      text: input.prompt,
+      role: "user",
+      memory_metadata: { client },
+    })) log.warn("NO KEY — spooling for recovery");
     return;
   }
 
