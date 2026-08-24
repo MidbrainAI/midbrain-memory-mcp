@@ -572,6 +572,12 @@ export async function prepareCaptureClientMigration({
   try {
     const stateDir = activateNanoClawStateDir();
     await ensureCaptureClientMarker({ nanoclawConfigPath, owned: true });
+    await ensureHookCredential();
+    const expectedKey = (process.env.MIDBRAIN_API_KEY || '').trim();
+    const durableKey = await readKeyFile(path.join(globalConfigDir(), KEY_FILENAME));
+    if (!expectedKey || durableKey !== expectedKey) {
+      throw new Error('durable hook credential is unavailable');
+    }
     const claude = getClient('claude');
     if (typeof claude.prepareOwnedHooks !== 'function') throw new Error('hook preparation unavailable');
     await claude.prepareOwnedHooks({ isDev });
