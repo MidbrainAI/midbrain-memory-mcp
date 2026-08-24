@@ -20,6 +20,8 @@ import { pathToFileURL } from "node:url";
 
 import { makeTestEnv, assertSandboxed, snapshotTree, diffSnapshots } from "./helpers/test-env.mjs";
 import { runSelfRepair } from "../install.mjs";
+import { startMcpServer } from "../index.js";
+import { captureClientLabel } from "../plugins/claude-code/common.mjs";
 import { installShim, stableShimPath, shellQuote } from "../shared/clients/shim.mjs";
 
 const IS_WIN = process.platform === "win32";
@@ -389,6 +391,29 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
     return runSelfRepair({ ...NPX_CTX, nanoclawConfigPath: containerConfigPath() });
   }
 
+  function failMarkerWriteAfterPartialCreate() {
+    const realOpen = fs.open.bind(fs);
+    let injected = false;
+    const spy = vi.spyOn(fs, "open").mockImplementation(async (file, flags, ...rest) => {
+      const handle = await realOpen(file, flags, ...rest);
+      if (injected || file !== markerPath() || flags !== "wx") return handle;
+      injected = true;
+      return new Proxy(handle, {
+        get(target, prop) {
+          if (prop === "writeFile") {
+            return async () => {
+              await target.writeFile("nano", "utf8");
+              throw new Error("injected marker write failure");
+            };
+          }
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    return { spy, wasInjected: () => injected };
+  }
+
   it("cold upgrade: actual pre-v0.4.8 group with no new gate and no marker → seeds nanoclaw marker (0600, sandboxed)", async () => {
     await seedPre048Group();
     expect(process.env.MIDBRAIN_CAPTURE_CLIENT).toBeUndefined();
@@ -401,6 +426,81 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
       const { mode } = await fs.stat(markerPath());
       expect(mode & 0o777).toBe(0o600);
     }
+  });
+
+  it("actual index.js startup completes legacy marker migration before MCP readiness while unrelated repair stays pending", async () => {
+    await seedPre048Group();
+    const events = [];
+    let releaseRepair;
+    const pendingRepair = new Promise((resolve) => { releaseRepair = resolve; });
+
+    await startMcpServer({
+      serverFactory: () => ({
+        async connect() {
+          events.push("connect");
+          expect(await captureClientLabel()).toBe("nanoclaw");
+        },
+      }),
+      transportFactory: () => ({}),
+      prepareOptions: { ...NPX_CTX, nanoclawConfigPath: containerConfigPath() },
+      checkForUpdateFn: () => {
+        events.push("repair");
+        return pendingRepair;
+      },
+      log: () => events.push("ready"),
+    });
+
+    expect(await readMarker()).toBe("nanoclaw\n");
+    expect(events).toEqual(["connect", "ready", "repair"]);
+    releaseRepair();
+  });
+
+  it("removes only its partial marker after an injected post-create write failure so the next repair succeeds", async () => {
+    await seedPre048Group();
+    const failure = failMarkerWriteAfterPartialCreate();
+    try {
+      await repairPre048Group();
+    } finally {
+      failure.spy.mockRestore();
+    }
+
+    expect(failure.wasInjected()).toBe(true);
+    await expect(fs.lstat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
+
+    await repairPre048Group();
+    expect(await readMarker()).toBe("nanoclaw\n");
+    if (!IS_WIN) expect((await fs.stat(markerPath())).mode & 0o777).toBe(0o600);
+  });
+
+  it("preserves a concurrent replacement when owned-marker failure cleanup cannot prove path identity", async () => {
+    await seedPre048Group();
+    const failure = failMarkerWriteAfterPartialCreate();
+    const realLstat = fs.lstat.bind(fs);
+    let replacementInjected = false;
+    const lstatSpy = vi.spyOn(fs, "lstat").mockImplementation(async (file, ...rest) => {
+      if (file === markerPath()) {
+        try {
+          await realLstat(file, ...rest);
+          if (!replacementInjected) {
+            await fs.rename(file, `${file}.owned-partial`);
+            await fs.writeFile(file, "concurrent-owner\n", { mode: 0o640 });
+            replacementInjected = true;
+          }
+        } catch { /* initial absence probe */ }
+      }
+      return realLstat(file, ...rest);
+    });
+    try {
+      await repairPre048Group();
+    } finally {
+      lstatSpy.mockRestore();
+      failure.spy.mockRestore();
+    }
+
+    expect(failure.wasInjected()).toBe(true);
+    expect(replacementInjected).toBe(true);
+    expect(await readMarker()).toBe("concurrent-owner\n");
+    if (!IS_WIN) expect((await fs.stat(markerPath())).mode & 0o777).toBe(0o640);
   });
 
   it("negative — host Claude with the same client/env-key shape but no NanoClaw topology → no marker written", async () => {

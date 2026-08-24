@@ -233,16 +233,17 @@ NanoClaw:
 - Existing-group label migration (issue #51): hook children are env-stripped, so
   the marker is the only label surface reaching them, and pre-v0.4.8 groups have
   none. New group MCP env carries `MIDBRAIN_CAPTURE_CLIENT=nanoclaw`; for an old
-  group without that new key, startup self-repair positively identifies the
+  group without that new key, a narrow startup migration positively identifies the
   NanoClaw topology through its mounted `/workspace/agent/container.json` and
-  requires the exact old MidBrain MCP entry/env to match the running process.
-  It then seeds `~/.claude/.midbrain-capture-client` with `nanoclaw` without
-  rerunning `/add-midbrain`. Creation is strictly absence-only and race-safe:
-  every existing target is preserved without a content read, non-regular
-  targets are rejected by `lstat`, and an exclusive mode-0600 create lets a
-  concurrent creator win. The path is churn-free, context-gated with the rest
-  of self-repair, and fail-open. Plain host Claude has no mounted NanoClaw
-  config and is never relabeled.
+  requires the old package/client/key signals to match the running process.
+  It seeds `~/.claude/.midbrain-capture-client` with `nanoclaw` before MCP
+  readiness, without rerunning `/add-midbrain` or waiting for unrelated hook,
+  credential, or update repair. Creation is strictly absence-only and race-safe:
+  every existing target is preserved without a content read, and an exclusive
+  mode-0600 create lets a concurrent creator win. A failed initialization
+  removes only the same regular-file identity created by that attempt. The path
+  is churn-free, context-gated with the rest of self-repair, and fail-open.
+  Plain host Claude has no mounted NanoClaw config and is never relabeled.
 
 Hermes Agent:
 

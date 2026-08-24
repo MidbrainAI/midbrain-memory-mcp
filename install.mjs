@@ -305,11 +305,24 @@ async function createCaptureClientMarker(markerPath) {
     if (error?.code === 'EEXIST') return false;
     throw error;
   }
+  const createdStat = await handle.stat();
   try {
     await handle.chmod(0o600);
     await handle.writeFile(`${NANOCLAW_CAPTURE_LABEL}\n`, 'utf8');
+  } catch (error) {
+    try { await handle.close(); } catch { /* cleanup continues by identity */ }
+    handle = undefined;
+    try {
+      const currentStat = await fs.lstat(markerPath);
+      const sameIdentity = currentStat.isFile()
+        && !currentStat.isSymbolicLink()
+        && currentStat.dev === createdStat.dev
+        && currentStat.ino === createdStat.ino;
+      if (sameIdentity) await fs.unlink(markerPath);
+    } catch { /* preserve anything whose ownership cannot be proven */ }
+    throw error;
   } finally {
-    await handle.close();
+    if (handle) await handle.close();
   }
   return true;
 }
@@ -323,15 +336,17 @@ async function createCaptureClientMarker(markerPath) {
  *
  * Ownership gate: new groups may set MIDBRAIN_CAPTURE_CLIENT=nanoclaw. For a
  * real pre-v0.4.8 group that lacks that new env key, the migration instead
- * verifies NanoClaw's mounted /workspace/agent/container.json: its exact
- * MidBrain MCP entry must use the old documented env and match this process.
+ * verifies NanoClaw's mounted /workspace/agent/container.json: its old
+ * package/client/key signals must use the documented values and match this process.
  * A plain host Claude install has no such mounted NanoClaw config.
  *
  * Safe and idempotent:
  * - Strictly absence-only: every existing target is preserved byte-for-byte.
  * - No churn: every subsequent repair returns before opening marker content.
- * - Non-regular targets are rejected by lstat; creation uses exclusive `wx`
+ * - Existing targets are preserved after lstat; creation uses exclusive `wx`
  *   at mode 0600, so a concurrent creator wins without being overwritten.
+ * - Failed initialization removes only the same regular-file identity opened
+ *   by this attempt; replacements and unprovable targets are preserved.
  *
  * Never throws — self-repair is fail-open.
  */
@@ -374,23 +389,48 @@ export async function runSelfRepair({
   repoRoot = REPO_ROOT,
   nanoclawConfigPath = NANOCLAW_CONTAINER_CONFIG,
 } = {}) {
+  const prepared = await prepareCaptureClientMigration({
+    context,
+    repoRoot,
+    nanoclawConfigPath,
+  });
+  if (prepared.skipped) {
+    console.error(
+      `[midbrain] self-repair skipped: running from ${prepared.kind} (${prepared.path}); ` +
+      `run 'npx midbrain-memory-mcp install' to repair configs from a durable install`,
+    );
+    return { skipped: true, kind: prepared.kind };
+  }
+  try {
+    // Capture-label migration is completed by prepareCaptureClientMigration()
+    // before any potentially slow unrelated repair reaches this point.
+    await ensureHooksFresh();
+    await ensureHookCredential();
+    return { skipped: false, kind: prepared.kind };
+  } catch {
+    return { skipped: false, kind: 'unknown' };
+  }
+}
+
+/**
+ * Complete the narrowly scoped capture-label migration before MCP readiness.
+ * It shares the production self-repair context gate but performs no hook,
+ * credential, or update work. Never throws.
+ */
+export async function prepareCaptureClientMigration({
+  context,
+  repoRoot = REPO_ROOT,
+  nanoclawConfigPath = NANOCLAW_CONTAINER_CONFIG,
+} = {}) {
   try {
     const ctx = context ?? classifyInstallContext(repoRoot);
     if (shouldSkipSelfRepair(ctx)) {
-      console.error(
-        `[midbrain] self-repair skipped: running from ${ctx.kind} (${ctx.path}); ` +
-        `run 'npx midbrain-memory-mcp install' to repair configs from a durable install`,
-      );
-      return { skipped: true, kind: ctx.kind };
+      return { skipped: true, kind: ctx.kind, path: ctx.path };
     }
-    // Hook/shim repair first: a hung or slow credential store (network home,
-    // FIFO at the key path) must never delay or suppress config repair.
-    await ensureHooksFresh();
-    await ensureHookCredential();
     await ensureCaptureClientMarker({ nanoclawConfigPath });
-    return { skipped: false, kind: ctx.kind };
+    return { skipped: false, kind: ctx.kind, path: ctx.path };
   } catch {
-    return { skipped: false, kind: 'unknown' };
+    return { skipped: false, kind: 'unknown', path: repoRoot };
   }
 }
 

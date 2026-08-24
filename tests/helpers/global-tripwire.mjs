@@ -34,6 +34,7 @@ export function tripwireSurfaces(home = os.homedir()) {
   return [
     path.join(home, '.claude.json'),
     path.join(home, '.claude', 'settings.json'),
+    path.join(home, '.claude', '.midbrain-capture-client'),
     path.join(home, '.codex', 'config.toml'),
     path.join(home, '.codex', 'hooks.json'),
     path.join(hermesHome, 'config.yaml'),
