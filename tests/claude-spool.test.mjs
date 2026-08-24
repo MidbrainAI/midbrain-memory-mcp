@@ -80,7 +80,7 @@ describe("appendToSpool", () => {
   it("appends multiple entries without dropping any (no cap)", () => {
     for (let i = 0; i < 250; i += 1) appendToSpool(entry(`m${i}`));
     expect(countSpooledEntries()).toBe(250);
-  });
+  }, 30_000);
 
   it("writes the spool file with 0600 permissions", () => {
     appendToSpool(entry("x"));

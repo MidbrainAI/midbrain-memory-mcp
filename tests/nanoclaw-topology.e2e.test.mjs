@@ -484,6 +484,18 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
       NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
       MIDBRAIN_TEST_FETCH_LOG: fetchLog,
     });
+    const runHook = (shim, role, input) => {
+      const command = IS_WIN ? (process.env.ComSpec || "cmd.exe") : "/bin/sh";
+      const args = IS_WIN
+        ? ["/d", "/s", "/c", `"${shim}" ${role}`]
+        : [shim, role];
+      return spawnSync(command, args, {
+        input: JSON.stringify(input),
+        encoding: "utf8",
+        timeout: 30_000,
+        env: childEnv,
+      });
+    };
     expect(childEnv).not.toHaveProperty("MIDBRAIN_API_KEY");
     expect(childEnv).not.toHaveProperty("MIDBRAIN_STATE_DIR");
 
@@ -498,17 +510,10 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
             expect(body).toContain("MIDBRAIN_STATE_DIR");
             expect(body).not.toContain(TEST_KEY);
             const suffix = shim === cachedShim ? "cached" : "durable";
-            const user = spawnSync("/bin/sh", [shim, "user"], {
-              input: JSON.stringify({ prompt: `first-user-${suffix}`, cwd: env.home }),
-              encoding: "utf8",
-              timeout: 30_000,
-              env: childEnv,
-            });
-            const assistant = spawnSync("/bin/sh", [shim, "assistant"], {
-              input: JSON.stringify({ last_assistant_message: `first-assistant-${suffix}`, cwd: env.home }),
-              encoding: "utf8",
-              timeout: 30_000,
-              env: childEnv,
+            const user = runHook(shim, "user", { prompt: `first-user-${suffix}`, cwd: env.home });
+            const assistant = runHook(shim, "assistant", {
+              last_assistant_message: `first-assistant-${suffix}`,
+              cwd: env.home,
             });
             expect(user.status).toBe(0);
             expect(assistant.status).toBe(0);
