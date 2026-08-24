@@ -16,9 +16,10 @@
  */
 
 import fs from 'fs/promises';
+import os from 'os';
 import path from 'path';
 import { PKG_NAME, REPO_ROOT, writeFileIfChanged } from './utils.mjs';
-import { shimBinDir } from '../state-dir.mjs';
+import { shimBinDir, stateBaseDir } from '../state-dir.mjs';
 
 export const DEV_MARKER_POSIX = '# midbrain-dev';
 export const DEV_MARKER_WIN = '@rem midbrain-dev';
@@ -60,6 +61,25 @@ export function stableShimPath(client, platform = process.platform) {
   return path.join(shimBinDir(), shimFilename(client, platform));
 }
 
+/** Historical pre-relocation path retained for the first cached hook command. */
+export function historicalShimPath(client, platform = process.platform) {
+  return path.join(os.homedir(), '.midbrain', 'bin', shimFilename(client, platform));
+}
+
+function statefulDevBody(content, stateDir, platform) {
+  if (!stateDir || typeof content !== 'string') return content;
+  if (platform === 'win32') {
+    const line = `set "MIDBRAIN_STATE_DIR=${stateDir}"\r\n`;
+    if (content.includes(line)) return content;
+    const marker = `${DEV_MARKER_WIN}\r\n`;
+    return content.includes(marker) ? content.replace(marker, `${marker}${line}`) : content;
+  }
+  const lines = `MIDBRAIN_STATE_DIR=${shellQuote(stateDir)}\nexport MIDBRAIN_STATE_DIR\n`;
+  if (content.includes(lines)) return content;
+  const marker = `${DEV_MARKER_POSIX}\n`;
+  return content.includes(marker) ? content.replace(marker, `${marker}${lines}`) : content;
+}
+
 /**
  * Build a shim body.
  *
@@ -69,6 +89,7 @@ export function stableShimPath(client, platform = process.platform) {
  * @param {string} [opts.platform] - Injectable platform (default process.platform).
  * @param {string} [opts.execPath] - Node binary for dev bodies.
  * @param {string} [opts.repoRoot] - Checkout root for dev bodies.
+ * @param {string|null} [opts.stateDir] - Nonsecret state root to propagate.
  * @returns {string}
  */
 export function buildShimBody(client, opts = {}) {
@@ -77,6 +98,7 @@ export function buildShimBody(client, opts = {}) {
     platform = process.platform,
     execPath = process.execPath,
     repoRoot = REPO_ROOT,
+    stateDir = client === 'claude' ? stateBaseDir() : null,
   } = opts;
   // Join with the TARGET platform's separator so injected win32 fixtures
   // build win32 bodies even when the test host is POSIX.
@@ -84,10 +106,14 @@ export function buildShimBody(client, opts = {}) {
 
   if (platform === 'win32' && client !== 'codex') {
     const marker = isDev ? `${DEV_MARKER_WIN}\r\n` : '';
+    if (stateDir) windowsPathGuard(stateDir, 'MIDBRAIN_STATE_DIR', platform);
+    const stateLine = client === 'claude' && stateDir
+      ? `set "MIDBRAIN_STATE_DIR=${stateDir}"\r\n`
+      : '';
     const command = isDev
       ? `"${execPath}" "${indexPath}" hook ${client} "%~1"`
       : `call npx.cmd -y midbrain-memory-mcp@latest hook ${client} "%~1"`;
-    return `@echo off\r\n${marker}${command}\r\nexit /b 0\r\n`;
+    return `@echo off\r\n${marker}${stateLine}${command}\r\nexit /b 0\r\n`;
   }
 
   const marker = isDev ? `${DEV_MARKER_POSIX}\n` : '';
@@ -116,8 +142,11 @@ esac
 `;
   }
 
+  const stateLines = client === 'claude' && stateDir
+    ? `MIDBRAIN_STATE_DIR=${shellQuote(stateDir)}\nexport MIDBRAIN_STATE_DIR\n`
+    : '';
   return `#!/bin/sh
-${marker}set +e
+${marker}${stateLines}set +e
 ${command} hook ${client} "$@"
 exit 0
 `;
@@ -273,8 +302,14 @@ export async function shimStatus(client) {
 }
 
 /** Validate every path a shim body would embed (throws on win32 metachars). */
-export function validateShimPaths(client, { isDev = false, platform = process.platform } = {}) {
-  windowsPathGuard(stableShimPath(client, platform), `${client} hook shim path`, platform);
+export function validateShimPaths(client, {
+  isDev = false,
+  platform = process.platform,
+  targetPath = stableShimPath(client, platform),
+  stateDir = client === 'claude' ? stateBaseDir() : null,
+} = {}) {
+  windowsPathGuard(targetPath, `${client} hook shim path`, platform);
+  if (client === 'claude' && stateDir) windowsPathGuard(stateDir, 'MIDBRAIN_STATE_DIR', platform);
   if (!isDev) return;
   windowsPathGuard(process.execPath, `${client} development Node path`, platform);
   windowsPathGuard(path.join(REPO_ROOT, 'index.js'), `${client} development index path`, platform);
@@ -294,22 +329,29 @@ export function validateShimPaths(client, { isDev = false, platform = process.pl
  * @param {'install'|'repair'} [opts.mode]
  * @returns {Promise<{written: boolean, preservedDev?: boolean, path: string}>}
  */
-export async function installShim(client, { isDev = false, mode = 'install' } = {}) {
-  validateShimPaths(client, { isDev });
-  const shimPath = stableShimPath(client);
+export async function installShim(client, {
+  isDev = false,
+  mode = 'install',
+  targetPath = stableShimPath(client),
+  stateDir = client === 'claude' ? stateBaseDir() : null,
+} = {}) {
+  validateShimPaths(client, { isDev, targetPath, stateDir });
+  const shimPath = targetPath;
 
   if (mode === 'repair') {
     try {
       const current = await fs.readFile(shimPath, 'utf8');
       if (isDevShimContent(current)) {
-        // Dev bytes are preserved, but the shim must still be runnable.
+        const updated = client === 'claude' ? statefulDevBody(current, stateDir, process.platform) : current;
+        const written = updated !== current ? await writeFileIfChanged(shimPath, updated) : false;
+        // Dev command/marker bytes are preserved, but the shim must still run.
         await restoreExecBit(shimPath);
-        return { written: false, preservedDev: true, path: shimPath };
+        return { written, preservedDev: true, path: shimPath };
       }
     } catch { /* missing or unreadable -> write canonical below */ }
   }
 
-  const body = buildShimBody(client, { isDev });
+  const body = buildShimBody(client, { isDev, stateDir });
   const written = await writeFileIfChanged(shimPath, body);
   // chmod even when content was unchanged: restores a stripped exec bit
   // without touching mtime (chmod updates ctime only), so the no-churn

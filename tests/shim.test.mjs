@@ -79,6 +79,23 @@ describe("buildShimBody — canonical byte parity with e0abf99", () => {
   });
 });
 
+describe("buildShimBody — NanoClaw state propagation", () => {
+  const stateDir = "/home/node/.claude/.midbrain";
+
+  it("exports the nonsecret state root in POSIX Claude shims", () => {
+    const body = buildShimBody("claude", { platform: "linux", stateDir });
+    expect(body).toContain(`MIDBRAIN_STATE_DIR='${stateDir}'`);
+    expect(body).toContain("export MIDBRAIN_STATE_DIR");
+    expect(body).toContain('hook claude "$@"');
+  });
+
+  it("sets the nonsecret state root in Windows Claude shims", () => {
+    const body = buildShimBody("claude", { platform: "win32", stateDir: "C:\\Users\\node\\.claude\\.midbrain" });
+    expect(body).toContain('set "MIDBRAIN_STATE_DIR=C:\\Users\\node\\.claude\\.midbrain"');
+    expect(body).toContain('hook claude "%~1"');
+  });
+});
+
 describe("buildShimBody — dev variants (S3)", () => {
   it("posix dev bodies carry the dev marker and shellQuoted checkout paths", () => {
     for (const client of ["claude", "hermes"]) {

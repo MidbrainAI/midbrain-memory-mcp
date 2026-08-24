@@ -42,6 +42,23 @@ export function isStateDirOverridden() {
   return stateBaseDir() !== null;
 }
 
+/** Durable state root available inside NanoClaw's mounted Claude directory. */
+export function nanoClawStateDir() {
+  return path.join(os.homedir(), ".claude", ".midbrain");
+}
+
+/**
+ * Activate NanoClaw's durable state root for this process only. An explicit
+ * nonblank operator value always wins.
+ */
+export function activateNanoClawStateDir() {
+  const existing = stateBaseDir();
+  if (existing) return existing;
+  const inferred = nanoClawStateDir();
+  process.env[STATE_DIR_ENV] = inferred;
+  return inferred;
+}
+
 /**
  * Directory holding the global key, keystore, and host config.json.
  * Default: ~/.config/midbrain. Override: <MIDBRAIN_STATE_DIR>.
