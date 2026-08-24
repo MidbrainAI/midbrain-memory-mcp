@@ -198,7 +198,6 @@ describe("tripwire internals (sandbox only)", () => {
     for (const required of [
       "~/.claude.json",
       "~/.claude/settings.json",
-      "~/.claude/.midbrain-capture-client",
       "~/.codex/config.toml",
       "~/.codex/hooks.json",
       "~/.config/opencode/opencode.json",

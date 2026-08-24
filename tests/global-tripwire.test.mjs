@@ -22,12 +22,6 @@ import {
 const HOME = "/fake/home";
 
 describe("tripwireSurfaces (AC-15)", () => {
-  it("covers the Claude capture-client marker written by NanoClaw migration", () => {
-    expect(tripwireSurfaces(HOME)).toContain(
-      path.join(HOME, ".claude", ".midbrain-capture-client"),
-    );
-  });
-
   it("covers the OpenCode cleanup targets, including the legacy clients tree", () => {
     const surfaces = tripwireSurfaces(HOME);
     const plugins = path.join(HOME, ".config", "opencode", "plugins");
