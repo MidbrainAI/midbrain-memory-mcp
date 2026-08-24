@@ -72,6 +72,24 @@ function probeFifoBinding(operation) {
   });
 }
 
+function probeLockFlush() {
+  const script = `
+    import {
+      _setSpoolDir,
+      beginSpoolFlush,
+    } from ${JSON.stringify(SPOOL_MODULE_URL)};
+    _setSpoolDir(process.env.MIDBRAIN_TEST_SPOOL_DIR);
+    const flush = beginSpoolFlush();
+    process.stdout.write(JSON.stringify({ claimed: flush.claimed }));
+  `;
+  return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, MIDBRAIN_TEST_SPOOL_DIR: tmpDir },
+    encoding: "utf8",
+    timeout: 1_000,
+    killSignal: "SIGKILL",
+  });
+}
+
 // ---------------------------------------------------------------------------
 // appendToSpool
 // ---------------------------------------------------------------------------
@@ -314,6 +332,76 @@ describe("spool flush claim", () => {
 
     expect(beginSpoolFlush()).toMatchObject({ claimed: false, entries: [] });
     expect(fs.readFileSync(lockFile, "utf8")).toBe("{");
+  });
+
+  it("does not steal a fresh parseable lock with an invalid schema", () => {
+    appendToSpool(entry("pending-behind-fresh-invalid-lock"));
+    const lockFile = `${spoolFilePath()}.lock`;
+    fs.writeFileSync(lockFile, "{}", { mode: 0o600 });
+
+    expect(beginSpoolFlush()).toMatchObject({ claimed: false, entries: [] });
+    expect(fs.readFileSync(lockFile, "utf8")).toBe("{}");
+  });
+
+  it.each([
+    ["null", "null"],
+    ["array", "[]"],
+    ["missing fields", "{}"],
+    ["empty token", JSON.stringify({ token: "", pid: process.pid, ts: Date.now() })],
+    ["invalid pid", JSON.stringify({ token: "token", pid: 0, ts: Date.now() })],
+    ["invalid timestamp", JSON.stringify({ token: "token", pid: process.pid, ts: "old" })],
+  ])("reclaims an aged %s lock with an invalid schema", (_description, lockBytes) => {
+    appendToSpool(entry(`recover-after-${_description}`));
+    const lockFile = `${spoolFilePath()}.lock`;
+    fs.writeFileSync(lockFile, lockBytes, { mode: 0o600 });
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockFile, old, old);
+
+    expect(beginSpoolFlush().claimed).toBe(true);
+  });
+
+  it.skipIf(IS_WIN).each(["fifo", "symlink-to-fifo"])(
+    "returns promptly and preserves a %s lock path",
+    (kind) => {
+      appendToSpool(entry(`pending-behind-${kind}`));
+      const lockFile = `${spoolFilePath()}.lock`;
+      const fifo = kind === "fifo" ? lockFile : `${lockFile}.target`;
+      execFileSync("mkfifo", [fifo]);
+      if (kind === "symlink-to-fifo") fs.symlinkSync(fifo, lockFile);
+
+      const probe = probeLockFlush();
+
+      expect(probe.error).toBeUndefined();
+      expect(probe.status).toBe(0);
+      expect(JSON.parse(probe.stdout)).toEqual({ claimed: false });
+      expect(kind === "fifo"
+        ? fs.lstatSync(lockFile).isFIFO()
+        : fs.lstatSync(lockFile).isSymbolicLink()).toBe(true);
+      expect(countSpooledEntries()).toBe(1);
+    },
+  );
+
+  it("refuses a dead-PID lock symlink without replacing it", () => {
+    if (IS_WIN) return;
+    appendToSpool(entry("pending-behind-dead-lock-symlink"));
+    const lockFile = `${spoolFilePath()}.lock`;
+    const victim = `${lockFile}.victim`;
+    const deadLock = JSON.stringify({ token: "dead", pid: 2_147_483_647, ts: Date.now() });
+    fs.writeFileSync(victim, deadLock, { mode: 0o600 });
+    fs.symlinkSync(victim, lockFile);
+
+    expect(beginSpoolFlush()).toMatchObject({ claimed: false, entries: [] });
+    expect(fs.lstatSync(lockFile).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(victim, "utf8")).toBe(deadLock);
+  });
+
+  it("reclaims an identity-validated valid lock owned by a dead PID", () => {
+    appendToSpool(entry("recover-after-dead-lock"));
+    const lockFile = `${spoolFilePath()}.lock`;
+    const deadLock = JSON.stringify({ token: "dead", pid: 2_147_483_647, ts: Date.now() });
+    fs.writeFileSync(lockFile, deadLock, { mode: 0o600 });
+
+    expect(beginSpoolFlush().claimed).toBe(true);
   });
 
   it("does not steal an aged valid lock owned by a live writer", () => {
