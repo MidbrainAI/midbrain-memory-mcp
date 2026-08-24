@@ -39,6 +39,7 @@ const LOCK_EXT = ".lock";
 const COOLDOWN_FILENAME = ".midbrain-spool-cooldown";
 const BINDING_FILENAME = ".midbrain-spool-binding";
 const BINDING_RE = /^[a-f0-9]{64}$/;
+const MALFORMED_LOCK_STALE_MS = 30_000;
 
 function defaultSpoolDir() {
   return path.join(os.homedir(), ".claude");
@@ -112,7 +113,7 @@ function pathMatchesFile(target, stat) {
   }
 }
 
-function readRegularSource(target) {
+function openRegularSource(target) {
   let fd;
   try {
     const before = fs.lstatSync(target);
@@ -123,8 +124,10 @@ function readRegularSource(target) {
     fd = fs.openSync(target, flags);
     const stat = fs.fstatSync(fd);
     if (!stat.isFile() || !sameFileIdentity(before, stat)) return null;
-    const raw = fs.readFileSync(fd);
-    return pathMatchesFile(target, stat) ? { raw, stat } : null;
+    if (!pathMatchesFile(target, stat)) return null;
+    const source = { fd, stat };
+    fd = undefined;
+    return source;
   } catch {
     return null;
   } finally {
@@ -134,31 +137,41 @@ function readRegularSource(target) {
   }
 }
 
+function readRegularSource(target) {
+  const source = openRegularSource(target);
+  if (!source) return null;
+  try {
+    const raw = fs.readFileSync(source.fd);
+    return pathMatchesFile(target, source.stat) ? { raw, stat: source.stat } : null;
+  } catch {
+    return null;
+  } finally {
+    try { fs.closeSync(source.fd); } catch { /* ignore */ }
+  }
+}
+
 function validBinding(value) {
   return typeof value === "string" && BINDING_RE.test(value);
 }
 
 function inspectSpoolBinding() {
-  let fd;
   try {
     const file = spoolBindingPath();
-    if (isSymlink(file)) return { kind: "invalid", value: null };
-    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
-    fd = fs.openSync(file, flags);
-    const stat = fs.fstatSync(fd);
-    if (!stat.isFile()) return { kind: "invalid", value: null };
-    const value = fs.readFileSync(fd, "utf8").trim();
+    try {
+      fs.lstatSync(file);
+    } catch (error) {
+      return error?.code === "ENOENT"
+        ? { kind: "missing", value: null }
+        : { kind: "invalid", value: null };
+    }
+    const source = readRegularSource(file);
+    if (!source) return { kind: "invalid", value: null };
+    const value = source.raw.toString("utf8").trim();
     return validBinding(value)
       ? { kind: "valid", value }
       : { kind: "invalid", value: null };
-  } catch (error) {
-    return error?.code === "ENOENT"
-      ? { kind: "missing", value: null }
-      : { kind: "invalid", value: null };
-  } finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-    }
+  } catch {
+    return { kind: "invalid", value: null };
   }
 }
 
@@ -175,20 +188,23 @@ export function establishSpoolBinding(binding) {
   if (inspected.kind === "invalid") return { ok: false, previous: null, conflict: true };
   const previous = inspected.kind === "valid" ? inspected.value : null;
   if (previous === binding) {
-    let fd;
+    let source;
     try {
-      const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
-      fd = fs.openSync(target, flags);
-      if (!fs.fstatSync(fd).isFile()) return { ok: false, previous, conflict: true };
-      try { fs.fchmodSync(fd, 0o600); } catch {
+      source = openRegularSource(target);
+      if (!source) return { ok: false, previous, conflict: true };
+      const value = fs.readFileSync(source.fd, "utf8").trim();
+      if (value !== binding || !pathMatchesFile(target, source.stat)) {
+        return { ok: false, previous, conflict: true };
+      }
+      try { fs.fchmodSync(source.fd, 0o600); } catch {
         if (process.platform !== "win32") return { ok: false, previous, conflict: true };
       }
-      return { ok: true, previous, conflict: false };
+      return { ok: pathMatchesFile(target, source.stat), previous, conflict: false };
     } catch {
       return { ok: false, previous, conflict: true };
     } finally {
-      if (fd !== undefined) {
-        try { fs.closeSync(fd); } catch { /* ignore */ }
+      if (source) {
+        try { fs.closeSync(source.fd); } catch { /* ignore */ }
       }
     }
   }
@@ -238,9 +254,27 @@ function isProcessAlive(pid) {
   }
 }
 
+function removeStaleMalformedLock(lockFile) {
+  const source = readRegularSource(lockFile);
+  if (!source || Date.now() - source.stat.mtimeMs < MALFORMED_LOCK_STALE_MS) return false;
+  try {
+    JSON.parse(source.raw.toString("utf8"));
+    return false;
+  } catch {
+    if (!pathMatchesFile(lockFile, source.stat)) return false;
+    try {
+      fs.unlinkSync(lockFile);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 function removeDeadLock(lockFile) {
   const lock = readLock(lockFile);
-  if (!lock || isProcessAlive(lock.pid)) return false;
+  if (!lock) return removeStaleMalformedLock(lockFile);
+  if (isProcessAlive(lock.pid)) return false;
   try {
     fs.unlinkSync(lockFile);
     return true;
@@ -463,17 +497,15 @@ export function finishSpoolFlush(flush, survivors) {
 export function hasSpooledEntries() {
   const spoolFile = spoolFilePath();
   const processingFile = processingFilePath();
-  try {
-    const stat = fs.lstatSync(spoolFile);
-    return stat.isFile() && stat.size > 0;
-  } catch {
+  const hasEntries = (file) => {
     try {
-      const stat = fs.lstatSync(processingFile);
+      const stat = fs.lstatSync(file);
       return stat.isFile() && stat.size > 0;
     } catch {
       return false;
     }
-  }
+  };
+  return hasEntries(spoolFile) || hasEntries(processingFile);
 }
 
 function countEntriesInFile(filePath) {
