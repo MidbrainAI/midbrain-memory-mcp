@@ -1104,6 +1104,39 @@ describe("Issue #52 — server-start spool flush discipline", () => {
     expect((await readSpool()).map((entry) => entry.text)).toEqual(["other-agent row"]);
   });
 
+  it("a binding change after preparation posts zero rows through the fresh API", async () => {
+    const preparedBinding = "e".repeat(64);
+    establishSpoolBinding(preparedBinding);
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "prepared-binding row", role: "user", memory_metadata: { client: "nanoclaw" } });
+
+    let calls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) calls += 1;
+      return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      await runSelfRepair({
+        ...NPX_CTX,
+        preparation: {
+          skipped: false,
+          owned: true,
+          kind: "npx-cache",
+          binding: preparedBinding,
+          adoptUnbound: false,
+        },
+      });
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+
+    expect(new MidbrainApi(TEST_KEY, "test").cacheScope).not.toBe(preparedBinding);
+    expect(calls).toBe(0);
+    expect((await readSpool()).map((entry) => entry.text)).toEqual(["prepared-binding row"]);
+  });
+
   it("cooldown defers the next flush: no POST while cooling down, entries kept", async () => {
     const { appendToSpool } = await import("../shared/claude-spool.mjs");
     appendToSpool({ text: "still pending", role: "user", memory_metadata: { client: "nanoclaw" } });

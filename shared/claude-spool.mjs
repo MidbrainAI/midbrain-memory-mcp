@@ -103,24 +103,59 @@ function validBinding(value) {
   return typeof value === "string" && BINDING_RE.test(value);
 }
 
-export function readSpoolBinding() {
+function inspectSpoolBinding() {
+  let fd;
   try {
     const file = spoolBindingPath();
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink()) return null;
-    const value = fs.readFileSync(file, "utf8").trim();
-    return validBinding(value) ? value : null;
-  } catch {
-    return null;
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+    fd = fs.openSync(file, flags);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return { kind: "invalid", value: null };
+    const value = fs.readFileSync(fd, "utf8").trim();
+    return validBinding(value)
+      ? { kind: "valid", value }
+      : { kind: "invalid", value: null };
+  } catch (error) {
+    return error?.code === "ENOENT"
+      ? { kind: "missing", value: null }
+      : { kind: "invalid", value: null };
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
   }
+}
+
+export function readSpoolBinding() {
+  const inspected = inspectSpoolBinding();
+  return inspected.kind === "valid" ? inspected.value : null;
 }
 
 /** Atomically establish the current nonsecret API binding sidecar. */
 export function establishSpoolBinding(binding) {
   if (!validBinding(binding)) return { ok: false, previous: null, conflict: false };
   const target = spoolBindingPath();
-  const previous = readSpoolBinding();
-  if (previous === binding) return { ok: true, previous, conflict: false };
+  const inspected = inspectSpoolBinding();
+  if (inspected.kind === "invalid") return { ok: false, previous: null, conflict: true };
+  const previous = inspected.kind === "valid" ? inspected.value : null;
+  if (previous === binding) {
+    let fd;
+    try {
+      const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+      fd = fs.openSync(target, flags);
+      if (!fs.fstatSync(fd).isFile()) return { ok: false, previous, conflict: true };
+      try { fs.fchmodSync(fd, 0o600); } catch {
+        if (process.platform !== "win32") return { ok: false, previous, conflict: true };
+      }
+      return { ok: true, previous, conflict: false };
+    } catch {
+      return { ok: false, previous, conflict: true };
+    } finally {
+      if (fd !== undefined) {
+        try { fs.closeSync(fd); } catch { /* ignore */ }
+      }
+    }
+  }
   let stage;
   try {
     ensureSpoolDir();
@@ -232,26 +267,34 @@ function recordsFromRaw(raw) {
 }
 
 function appendBufferSafely(file, buffer) {
-  if (buffer.length === 0 || isSymlink(file)) return buffer.length === 0;
-  let prefix = Buffer.alloc(0);
+  if (buffer.length === 0) return true;
+  let fd;
   try {
-    const size = fs.statSync(file).size;
+    const flags = fs.constants.O_RDWR
+      | fs.constants.O_APPEND
+      | fs.constants.O_CREAT
+      | (fs.constants.O_NOFOLLOW ?? 0);
+    fd = fs.openSync(file, flags, 0o600);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return false;
+    let prefix = Buffer.alloc(0);
+    const size = stat.size;
     if (size > 0) {
-      const fd = fs.openSync(file, "r");
       const last = Buffer.alloc(1);
-      try { fs.readSync(fd, last, 0, 1, size - 1); } finally { fs.closeSync(fd); }
+      fs.readSync(fd, last, 0, 1, size - 1);
       if (last[0] !== 0x0a) prefix = Buffer.from("\n");
     }
-  } catch { /* absent live file needs no separator */ }
-  const fd = fs.openSync(file, "a", 0o600);
-  try {
     fs.writeFileSync(fd, Buffer.concat([prefix, buffer]));
     fs.fsyncSync(fd);
+    try { fs.fchmodSync(fd, 0o600); } catch { /* ignore */ }
+    return true;
+  } catch {
+    return false;
   } finally {
-    fs.closeSync(fd);
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
   }
-  try { fs.chmodSync(file, 0o600); } catch { /* ignore */ }
-  return true;
 }
 
 /**

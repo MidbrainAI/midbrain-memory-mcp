@@ -10,7 +10,7 @@
  * only a successful flush removes an entry.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -110,6 +110,29 @@ describe("appendToSpool", () => {
     expect(fs.readFileSync(outside, "utf8")).toBe("sentinel\n");
   });
 
+  it("refuses a symlink swapped in at the spool open boundary", () => {
+    if (IS_WIN) return;
+    const victim = path.join(tmpDir, "swap-victim.ndjson");
+    fs.writeFileSync(victim, "sentinel\n");
+    const realOpen = fs.openSync.bind(fs);
+    let swapped = false;
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation((file, ...args) => {
+      if (!swapped && file === spoolFilePath()) {
+        fs.symlinkSync(victim, spoolFilePath());
+        swapped = true;
+      }
+      return realOpen(file, ...args);
+    });
+    try {
+      expect(appendToSpool(entry("must-not-reach-victim"))).toBe(false);
+    } finally {
+      openSpy.mockRestore();
+    }
+
+    expect(swapped).toBe(true);
+    expect(fs.readFileSync(victim, "utf8")).toBe("sentinel\n");
+  });
+
   it("refuses to replace a binding sidecar symlink", () => {
     if (IS_WIN) return;
     const victim = path.join(tmpDir, "binding-victim");
@@ -119,6 +142,22 @@ describe("appendToSpool", () => {
 
     expect(establishSpoolBinding("c".repeat(64)).ok).toBe(false);
     expect(fs.readFileSync(victim, "utf8")).toBe("victim\n");
+  });
+
+  it("preserves malformed existing binding state instead of treating it as absent", () => {
+    fs.writeFileSync(spoolBindingPath(), "malformed-existing-binding\n", { mode: 0o600 });
+
+    expect(establishSpoolBinding("d".repeat(64)).ok).toBe(false);
+    expect(fs.readFileSync(spoolBindingPath(), "utf8")).toBe("malformed-existing-binding\n");
+  });
+
+  it("restores mode 0600 for an unchanged valid binding", () => {
+    if (IS_WIN) return;
+    fs.chmodSync(spoolBindingPath(), 0o644);
+    const binding = fs.readFileSync(spoolBindingPath(), "utf8").trim();
+
+    expect(establishSpoolBinding(binding).ok).toBe(true);
+    expect(fs.statSync(spoolBindingPath()).mode & 0o777).toBe(0o600);
   });
 });
 

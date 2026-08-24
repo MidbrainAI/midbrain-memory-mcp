@@ -447,6 +447,7 @@ async function flushClaudeSpool({ binding, adoptUnbound = false } = {}) {
     } catch {
       return; // No key yet — leave the spool for a later start.
     }
+    if (api.cacheScope !== binding) return;
 
     const flush = beginSpoolFlush();
     if (!flush.claimed) return;
