@@ -238,6 +238,102 @@ describe("spool flush claim", () => {
     expect(beginSpoolFlush().entries.map((e) => e.text)).toEqual(["during"]);
   });
 
+  it("preserves an append opened before claim and written after the snapshot", () => {
+    appendToSpool(entry("before"));
+    const realWriteFile = fs.writeFileSync.bind(fs);
+    let claimed;
+    let intercepted = false;
+    const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, ...args) => {
+      if (!intercepted && typeof file === "number") {
+        const openFile = fs.fstatSync(file);
+        const liveFile = fs.statSync(spoolFilePath());
+        if (openFile.dev === liveFile.dev && openFile.ino === liveFile.ino) {
+          intercepted = true;
+          claimed = beginSpoolFlush();
+        }
+      }
+      return realWriteFile(file, data, ...args);
+    });
+    try {
+      expect(appendToSpool(entry("racing"))).toBe(true);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(intercepted).toBe(true);
+    expect(claimed.entries.map((e) => e.text)).toEqual(["before"]);
+    finishSpoolFlush(claimed, []);
+    expect(beginSpoolFlush().entries.map((e) => e.text)).toEqual(["racing"]);
+  });
+
+  it.each(["live", "processing"])("refuses a %s spool source symlink", (source) => {
+    if (IS_WIN) return;
+    const victim = path.join(tmpDir, `${source}-source-victim.ndjson`);
+    const sourcePath = source === "live" ? spoolFilePath() : `${spoolFilePath()}.processing`;
+    fs.writeFileSync(victim, `${JSON.stringify(entry("outside"))}\n`, { mode: 0o600 });
+    fs.symlinkSync(victim, sourcePath);
+
+    expect(beginSpoolFlush()).toMatchObject({ claimed: false, entries: [] });
+    expect(fs.lstatSync(sourcePath).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(victim, "utf8")).toBe(`${JSON.stringify(entry("outside"))}\n`);
+  });
+
+  it.each(["live", "processing"])("refuses a non-regular %s spool source", (source) => {
+    const sourcePath = source === "live" ? spoolFilePath() : `${spoolFilePath()}.processing`;
+    fs.mkdirSync(sourcePath);
+
+    expect(beginSpoolFlush()).toMatchObject({ claimed: false, entries: [] });
+    expect(fs.lstatSync(sourcePath).isDirectory()).toBe(true);
+  });
+
+  it.skipIf(IS_WIN || !fs.constants.O_NOFOLLOW)("refuses a live source swapped to a symlink without no-follow support", () => {
+    const source = spoolFilePath();
+    const original = `${source}.original`;
+    const victim = path.join(tmpDir, "source-fallback-victim.ndjson");
+    const sourceBytes = `${JSON.stringify(entry("owned"))}\n`;
+    fs.writeFileSync(source, sourceBytes, { mode: 0o600 });
+    fs.writeFileSync(victim, `${JSON.stringify(entry("outside"))}\n`, { mode: 0o600 });
+    const victimBefore = fs.readFileSync(victim);
+    const realOpen = fs.openSync.bind(fs);
+    let swapped = false;
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation((file, flags, ...args) => {
+      if (!swapped && file === source) {
+        fs.renameSync(source, original);
+        fs.symlinkSync(victim, source);
+        swapped = true;
+      }
+      const fallbackFlags = typeof flags === "number" ? flags & ~fs.constants.O_NOFOLLOW : flags;
+      return realOpen(file, fallbackFlags, ...args);
+    });
+    try {
+      expect(beginSpoolFlush()).toMatchObject({ claimed: false, entries: [] });
+    } finally {
+      openSpy.mockRestore();
+    }
+
+    expect(swapped).toBe(true);
+    expect(fs.lstatSync(source).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(original, "utf8")).toBe(sourceBytes);
+    expect(fs.readFileSync(victim)).toEqual(victimBefore);
+  });
+
+  it("preserves processing evidence replaced before finish", () => {
+    if (IS_WIN) return;
+    appendToSpool(entry("claimed"));
+    const flush = beginSpoolFlush();
+    const original = `${flush.processingFile}.original`;
+    const victim = path.join(tmpDir, "finish-source-victim.ndjson");
+    fs.writeFileSync(victim, "sentinel\n");
+    fs.renameSync(flush.processingFile, original);
+    fs.symlinkSync(victim, flush.processingFile);
+
+    finishSpoolFlush(flush, []);
+
+    expect(fs.lstatSync(flush.processingFile).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(victim, "utf8")).toBe("sentinel\n");
+    expect(fs.existsSync(original)).toBe(true);
+  });
+
   it.skipIf(IS_WIN || !fs.constants.O_NOFOLLOW)("preserves processing when survivor target is a symlink without no-follow support", () => {
     appendToSpool(entry("survivor"));
     const flush = beginSpoolFlush();

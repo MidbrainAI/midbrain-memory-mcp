@@ -99,6 +99,41 @@ function isSymlink(target) {
   }
 }
 
+function sameFileIdentity(left, right) {
+  return Boolean(left && right && left.dev === right.dev && left.ino === right.ino);
+}
+
+function pathMatchesFile(target, stat) {
+  try {
+    const current = fs.lstatSync(target);
+    return current.isFile() && sameFileIdentity(current, stat);
+  } catch {
+    return false;
+  }
+}
+
+function readRegularSource(target) {
+  let fd;
+  try {
+    const before = fs.lstatSync(target);
+    if (!before.isFile()) return null;
+    const flags = fs.constants.O_RDONLY
+      | (fs.constants.O_NOFOLLOW ?? 0)
+      | (fs.constants.O_NONBLOCK ?? 0);
+    fd = fs.openSync(target, flags);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || !sameFileIdentity(before, stat)) return null;
+    const raw = fs.readFileSync(fd);
+    return pathMatchesFile(target, stat) ? { raw, stat } : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
 function validBinding(value) {
   return typeof value === "string" && BINDING_RE.test(value);
 }
@@ -289,7 +324,7 @@ function appendBufferSafely(file, buffer) {
     fs.writeFileSync(fd, Buffer.concat([prefix, buffer]));
     fs.fsyncSync(fd);
     try { fs.fchmodSync(fd, 0o600); } catch { /* ignore */ }
-    return true;
+    return pathMatchesFile(file, fs.fstatSync(fd)) ? "stable" : "moved";
   } catch {
     return false;
   } finally {
@@ -317,7 +352,9 @@ export function appendToSpool(entry) {
     ensureSpoolDir();
     const spoolFile = spoolFilePath();
     if (isSymlink(spoolFile)) return; // never write through a symlink
-    if (!appendBufferSafely(spoolFile, line)) return false;
+    const result = appendBufferSafely(spoolFile, line);
+    if (!result) return false;
+    if (result === "moved" && appendBufferSafely(spoolFile, line) !== "stable") return false;
     return true;
   } catch {
     // Best effort — never crash capture over spooling.
@@ -339,21 +376,46 @@ export function beginSpoolFlush() {
   const lockFile = lockFilePath();
   let flush;
   try {
-    if (!fs.existsSync(spoolFile) && !fs.existsSync(processingFile)) return empty;
+    let source = readRegularSource(processingFile);
+    if (!source) {
+      try {
+        fs.lstatSync(processingFile);
+        return empty;
+      } catch (error) {
+        if (error?.code !== "ENOENT") return empty;
+      }
+      source = readRegularSource(spoolFile);
+      if (!source) return empty;
+    }
     ensureSpoolDir();
     const token = acquireLock(lockFile);
     if (!token) return empty;
     flush = { claimed: true, entries: [], liveFile: spoolFile, processingFile, lockFile, token };
-    if (!fs.existsSync(processingFile)) {
+    if (!pathMatchesFile(processingFile, source.stat)) {
       try {
         fs.renameSync(spoolFile, processingFile);
       } catch {
         releaseLock(flush);
         return empty;
       }
+      if (!pathMatchesFile(processingFile, source.stat)) {
+        releaseLock(flush);
+        return empty;
+      }
     }
-    const records = recordsFromRaw(fs.readFileSync(processingFile));
-    return { ...flush, records, entries: records.flatMap((record) => record.entry ? [record.entry] : []) };
+    const claimed = readRegularSource(processingFile);
+    if (!claimed || !sameFileIdentity(claimed.stat, source.stat)) {
+      releaseLock(flush);
+      return empty;
+    }
+    const records = recordsFromRaw(claimed.raw);
+    return {
+      ...flush,
+      records,
+      snapshotRaw: claimed.raw,
+      sourceStat: claimed.stat,
+      entries: records.flatMap((record) => record.entry ? [record.entry] : []),
+    };
   } catch {
     if (flush) releaseLock(flush);
     return empty;
@@ -372,13 +434,23 @@ export function beginSpoolFlush() {
 export function finishSpoolFlush(flush, survivors) {
   if (!flush || !flush.claimed || !ownsLock(flush)) return;
   try {
+    const current = readRegularSource(flush.processingFile);
+    if (!current || !sameFileIdentity(current.stat, flush.sourceStat)) return;
+    const snapshot = flush.snapshotRaw || Buffer.alloc(0);
+    if (current.raw.length < snapshot.length || !current.raw.subarray(0, snapshot.length).equals(snapshot)) return;
+    const appendedTail = current.raw.subarray(snapshot.length);
+    if (appendedTail.length > 0) {
+      const live = readRegularSource(flush.liveFile);
+      if (!live || live.raw.indexOf(appendedTail) === -1) return;
+    }
     const survivorSet = new Set(survivors);
     const preserved = Buffer.concat((flush.records || []).flatMap((record) =>
       !record.entry || survivorSet.has(record.entry) ? [record.bytes] : []));
     if (preserved.length > 0) {
       ensureSpoolDir();
-      if (!appendBufferSafely(flush.liveFile, preserved)) return;
+      if (appendBufferSafely(flush.liveFile, preserved) !== "stable") return;
     }
+    if (!pathMatchesFile(flush.processingFile, current.stat)) return;
     fs.unlinkSync(flush.processingFile);
   } catch {
     // Best effort. Leaving the processing file is recoverable next flush.
@@ -392,10 +464,12 @@ export function hasSpooledEntries() {
   const spoolFile = spoolFilePath();
   const processingFile = processingFilePath();
   try {
-    return fs.statSync(spoolFile).size > 0;
+    const stat = fs.lstatSync(spoolFile);
+    return stat.isFile() && stat.size > 0;
   } catch {
     try {
-      return fs.statSync(processingFile).size > 0;
+      const stat = fs.lstatSync(processingFile);
+      return stat.isFile() && stat.size > 0;
     } catch {
       return false;
     }
@@ -404,7 +478,8 @@ export function hasSpooledEntries() {
 
 function countEntriesInFile(filePath) {
   try {
-    return recordsFromRaw(fs.readFileSync(filePath)).filter((record) => record.entry).length;
+    const source = readRegularSource(filePath);
+    return source ? recordsFromRaw(source.raw).filter((record) => record.entry).length : 0;
   } catch {
     return 0;
   }
