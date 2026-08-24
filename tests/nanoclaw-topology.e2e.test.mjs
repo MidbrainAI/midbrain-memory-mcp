@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "fs/promises";
 import path from "path";
 import { pathToFileURL } from "node:url";
@@ -466,6 +466,26 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
     const durableRoot = path.join(env.home, ".claude", ".midbrain");
     const durableShim = path.join(durableRoot, "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
     const cachedShim = path.join(env.home, ".midbrain", "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+    const fetchLog = path.join(env.tmp, "first-wake-fetch.ndjson");
+    const preload = path.join(env.tmp, "first-wake-preload.mjs");
+    await fs.writeFile(preload, `
+      import fs from "node:fs";
+      globalThis.fetch = async (url, opts = {}) => {
+        const headers = opts.headers || {};
+        fs.appendFileSync(process.env.MIDBRAIN_TEST_FETCH_LOG, JSON.stringify({
+          url: String(url),
+          hasAuth: typeof headers.Authorization === "string" && headers.Authorization.length > 0,
+          body: opts.body ? JSON.parse(opts.body) : undefined,
+        }) + "\\n");
+        return { ok: true, status: 201, text: async () => "", json: async () => ({}) };
+      };
+    `);
+    const childEnv = env.childEnv({
+      NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
+      MIDBRAIN_TEST_FETCH_LOG: fetchLog,
+    });
+    expect(childEnv).not.toHaveProperty("MIDBRAIN_API_KEY");
+    expect(childEnv).not.toHaveProperty("MIDBRAIN_STATE_DIR");
 
     await startMcpServer({
       serverFactory: () => ({
@@ -477,6 +497,21 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
             const body = await fs.readFile(shim, "utf8");
             expect(body).toContain("MIDBRAIN_STATE_DIR");
             expect(body).not.toContain(TEST_KEY);
+            const suffix = shim === cachedShim ? "cached" : "durable";
+            const user = spawnSync("/bin/sh", [shim, "user"], {
+              input: JSON.stringify({ prompt: `first-user-${suffix}`, cwd: env.home }),
+              encoding: "utf8",
+              timeout: 30_000,
+              env: childEnv,
+            });
+            const assistant = spawnSync("/bin/sh", [shim, "assistant"], {
+              input: JSON.stringify({ last_assistant_message: `first-assistant-${suffix}`, cwd: env.home }),
+              encoding: "utf8",
+              timeout: 30_000,
+              env: childEnv,
+            });
+            expect(user.status).toBe(0);
+            expect(assistant.status).toBe(0);
           }
           const settings = JSON.parse(await fs.readFile(env.paths.claudeSettings, "utf8"));
           const commands = Object.values(settings.hooks)
@@ -489,6 +524,20 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
       checkForUpdateFn: () => undefined,
       log: () => {},
     });
+
+    const posts = (await fs.readFile(fetchLog, "utf8")).trim().split("\n").filter(Boolean)
+      .map(JSON.parse).filter((entry) => entry.url.includes("/memories/episodic"));
+    expect(posts).toHaveLength(4);
+    expect(posts.every((post) => post.hasAuth)).toBe(true);
+    expect(posts.every((post) => post.body?.memory_metadata?.client === "nanoclaw")).toBe(true);
+    expect(posts.map((post) => post.body.text).sort()).toEqual([
+      "first-assistant-cached",
+      "first-assistant-durable",
+      "first-user-cached",
+      "first-user-durable",
+    ]);
+    await expect(fs.stat(path.join(env.home, ".claude", ".midbrain-spool.ndjson")))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("removes only its partial marker after an injected post-create write failure so the next repair succeeds", async () => {
@@ -898,12 +947,7 @@ describe.skipIf(IS_WIN)("Issue #52 — opener recovery (spool + flush)", () => {
     await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("bounded key-wait: a key that appears mid-wait is used, and nothing is spooled", async () => {
-    // Seed the global key BEFORE the hook runs but let the wait be generous:
-    // the very first resolution attempt should already succeed (fast path).
-    await fs.mkdir(path.dirname(env.paths.globalKey), { recursive: true });
-    await fs.writeFile(env.paths.globalKey, `${TEST_KEY}\n`, { mode: 0o600 });
-
+  it("bounded key-wait: a key created after child start is used, and nothing is spooled", async () => {
     // This child records fetches so we can assert a real authenticated POST.
     const fetchLog = path.join(env.tmp, "keywait-fetch.ndjson");
     const preload = path.join(env.tmp, "keywait-preload.mjs");
@@ -920,17 +964,27 @@ describe.skipIf(IS_WIN)("Issue #52 — opener recovery (spool + flush)", () => {
         return { ok: false, status: 404, text: async () => "", json: async () => ({}) };
       };
     `);
-    const result = spawnSync("/bin/sh", [stableShimPath("claude"), "user"], {
-      input: JSON.stringify({ prompt: "captured not spooled", cwd: workspace }),
-      encoding: "utf8",
-      timeout: 30_000,
+    await expect(fs.stat(env.paths.globalKey)).rejects.toMatchObject({ code: "ENOENT" });
+    const child = spawn("/bin/sh", [stableShimPath("claude"), "user"], {
+      stdio: ["pipe", "pipe", "pipe"],
       env: env.childEnv({
         NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
         MIDBRAIN_TEST_FETCH_LOG: fetchLog,
+        MIDBRAIN_KEY_WAIT_MS: "1500",
+        MIDBRAIN_KEY_WAIT_POLL_MS: "20",
       }),
     });
+    child.stdin.end(JSON.stringify({ prompt: "captured not spooled", cwd: workspace }));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(child.exitCode).toBeNull();
+    await fs.mkdir(path.dirname(env.paths.globalKey), { recursive: true });
+    await fs.writeFile(env.paths.globalKey, `${TEST_KEY}\n`, { mode: 0o600 });
+    const status = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
 
-    expect(result.status).toBe(0);
+    expect(status).toBe(0);
     await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
     const log = (await fs.readFile(fetchLog, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
     const episodic = log.filter((r) => r.url.includes("/memories/episodic"));
