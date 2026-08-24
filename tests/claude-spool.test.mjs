@@ -224,8 +224,23 @@ describe("appendToSpool", () => {
     },
   );
 
-  it("reads an unchanged valid binding through the guarded source path", () => {
-    expect(readSpoolBinding()).toBe("0".repeat(64));
+  it("keeps inspection and same-binding reads nonblocking", () => {
+    const binding = "0".repeat(64);
+    const bindingFlags = [];
+    const realOpen = fs.openSync.bind(fs);
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation((file, flags, ...args) => {
+      if (file === spoolBindingPath() && typeof flags === "number") bindingFlags.push(flags);
+      return realOpen(file, flags, ...args);
+    });
+    try {
+      expect(readSpoolBinding()).toBe(binding);
+      expect(establishSpoolBinding(binding).ok).toBe(true);
+    } finally {
+      openSpy.mockRestore();
+    }
+
+    expect(bindingFlags.length).toBeGreaterThanOrEqual(3);
+    expect(bindingFlags.every((flags) => (flags & fs.constants.O_NONBLOCK) !== 0)).toBe(true);
   });
 });
 
