@@ -381,6 +381,18 @@ describe("spool flush claim", () => {
     },
   );
 
+  it("returns promptly and preserves a directory lock path", () => {
+    appendToSpool(entry("pending-behind-lock-directory"));
+    const lockFile = `${spoolFilePath()}.lock`;
+    fs.mkdirSync(lockFile);
+    const started = Date.now();
+
+    expect(beginSpoolFlush()).toMatchObject({ claimed: false, entries: [] });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(fs.lstatSync(lockFile).isDirectory()).toBe(true);
+    expect(countSpooledEntries()).toBe(1);
+  });
+
   it("refuses a dead-PID lock symlink without replacing it", () => {
     if (IS_WIN) return;
     appendToSpool(entry("pending-behind-dead-lock-symlink"));
