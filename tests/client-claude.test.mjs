@@ -510,6 +510,43 @@ describe("Claude capture-assistant hook wrapper", () => {
   });
 });
 
+describe("Claude NanoClaw spool binding boundary", () => {
+  it.each([
+    ["capture-user.mjs", { prompt: "project-bound opener" }],
+    ["capture-assistant.mjs", { last_assistant_message: "project-bound reply" }],
+  ])("%s does not spool a hard project-key failure under the global sidecar", (script, payload) => {
+    const home = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-binding-home-"));
+    const project = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-binding-project-"));
+    fsSync.mkdirSync(path.join(home, ".config", "midbrain"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".config", "midbrain", ".midbrain-key"), "global-key\n", { mode: 0o600 });
+    fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-capture-client"), "nanoclaw\n", { mode: 0o600 });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-spool-binding"), `${"a".repeat(64)}\n`, { mode: 0o600 });
+    fsSync.mkdirSync(path.join(project, ".midbrain"), { recursive: true });
+    fsSync.writeFileSync(path.join(project, ".midbrain", ".midbrain-key"), "", { mode: 0o600 });
+
+    const result = spawnSync(process.execPath, [
+      path.join(REPO_ROOT, "plugins", "claude-code", script),
+    ], {
+      input: JSON.stringify({ ...payload, cwd: project }),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        MIDBRAIN_KEY_WAIT_MS: "0",
+        MIDBRAIN_API_KEY: undefined,
+        MIDBRAIN_API_URL: undefined,
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(fsSync.existsSync(path.join(home, ".claude", ".midbrain-spool.ndjson"))).toBe(false);
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(project, { recursive: true, force: true });
+  });
+});
+
 // ===================================================================
 // capture-client label resolution (issue #48)
 // ===================================================================

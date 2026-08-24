@@ -9,7 +9,7 @@
  * Fails silently on any error.
  */
 
-import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, log, finishHook } from "./common.mjs";
+import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
@@ -26,11 +26,11 @@ async function captureAssistant() {
   let api;
   try {
     api = await createApi(input.cwd, { waitForKey: shouldWaitForKey(client) });
-  } catch {
+  } catch (error) {
     // No key even after the bounded wait (issue #52): spool the assistant reply
     // to the durable ~/.claude surface for a later server-start flush.
     if (text) {
-      if (client === "nanoclaw" && appendToSpool({
+      if (client === "nanoclaw" && isNoKeyError(error) && appendToSpool({
         text,
         role: "assistant",
         memory_metadata: { client },

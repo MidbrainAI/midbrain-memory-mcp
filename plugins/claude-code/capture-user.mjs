@@ -14,7 +14,7 @@
  * turns within one session. min_score=0.5 limits repetition to relevant entries.
  */
 
-import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, log, finishHook } from "./common.mjs";
+import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
@@ -27,11 +27,11 @@ async function captureUser() {
   let api;
   try {
     api = await createApi(input.cwd, { waitForKey: shouldWaitForKey(client) });
-  } catch {
+  } catch (error) {
     // No key even after the bounded wait (issue #52): spool the opener to the
     // durable ~/.claude surface so a later authenticated server-start flush
     // recovers it, instead of dropping it.
-    if (client === "nanoclaw" && appendToSpool({
+    if (client === "nanoclaw" && isNoKeyError(error) && appendToSpool({
       text: input.prompt,
       role: "user",
       memory_metadata: { client },

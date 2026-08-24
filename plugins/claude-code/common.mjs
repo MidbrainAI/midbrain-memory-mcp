@@ -39,7 +39,7 @@ function keyWaitPollMs() {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** True only for the specific "no key resolved" throw, not other config errors. */
-function isNoKeyError(err) {
+export function isNoKeyError(err) {
   return Boolean(err && typeof err.message === "string" && err.message.includes(NO_KEY_ERROR_FRAGMENT));
 }
 
