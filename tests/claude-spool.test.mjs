@@ -281,6 +281,19 @@ describe("spool flush claim", () => {
     expect(hasSpooledEntries()).toBe(true);
   });
 
+  it.each(["live", "processing"])("does not count a symlink or non-regular %s source", (source) => {
+    const sourcePath = source === "live" ? spoolFilePath() : `${spoolFilePath()}.processing`;
+    if (!IS_WIN) {
+      const victim = path.join(tmpDir, `${source}-has-entries-victim`);
+      fs.writeFileSync(victim, "outside\n", { mode: 0o600 });
+      fs.symlinkSync(victim, sourcePath);
+      expect(hasSpooledEntries()).toBe(false);
+      fs.unlinkSync(sourcePath);
+    }
+    fs.mkdirSync(sourcePath);
+    expect(hasSpooledEntries()).toBe(false);
+  });
+
   it("reclaims an aged crash-truncated lock and recovers the pending batch", () => {
     appendToSpool(entry("recover-after-lock-crash"));
     const lockFile = `${spoolFilePath()}.lock`;
