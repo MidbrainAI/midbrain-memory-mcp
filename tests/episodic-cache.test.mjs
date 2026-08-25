@@ -55,7 +55,7 @@ describe("appendToCache", () => {
     appendToCache({ text: "second", role: "assistant" });
 
     const cacheFile = path.join(tmpDir, "midbrain-episodic-cache.ndjson");
-    const lines = fs.readFileSync(cacheFile, "utf8").trim().split("\n");
+    const lines = fs.readFileSync(cacheFile, "utf8").trim().split("\n").filter(Boolean);
     expect(lines).toHaveLength(2);
 
     const first = JSON.parse(lines[0]);
@@ -385,7 +385,7 @@ describe("safe flush handoff", () => {
     expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([malformed, torn]));
   });
 
-  it("preserves the exact raw bytes of a finite unattempted tail", () => {
+  it("preserves every original byte of a finite unattempted tail", () => {
     const scope = HEX_A;
     const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
     const first = Buffer.from('{"text":"first","role":"user","ts":1}\n');
@@ -396,7 +396,11 @@ describe("safe flush handoff", () => {
     const flush = beginCacheFlush(scope);
     finishCacheFlush(flush, flush.entries.slice(1));
 
-    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([second, third]));
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([
+      Buffer.from("\n"),
+      second,
+      third,
+    ]));
   });
 
   it("preserves a complete append through a descriptor opened before handoff", () => {

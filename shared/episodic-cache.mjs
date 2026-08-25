@@ -27,6 +27,7 @@ const SCOPED_CACHE_PREFIX = "midbrain-episodic-cache-";
 const CACHE_EXT = ".ndjson";
 const PROCESSING_EXT = ".processing";
 const LOCK_EXT = ".lock";
+const LINE_FEED = Buffer.from("\n");
 
 /**
  * Explicit test override for the cache directory. When null the directory is
@@ -165,13 +166,7 @@ function appendCacheBytes(target, bytes) {
     fd = fs.openSync(target, flags, 0o600);
     const opened = fs.fstatSync(fd);
     if (!opened.isFile()) return false;
-    let prefix = Buffer.alloc(0);
-    if (opened.size > 0 && bytes.length > 0 && bytes[0] !== 0x0a) {
-      const last = Buffer.alloc(1);
-      fs.readSync(fd, last, 0, 1, opened.size - 1);
-      if (last[0] !== 0x0a) prefix = Buffer.from("\n");
-    }
-    fs.writeFileSync(fd, prefix.length > 0 ? Buffer.concat([prefix, bytes]) : bytes);
+    fs.writeFileSync(fd, bytes);
     try { fs.fchmodSync(fd, 0o600); } catch { /* ignore */ }
     const written = fs.fstatSync(fd);
     if (!sameFileIdentity(opened, written)) return false;
@@ -226,10 +221,13 @@ function parseCacheRaw(raw) {
     const end = newline === -1 ? raw.length : newline + 1;
     const bytes = Buffer.from(raw.subarray(start, end));
     const line = bytes.toString("utf8").trim();
-    let entry = null;
-    if (line) {
-      try { entry = JSON.parse(line); } catch { /* preserve below */ }
+    if (!line) {
+      // Leading LF separators are framing, not malformed cache evidence.
+      start = end;
+      continue;
     }
+    let entry = null;
+    try { entry = JSON.parse(line); } catch { /* preserve below */ }
     if (entry && typeof entry.text === "string" && typeof entry.role === "string") {
       entries.push(entry);
       segments.push({ entry, bytes });
@@ -271,7 +269,10 @@ export function appendToCache(entry, scope) {
   try {
     ensureCacheDir();
     const cacheFile = cacheFileForScope(scope);
-    const line = Buffer.from(JSON.stringify({ ...entry, ts: Date.now() }) + "\n");
+    const line = Buffer.concat([
+      LINE_FEED,
+      Buffer.from(`${JSON.stringify({ ...entry, ts: Date.now() })}\n`),
+    ]);
     if (appendCacheBytes(cacheFile, line) === "moved"
       && appendCacheBytes(cacheFile, line) === "moved") appendCacheBytes(cacheFile, line);
   } catch {
@@ -346,8 +347,10 @@ export function finishCacheFlush(flush, survivors) {
     const snapshot = flush.snapshotRaw || Buffer.alloc(0);
     if (current.raw.length < snapshot.length
       || !current.raw.subarray(0, snapshot.length).equals(snapshot)) return;
+    const retained = preservedCacheBytes(flush, survivors);
     const pending = Buffer.concat([
-      preservedCacheBytes(flush, survivors),
+      survivors.length > 0 && retained.length > 0 ? LINE_FEED : Buffer.alloc(0),
+      retained,
       current.raw.subarray(snapshot.length),
     ]);
     if (pending.length > 0) {
