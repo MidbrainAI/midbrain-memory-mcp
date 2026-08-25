@@ -385,6 +385,27 @@ describe("safe flush handoff", () => {
     expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([malformed, torn]));
   });
 
+  it("separates malformed-only restoration from a concurrent torn live prefix", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const malformed = Buffer.from('evil\",\"role\":\"user\",\"ts\":1}\n');
+    const tornPrefix = Buffer.from('{\"text\":\"');
+    fs.writeFileSync(cacheFile, malformed);
+
+    const flush = beginCacheFlush(scope);
+    expect(flush.entries).toEqual([]);
+    fs.writeFileSync(cacheFile, tornPrefix);
+    finishCacheFlush(flush, []);
+
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([
+      tornPrefix,
+      Buffer.from("\n"),
+      malformed,
+    ]));
+    const retry = beginCacheFlush(scope);
+    expect(retry.entries).toEqual([]);
+  });
+
   it("preserves every original byte of a finite unattempted tail", () => {
     const scope = HEX_A;
     const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
