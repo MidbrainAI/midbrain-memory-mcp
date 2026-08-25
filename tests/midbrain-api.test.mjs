@@ -470,13 +470,21 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
   it("caches entry on network failure", async () => {
     fetchSpy.mockRejectedValueOnce(new Error("network down"));
 
-    await api.storeEpisodic("hello", "user", log, { client: "opencode" });
+    await api.storeEpisodic("hello", "user", log, {
+      client: "opencode",
+      cwd: "~/project",
+      session_id: "session-cache",
+    });
 
     const cached = readAndClearCache(cacheScopeForKey("test-key"));
     expect(cached).toHaveLength(1);
     expect(cached[0].text).toBe("hello");
     expect(cached[0].role).toBe("user");
-    expect(cached[0].memory_metadata).toEqual({ client: "opencode" });
+    expect(cached[0].memory_metadata).toEqual({
+      client: "opencode",
+      cwd: "~/project",
+      session_id: "session-cache",
+    });
   });
 
   it("caches entry on non-2xx response", async () => {

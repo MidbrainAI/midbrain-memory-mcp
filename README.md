@@ -927,11 +927,16 @@ Auth: send an `Authorization` header with your local API key, except for
 | GET | `/api/v1/memories/semantic/files` | -- | `[{source, chunk_count}]` |
 | GET | `/api/v1/memories/semantic/files/{path}` | `?start_line=1&num_lines=200` | `{path, start_line, content}` |
 | GET | `/api/v1/memories/search/procedural` | `?query=...&limit=5&min_score=0.5&exclude_ids=...` | `[{id, title, content, source_ids, score}]` |
-| POST | `/api/v1/memories/episodic` | `{"text": "...", "role": "user\|assistant", "memory_metadata": {"client": "opencode"}}` | Created memory |
+| POST | `/api/v1/memories/episodic` | `{"text": "...", "role": "user\|assistant", "memory_metadata": {"client": "opencode", "cwd": "~/proj", "session_id": "..."}}` | Created memory |
 | GET | `/health` | -- | `{"status": "ok"}` |
 
 `memory_metadata` on POST is optional. Values must be strings. Capture hooks
-tag each memory with the originating client (`opencode`, `claude`, or `codex`).
+always tag each memory with the originating client (`opencode`, `claude`,
+`nanoclaw`, `codex`, or `hermes`). When the harness provides them, hooks
+also add scoping fields: `cwd` (own-home paths use `~/`, other-user home
+names are redacted, and non-user system paths remain absolute) and
+`session_id` (the harness's own session/conversation id, forwarded verbatim).
+Both are omitted when unavailable or blank.
 
 ---
 

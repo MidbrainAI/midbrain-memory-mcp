@@ -5,6 +5,7 @@
  * injection is disabled by default and only runs when explicitly opted in.
  *
  * Stdin JSON: { prompt: "...", session_id, cwd, ... }
+ * session_id and cwd are forwarded into episodic memory_metadata for scoping.
  * Stdout JSON (on opted-in PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
  * Capture failures are non-fatal. Capture completes before finishHook(), whose
  * throttled self-update check may delay hook exit by up to UPDATE_FETCH_TIMEOUT_MS.
@@ -16,6 +17,7 @@
 
 import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
+import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
 async function captureUser() {
@@ -23,6 +25,11 @@ async function captureUser() {
   if (!input?.prompt) return;
 
   const client = await captureClientLabel();
+  const metadata = buildCaptureMetadata({
+    client,
+    cwd: input.cwd,
+    sessionId: input.session_id,
+  });
 
   let api;
   try {
@@ -34,13 +41,13 @@ async function captureUser() {
     if (client === "nanoclaw" && isNoKeyError(error) && appendToSpool({
       text: input.prompt,
       role: "user",
-      memory_metadata: { client },
+      memory_metadata: metadata,
     })) log.warn("NO KEY — spooling for recovery");
     return;
   }
 
   // Episodic capture must complete before default-off exits.
-  await api.storeEpisodic(input.prompt, "user", log, { client });
+  await api.storeEpisodic(input.prompt, "user", log, metadata);
 
   if (!isPkInjectionEnabled()) return;
 

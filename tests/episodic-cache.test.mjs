@@ -69,11 +69,19 @@ describe("appendToCache", () => {
   });
 
   it("preserves memory_metadata in cached entries", () => {
-    appendToCache({ text: "hi", role: "user", memory_metadata: { client: "opencode" } });
+    appendToCache({
+      text: "hi",
+      role: "user",
+      memory_metadata: { client: "opencode", cwd: "~/project", session_id: "session-cache" },
+    });
 
     const cacheFile = path.join(tmpDir, "midbrain-episodic-cache.ndjson");
     const entry = JSON.parse(fs.readFileSync(cacheFile, "utf8").trim());
-    expect(entry.memory_metadata).toEqual({ client: "opencode" });
+    expect(entry.memory_metadata).toEqual({
+      client: "opencode",
+      cwd: "~/project",
+      session_id: "session-cache",
+    });
   });
 
   it("creates cache directory as 0700 and cache file as 0600 where supported", () => {

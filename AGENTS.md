@@ -182,6 +182,13 @@ Key-write policy at install time:
 
 ## Capture Paths
 
+All capture paths build episodic `memory_metadata` through
+`shared/capture-metadata.mjs` (`buildCaptureMetadata`). The originating
+`client` is always sent. For `cwd`, own-home paths use `~/`, other-user
+home names are redacted, and non-user system paths remain absolute.
+`session_id` is forwarded verbatim when it is a nonblank string. Optional
+fields are omitted when absent, blank, or non-string.
+
 OpenCode:
 
 - `plugins/opencode/midbrain-memory.ts` runs in Bun.

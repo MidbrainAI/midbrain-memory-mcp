@@ -3,7 +3,8 @@
  * Claude Code hook: Stop
  * Captures the assistant's final response as episodic memory.
  *
- * Stdin JSON: { last_assistant_message: "...", transcript_path, stop_hook_active, ... }
+ * Stdin JSON: { last_assistant_message: "...", transcript_path, stop_hook_active, session_id, cwd, ... }
+ * session_id and cwd are forwarded into episodic memory_metadata for scoping.
  * If stop_hook_active, skips capture to prevent loops, then completes the
  * non-fatal hook finish/update path.
  * Fails silently on any error.
@@ -13,6 +14,7 @@ import fs from "node:fs/promises";
 
 import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
+import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 const NANOCLAW_SEND_MESSAGE = "mcp__nanoclaw__send_message";
@@ -54,6 +56,11 @@ async function captureAssistant() {
   if (!input.last_assistant_message) return;
 
   const client = await captureClientLabel();
+  const metadata = buildCaptureMetadata({
+    client,
+    cwd: input.cwd,
+    sessionId: input.session_id,
+  });
   let text = scrubInjectedPkContext(input.last_assistant_message);
   if (client === "nanoclaw" && INTERNAL_ONLY_RE.test(text)) {
     text = scrubInjectedPkContext(await deliveredNanoclawMessage(input.transcript_path));
@@ -70,13 +77,13 @@ async function captureAssistant() {
       if (client === "nanoclaw" && isNoKeyError(error) && appendToSpool({
         text,
         role: "assistant",
-        memory_metadata: { client },
+        memory_metadata: metadata,
       })) log.warn("NO KEY — spooling for recovery");
     }
     return;
   }
 
-  if (text) await api.storeEpisodic(text, "assistant", log, { client });
+  if (text) await api.storeEpisodic(text, "assistant", log, metadata);
 }
 
 try {

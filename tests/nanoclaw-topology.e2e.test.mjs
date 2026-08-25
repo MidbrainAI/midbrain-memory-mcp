@@ -922,16 +922,44 @@ describe.skipIf(IS_WIN)("Issue #52 — opener recovery (spool + flush)", () => {
     });
   }
 
-  it("cold wake with no key: the opener is spooled to ~/.claude, not dropped (exit 0)", async () => {
+  it("cold wake with no key spools complete user and assistant metadata", async () => {
     // No key on any resolution path, no MIDBRAIN_* in the hook child env.
-    const result = runShim("user", { prompt: "the very first message", cwd: workspace });
+    const user = runShim("user", {
+      prompt: "the very first message",
+      cwd: workspace,
+      session_id: "  opener-session  ",
+    });
+    const assistant = runShim("assistant", {
+      last_assistant_message: "the very first reply",
+      cwd: workspace,
+      session_id: "reply-session",
+    });
 
-    expect(result.status).toBe(0);
+    expect(user.status).toBe(0);
+    expect(assistant.status).toBe(0);
     await assertSandboxed(env, spoolPath());
     const spooled = await readSpool();
-    expect(spooled).toHaveLength(1);
-    expect(spooled[0].text).toBe("the very first message");
-    expect(spooled[0].role).toBe("user");
+    expect(spooled).toHaveLength(2);
+    expect(spooled.map(({ text, role, memory_metadata }) => ({ text, role, memory_metadata }))).toEqual([
+      {
+        text: "the very first message",
+        role: "user",
+        memory_metadata: {
+          client: "nanoclaw",
+          cwd: "~/workspace",
+          session_id: "  opener-session  ",
+        },
+      },
+      {
+        text: "the very first reply",
+        role: "assistant",
+        memory_metadata: {
+          client: "nanoclaw",
+          cwd: "~/workspace",
+          session_id: "reply-session",
+        },
+      },
+    ]);
     if (!IS_WIN) {
       const { mode } = await fs.stat(spoolPath());
       expect(mode & 0o777).toBe(0o600);
@@ -1018,8 +1046,16 @@ describe("Issue #52 — server-start spool flush discipline", () => {
   it("server-start flush drains the spool once the key is present (each entry POSTed once)", async () => {
     // Spool two entries as a keyless hook would.
     const { appendToSpool } = await import("../shared/claude-spool.mjs");
-    appendToSpool({ text: "opener one", role: "user", memory_metadata: { client: "nanoclaw" } });
-    appendToSpool({ text: "reply one", role: "assistant", memory_metadata: { client: "nanoclaw" } });
+    appendToSpool({
+      text: "opener one",
+      role: "user",
+      memory_metadata: { client: "nanoclaw", cwd: "~/user", session_id: "  user-session  " },
+    });
+    appendToSpool({
+      text: "reply one",
+      role: "assistant",
+      memory_metadata: { client: "nanoclaw", cwd: "~/assistant", session_id: "assistant-session" },
+    });
 
     const posts = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, opts = {}) => {
@@ -1041,6 +1077,16 @@ describe("Issue #52 — server-start spool flush discipline", () => {
     }
 
     expect(posts.map((p) => p.text).sort()).toEqual(["opener one", "reply one"]);
+    expect(posts.find((post) => post.text === "opener one").memory_metadata).toEqual({
+      client: "nanoclaw",
+      cwd: "~/user",
+      session_id: "  user-session  ",
+    });
+    expect(posts.find((post) => post.text === "reply one").memory_metadata).toEqual({
+      client: "nanoclaw",
+      cwd: "~/assistant",
+      session_id: "assistant-session",
+    });
     // Spool cleared after a fully-successful flush.
     await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
   });
