@@ -154,6 +154,7 @@ describe("readAndClearCache", () => {
     expect(entries).toHaveLength(2);
     expect(entries[0].text).toBe("good");
     expect(entries[1].text).toBe("also good");
+    expect(fs.readFileSync(cacheFile, "utf8")).toBe("not json at all\n");
   });
 
   it("skips entries missing required fields", () => {
@@ -170,16 +171,16 @@ describe("readAndClearCache", () => {
     expect(entries[0].text).toBe("valid");
   });
 
-  it("removes corrupted file and returns empty array", () => {
+  it("preserves corrupted raw evidence and returns an empty array", () => {
     const cacheFile = path.join(tmpDir, "midbrain-episodic-cache.ndjson");
     // Write binary garbage (non-UTF8-decodable data won't happen with writeFileSync,
     // but a truncated file with no valid lines simulates corruption).
-    fs.writeFileSync(cacheFile, Buffer.from([0x80, 0x81, 0x82, 0x00, 0xff]), "binary");
+    const raw = Buffer.from([0x80, 0x81, 0x82, 0x00, 0xff]);
+    fs.writeFileSync(cacheFile, raw);
 
     const entries = readAndClearCache();
     expect(entries).toEqual([]);
-    // File should be cleaned up.
-    expect(fs.existsSync(cacheFile)).toBe(false);
+    expect(fs.readFileSync(cacheFile)).toEqual(raw);
   });
 });
 
@@ -243,6 +244,38 @@ describe("safe flush handoff", () => {
 
     finishCacheFlush(recoveredFlush, []);
     expect(hasCachedEntries(scope)).toBe(false);
+  });
+
+  it("preserves torn and structurally invalid raw segments after valid entries succeed", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const malformed = Buffer.from('{"text":42,"role":"user"}\n');
+    const torn = Buffer.from('{"text":"torn');
+    fs.writeFileSync(cacheFile, Buffer.concat([
+      Buffer.from('{"text":"valid","role":"user","ts":1}\n'),
+      malformed,
+      torn,
+    ]));
+
+    const flush = beginCacheFlush(scope);
+    expect(flush.entries.map((entry) => entry.text)).toEqual(["valid"]);
+    finishCacheFlush(flush, []);
+
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([malformed, torn]));
+  });
+
+  it("preserves the exact raw bytes of a finite unattempted tail", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const first = Buffer.from('{"text":"first","role":"user","ts":1}\n');
+    const second = Buffer.from('  {"text":"second","role":"assistant","ts":2}  \n');
+    const third = Buffer.from('{"text":"third","role":"user","ts":3}');
+    fs.writeFileSync(cacheFile, Buffer.concat([first, second, third]));
+
+    const flush = beginCacheFlush(scope);
+    finishCacheFlush(flush, flush.entries.slice(1));
+
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([second, third]));
   });
 });
 
@@ -440,7 +473,7 @@ describe("hasAnyCachedEntries", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Per-scope cooldown sidecar (#53)
+// Cache-wide cooldown sidecar (#53)
 // ---------------------------------------------------------------------------
 
 describe("cache cooldown sidecar", () => {
@@ -448,12 +481,11 @@ describe("cache cooldown sidecar", () => {
     expect(readCacheCooldownUntil(HEX_A)).toBe(0);
   });
 
-  it("persists and reads back a future timestamp per scope", () => {
+  it("persists one future timestamp across every scope", () => {
     const until = Date.now() + 60_000;
     writeCacheCooldownUntil(HEX_A, until);
     expect(readCacheCooldownUntil(HEX_A)).toBe(until);
-    // Independent per scope.
-    expect(readCacheCooldownUntil(HEX_B)).toBe(0);
+    expect(readCacheCooldownUntil(HEX_B)).toBe(until);
   });
 
   it("clearCacheCooldown removes it", () => {
@@ -465,7 +497,7 @@ describe("cache cooldown sidecar", () => {
   it("a corrupt cooldown file reads as 0 (never throws)", () => {
     writeCacheCooldownUntil(HEX_A, Date.now() + 1000);
     // Corrupt the sidecar.
-    const file = path.join(tmpDir, `midbrain-episodic-cache-${HEX_A}.ndjson.cooldown`);
+    const file = path.join(tmpDir, "midbrain-episodic-cache.ndjson.cooldown");
     fs.writeFileSync(file, "garbage");
     expect(readCacheCooldownUntil(HEX_A)).toBe(0);
   });

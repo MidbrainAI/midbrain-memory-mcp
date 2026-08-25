@@ -48,6 +48,7 @@ afterEach(async () => {
   delete process.env.MIDBRAIN_API_KEY;
   delete process.env.MIDBRAIN_CACHE_POST_SPACING_MS;
   delete process.env.MIDBRAIN_CACHE_COOLDOWN_MS;
+  delete process.env.MIDBRAIN_CACHE_MAX_ENTRIES_PER_BOOT;
   _setCachePath(null);
   await env?.restore();
 });
@@ -76,11 +77,12 @@ describe("boot cache drain (runSelfRepair)", () => {
     expect(hasCachedEntries(scope)).toBe(false);
   });
 
-  it("drains ALL bindings — an orphaned past-key scope is recovered by the current key", async () => {
+  it("drains only the current binding and preserves opaque old or unscoped buckets", async () => {
     const currentScope = scopeFor(TEST_KEY);
     const orphanScope = scopeFor("deleted-old-key"); // a rotated-away key's bucket
     appendToCache({ text: "current entry", role: "user" }, currentScope);
     appendToCache({ text: "orphaned entry", role: "user" }, orphanScope);
+    appendToCache({ text: "unscoped entry", role: "user" });
 
     const posted = [];
     mockFetch(async (url, opts = {}) => {
@@ -90,10 +92,10 @@ describe("boot cache drain (runSelfRepair)", () => {
 
     await runSelfRepair(NPX_CTX);
 
-    // Both the current and the orphaned bucket were drained by the current key.
-    expect(posted.sort()).toEqual(["current entry", "orphaned entry"]);
+    expect(posted).toEqual(["current entry"]);
     expect(hasCachedEntries(currentScope)).toBe(false);
-    expect(hasCachedEntries(orphanScope)).toBe(false);
+    expect(hasCachedEntries(orphanScope)).toBe(true);
+    expect(hasCachedEntries()).toBe(true);
   });
 
   it("a WAF rejection stops the pass, preserves entries (never dropped), and sets a cooldown", async () => {
@@ -153,6 +155,67 @@ describe("boot cache drain (runSelfRepair)", () => {
 
     expect(posted).not.toContain("late");
     expect(hasCachedEntries(scope)).toBe(true);
+  });
+
+  it("a rate limit creates one cache-wide cooldown across binding changes and rapid restarts", async () => {
+    const scopeA = scopeFor(TEST_KEY);
+    appendToCache({ text: "binding a", role: "user" }, scopeA);
+
+    let calls = 0;
+    mockFetch(async (url) => {
+      if (String(url).includes("/memories/episodic")) {
+        calls += 1;
+        return { ok: false, status: 429, headers: new Map(), text: async () => "", json: async () => ({}) };
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+    await runSelfRepair(NPX_CTX);
+    expect(calls).toBe(1);
+
+    process.env.MIDBRAIN_API_KEY = "different-current-key";
+    const scopeB = scopeFor(process.env.MIDBRAIN_API_KEY);
+    appendToCache({ text: "binding b", role: "user" }, scopeB);
+
+    fetchSpy.mockRestore();
+    const posted = [];
+    mockFetch(async (url, opts = {}) => {
+      if (String(url).includes("/memories/episodic")) {
+        posted.push(JSON.parse(opts.body).text);
+        return okResponse();
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+    await runSelfRepair(NPX_CTX);
+
+    expect(posted).toEqual([]);
+    expect(readCacheCooldownUntil(scopeB)).toBeGreaterThan(Date.now());
+    expect(hasCachedEntries(scopeA)).toBe(true);
+    expect(hasCachedEntries(scopeB)).toBe(true);
+  });
+
+  it("limits each boot and leaves the unattempted cache tail for a later boot", async () => {
+    process.env.MIDBRAIN_CACHE_MAX_ENTRIES_PER_BOOT = "2";
+    const scope = scopeFor(TEST_KEY);
+    appendToCache({ text: "one", role: "user" }, scope);
+    appendToCache({ text: "two", role: "user" }, scope);
+    appendToCache({ text: "three", role: "user" }, scope);
+
+    const posted = [];
+    mockFetch(async (url, opts = {}) => {
+      if (String(url).includes("/memories/episodic")) {
+        posted.push(JSON.parse(opts.body).text);
+        return okResponse();
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+
+    await runSelfRepair(NPX_CTX);
+    expect(posted).toEqual(["one", "two"]);
+    expect(hasCachedEntries(scope)).toBe(true);
+
+    await runSelfRepair(NPX_CTX);
+    expect(posted).toEqual(["one", "two", "three"]);
+    expect(hasCachedEntries(scope)).toBe(false);
   });
 
   it("never drops: a transient 5xx keeps entries cached across repeated boots until success", async () => {

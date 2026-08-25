@@ -97,6 +97,32 @@ describe("runFlush", () => {
     expect(sleeps).toEqual([150]);
   });
 
+  it("applies inter-POST spacing after ordinary failed attempts", async () => {
+    const source = makeSource([{ text: "a" }, { text: "b" }, { text: "c" }]);
+    const sleeps = [];
+    const post = vi.fn(async () => "failed");
+    vi.spyOn(globalThis, "setTimeout").mockImplementation((fn, ms) => { sleeps.push(ms); fn(); return 0; });
+    try {
+      await runFlush({ source, post, spacingMs: 150 });
+    } finally {
+      globalThis.setTimeout.mockRestore();
+    }
+
+    expect(post).toHaveBeenCalledTimes(3);
+    expect(sleeps).toEqual([150, 150]);
+  });
+
+  it("limits one pass without losing the unattempted tail", async () => {
+    const source = makeSource([{ text: "a" }, { text: "b" }, { text: "c" }]);
+    const post = vi.fn(okPost);
+
+    const summary = await runFlush({ source, post, maxEntries: 2 });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(summary).toMatchObject({ sent: 2, survivors: 1, rateLimited: false, claimed: true });
+    expect(source.state.entries.map((entry) => entry.text)).toEqual(["c"]);
+  });
+
   it("never throws when the source misbehaves", async () => {
     const badSource = {
       begin() { throw new Error("boom"); },
