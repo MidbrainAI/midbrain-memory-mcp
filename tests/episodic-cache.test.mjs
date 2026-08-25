@@ -277,6 +277,69 @@ describe("safe flush handoff", () => {
 
     expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([second, third]));
   });
+
+  it("preserves a complete append through a descriptor opened before handoff", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const late = Buffer.from('  {"text":"late-fd","role":"assistant","ts":2}  \n');
+    appendToCache({ text: "snapshot", role: "user" }, scope);
+    const staleFd = fs.openSync(cacheFile, "a");
+
+    const flush = beginCacheFlush(scope);
+    fs.writeSync(staleFd, late);
+    fs.closeSync(staleFd);
+    finishCacheFlush(flush, []);
+
+    expect(fs.readFileSync(cacheFile)).toEqual(late);
+    expect(fs.existsSync(`${cacheFile}.processing`)).toBe(false);
+  });
+
+  it("preserves a torn append through a descriptor opened before handoff", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const late = Buffer.from('{"text":"late-torn');
+    appendToCache({ text: "snapshot", role: "user" }, scope);
+    const staleFd = fs.openSync(cacheFile, "a");
+
+    const flush = beginCacheFlush(scope);
+    fs.writeSync(staleFd, late);
+    fs.closeSync(staleFd);
+    finishCacheFlush(flush, []);
+
+    expect(fs.readFileSync(cacheFile)).toEqual(late);
+    expect(fs.existsSync(`${cacheFile}.processing`)).toBe(false);
+  });
+
+  it("retains processing evidence when its identity changes after snapshot", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const processingFile = `${cacheFile}.processing`;
+    const originalFile = `${processingFile}.original`;
+    appendToCache({ text: "snapshot", role: "user" }, scope);
+
+    const flush = beginCacheFlush(scope);
+    fs.renameSync(processingFile, originalFile);
+    const replacement = Buffer.from('{"text":"replacement","role":"user","ts":2}\n');
+    fs.writeFileSync(processingFile, replacement);
+    finishCacheFlush(flush, []);
+
+    expect(fs.existsSync(originalFile)).toBe(true);
+    expect(fs.readFileSync(processingFile)).toEqual(replacement);
+  });
+
+  it("retains processing evidence when its snapshot prefix changes", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const processingFile = `${cacheFile}.processing`;
+    appendToCache({ text: "snapshot", role: "user" }, scope);
+
+    const flush = beginCacheFlush(scope);
+    const changed = Buffer.from('{"text":"changed","role":"user","ts":2}\n');
+    fs.writeFileSync(processingFile, changed);
+    finishCacheFlush(flush, []);
+
+    expect(fs.readFileSync(processingFile)).toEqual(changed);
+  });
 });
 
 // ---------------------------------------------------------------------------
