@@ -550,6 +550,7 @@ describe("Claude capture-assistant hook wrapper", () => {
         last_assistant_message: "<internal>connection status changed after delivery</internal>",
         transcript_path: transcript,
         cwd: "/repo",
+        session_id: "fallback-session",
       }),
       encoding: "utf8",
       env: { ...process.env, HOME: home, USERPROFILE: home },
@@ -561,6 +562,11 @@ describe("Claude capture-assistant hook wrapper", () => {
     expect(body.text).toBe("delivered current reply");
     expect(body.text).not.toContain("older reply");
     expect(body.text).not.toContain("connection status");
+    expect(body.memory_metadata).toEqual({
+      client: "nanoclaw",
+      cwd: "/repo",
+      session_id: "fallback-session",
+    });
     fsSync.rmSync(home, { recursive: true, force: true });
     fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
     fsSync.rmSync(path.dirname(transcript), { recursive: true, force: true });
@@ -684,11 +690,16 @@ describe("Claude capture hooks client label (issue #48)", () => {
     expect(capturedClient("capture-assistant.mjs", { marker: "nanoclaw\n" })).toBe("nanoclaw");
   });
 
-  it("episodic POST body carries cwd and session_id scoping fields", () => {
-    for (const script of ["capture-user.mjs", "capture-assistant.mjs"]) {
-      const { body } = capturedEpisodic(script);
-      expect(body.memory_metadata.cwd).toBe("/repo");
-      expect(body.memory_metadata.session_id).toBe("sess_claude");
+  it("direct user and assistant bodies carry complete Claude and NanoClaw metadata", () => {
+    for (const [homeOpts, client] of [[{}, "claude"], [{ marker: "nanoclaw\n" }, "nanoclaw"]]) {
+      for (const script of ["capture-user.mjs", "capture-assistant.mjs"]) {
+        const { body } = capturedEpisodic(script, homeOpts);
+        expect(body.memory_metadata).toEqual({
+          client,
+          cwd: "/repo",
+          session_id: "sess_claude",
+        });
+      }
     }
   });
 

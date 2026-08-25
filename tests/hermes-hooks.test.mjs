@@ -44,10 +44,18 @@ describe("captureUser", () => {
     expect(deps.createApi).toHaveBeenCalledWith("/proj");
   });
 
-  it("forwards the top-level session_id into metadata", async () => {
+  it("forwards the top-level session_id verbatim into metadata", async () => {
     const { deps, stored } = makeDeps();
-    await captureUser({ extra: { user_message: "hi" }, cwd: "/proj", session_id: "sess_42" }, deps);
-    expect(stored[0].metadata).toEqual({ client: "hermes", cwd: "/proj", session_id: "sess_42" });
+    await captureUser({
+      extra: { user_message: "hi" },
+      cwd: "/proj",
+      session_id: "  sess_42  ",
+    }, deps);
+    expect(stored[0].metadata).toEqual({
+      client: "hermes",
+      cwd: "/proj",
+      session_id: "  sess_42  ",
+    });
   });
 
   it("accepts alternative payload field names", async () => {
@@ -96,8 +104,20 @@ describe("captureAssistant", () => {
 
   it("stores the current Hermes assistant_response wire field with metadata", async () => {
     const { deps, stored } = makeDeps();
-    await captureAssistant({ extra: { assistant_response: "the answer" } }, deps);
-    expect(stored).toEqual([{ text: "the answer", role: "assistant", metadata: { client: "hermes" } }]);
+    await captureAssistant({
+      extra: { assistant_response: "the answer" },
+      cwd: "/proj",
+      session_id: "  assistant-session  ",
+    }, deps);
+    expect(stored).toEqual([{
+      text: "the answer",
+      role: "assistant",
+      metadata: {
+        client: "hermes",
+        cwd: "/proj",
+        session_id: "  assistant-session  ",
+      },
+    }]);
   });
 
   it("preserves marker-like assistant text verbatim when PK injection is disabled", async () => {

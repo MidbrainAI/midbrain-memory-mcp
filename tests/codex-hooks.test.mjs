@@ -61,7 +61,7 @@ describe("Codex hook capture", () => {
   });
 
   it("captureUser stores a non-empty prompt with Codex metadata", async () => {
-    await captureUser({ prompt: "remember this", cwd: "/repo" }, deps);
+    await captureUser({ prompt: "remember this", cwd: "/repo", session_id: "  user-session  " }, deps);
 
     expect(deps.createApi).toHaveBeenCalledOnce();
     expect(deps.createApi).toHaveBeenCalledWith("/repo");
@@ -69,7 +69,7 @@ describe("Codex hook capture", () => {
       "remember this",
       "user",
       deps.logger,
-      { client: "codex", cwd: "/repo" },
+      { client: "codex", cwd: "/repo", session_id: "  user-session  " },
     ]);
   });
 
@@ -115,13 +115,17 @@ describe("Codex hook capture", () => {
   });
 
   it("captureAssistant stores the last assistant message", async () => {
-    await captureAssistant({ last_assistant_message: "done", cwd: "/repo" }, deps);
+    await captureAssistant({
+      last_assistant_message: "done",
+      cwd: "/repo",
+      session_id: "  assistant-session  ",
+    }, deps);
 
     expect(firstStore(deps)).toEqual([
       "done",
       "assistant",
       deps.logger,
-      { client: "codex", cwd: "/repo" },
+      { client: "codex", cwd: "/repo", session_id: "  assistant-session  " },
     ]);
   });
 
@@ -233,7 +237,7 @@ describe("Codex hook capture", () => {
 
   it("captureToolUse buffers events and Stop emits one summary per turn", async () => {
     await captureToolUse({
-      session_id: "s1",
+      session_id: "  s1  ",
       turn_id: "t1",
       tool_name: "Bash",
       tool_use_id: "u1",
@@ -277,12 +281,22 @@ describe("Codex hook capture", () => {
       tool_response: { exit_code: 0 },
     }, deps);
 
-    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+    await captureAssistant({
+      transcript_path: transcript,
+      cwd: "/repo",
+      session_id: "  s1  ",
+      turn_id: "t1",
+    }, deps);
 
     expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(3);
     expect(deps.api.storeEpisodic.mock.calls[0][0]).toBe("done");
     expect(deps.api.storeEpisodic.mock.calls[1][0]).toContain("Assistant reasoning/commentary summary");
     expect(deps.api.storeEpisodic.mock.calls[2][0]).toContain("Tool activity summary");
+    expect(deps.api.storeEpisodic.mock.calls.map((call) => call[3])).toEqual([
+      { client: "codex", cwd: "/repo", session_id: "  s1  " },
+      { client: "codex", cwd: "/repo", session_id: "  s1  " },
+      { client: "codex", cwd: "/repo", session_id: "  s1  " },
+    ]);
   });
 
   it("keeps tool buffers retryable when summary storage fails", async () => {

@@ -67,18 +67,37 @@ const okResponse = () => ({ ok: true, status: 201, headers: new Map(), text: asy
 describe("boot cache drain (runSelfRepair)", () => {
   it("drains the current-scope backlog in a single pass, then clears it", async () => {
     const scope = scopeFor(TEST_KEY);
-    appendToCache({ text: "one", role: "user" }, scope);
-    appendToCache({ text: "two", role: "assistant" }, scope);
+    appendToCache({
+      text: "one",
+      role: "user",
+      memory_metadata: { client: "opencode", cwd: "~/one", session_id: "session-one" },
+    }, scope);
+    appendToCache({
+      text: "two",
+      role: "assistant",
+      memory_metadata: { client: "hermes", cwd: "~/two", session_id: "session-two" },
+    }, scope);
 
     const posted = [];
     mockFetch(async (url, opts = {}) => {
-      if (String(url).includes("/memories/episodic")) { posted.push(JSON.parse(opts.body).text); return okResponse(); }
+      if (String(url).includes("/memories/episodic")) { posted.push(JSON.parse(opts.body)); return okResponse(); }
       return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
     });
 
     await runSelfRepair(NPX_CTX);
 
-    expect(posted.sort()).toEqual(["one", "two"]);
+    expect(posted).toEqual([
+      {
+        text: "one",
+        role: "user",
+        memory_metadata: { client: "opencode", cwd: "~/one", session_id: "session-one" },
+      },
+      {
+        text: "two",
+        role: "assistant",
+        memory_metadata: { client: "hermes", cwd: "~/two", session_id: "session-two" },
+      },
+    ]);
     expect(hasCachedEntries(scope)).toBe(false);
   });
 

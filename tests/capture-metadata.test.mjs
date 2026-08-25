@@ -28,11 +28,25 @@ describe("buildCaptureMetadata", () => {
     });
   });
 
-  it("adds a trimmed session_id", () => {
+  it("forwards a nonblank session_id verbatim", () => {
     expect(buildCaptureMetadata({ client: "hermes", sessionId: "  s1  " })).toEqual({
       client: "hermes",
-      session_id: "s1",
+      session_id: "  s1  ",
     });
+  });
+
+  it.each([
+    ["/home/alice/project", "<redacted>/project"],
+    ["/Users/alice/project", "<redacted>/project"],
+    ["C:\\Users\\Alice\\project", "<redacted>/project"],
+    ["/var/home/alice/project", "<redacted>/project"],
+    ["/mnt/Users/Alice/project", "<redacted>/project"],
+    ["//server/Users/Alice/project", "<redacted>/project"],
+  ])("redacts another user's name from cwd %s", (cwd, expected) => {
+    const metadata = buildCaptureMetadata({ client: "claude", cwd });
+    expect(metadata.cwd).toBe(expected);
+    expect(metadata.cwd.toLowerCase()).not.toContain("alice");
+    expect(metadata.cwd).not.toBe(cwd);
   });
 
   it("omits blank or non-string cwd and session_id", () => {
