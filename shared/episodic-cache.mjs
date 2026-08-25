@@ -155,6 +155,30 @@ function pathMatchesFile(target, stat) {
   }
 }
 
+function appendCacheBytes(target, bytes) {
+  let fd;
+  try {
+    const flags = fs.constants.O_WRONLY
+      | fs.constants.O_APPEND
+      | fs.constants.O_CREAT
+      | (fs.constants.O_NOFOLLOW ?? 0);
+    fd = fs.openSync(target, flags, 0o600);
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile()) return false;
+    fs.writeFileSync(fd, bytes);
+    try { fs.fchmodSync(fd, 0o600); } catch { /* ignore */ }
+    const written = fs.fstatSync(fd);
+    if (!sameFileIdentity(opened, written)) return false;
+    return pathMatchesFile(target, written) ? "stable" : "moved";
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
 function readCacheSource(target) {
   let fd;
   try {
@@ -241,9 +265,8 @@ export function appendToCache(entry, scope) {
   try {
     ensureCacheDir();
     const cacheFile = cacheFileForScope(scope);
-    const line = JSON.stringify({ ...entry, ts: Date.now() }) + "\n";
-    fs.appendFileSync(cacheFile, line, { encoding: "utf8", mode: 0o600 });
-    try { fs.chmodSync(cacheFile, 0o600); } catch { /* ignore */ }
+    const line = Buffer.from(JSON.stringify({ ...entry, ts: Date.now() }) + "\n");
+    if (appendCacheBytes(cacheFile, line) === "moved") appendCacheBytes(cacheFile, line);
   } catch {
     // Best effort — never crash callers over caching.
   }
