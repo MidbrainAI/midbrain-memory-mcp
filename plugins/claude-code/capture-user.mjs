@@ -25,6 +25,11 @@ async function captureUser() {
   if (!input?.prompt) return;
 
   const client = await captureClientLabel();
+  const metadata = buildCaptureMetadata({
+    client,
+    cwd: input.cwd,
+    sessionId: input.session_id,
+  });
 
   let api;
   try {
@@ -36,17 +41,13 @@ async function captureUser() {
     if (client === "nanoclaw" && isNoKeyError(error) && appendToSpool({
       text: input.prompt,
       role: "user",
-      memory_metadata: { client },
+      memory_metadata: metadata,
     })) log.warn("NO KEY — spooling for recovery");
     return;
   }
 
   // Episodic capture must complete before default-off exits.
-  await api.storeEpisodic(input.prompt, "user", log, buildCaptureMetadata({
-    client,
-    cwd: input.cwd,
-    sessionId: input.session_id,
-  }));
+  await api.storeEpisodic(input.prompt, "user", log, metadata);
 
   if (!isPkInjectionEnabled()) return;
 

@@ -56,6 +56,11 @@ async function captureAssistant() {
   if (!input.last_assistant_message) return;
 
   const client = await captureClientLabel();
+  const metadata = buildCaptureMetadata({
+    client,
+    cwd: input.cwd,
+    sessionId: input.session_id,
+  });
   let text = scrubInjectedPkContext(input.last_assistant_message);
   if (client === "nanoclaw" && INTERNAL_ONLY_RE.test(text)) {
     text = scrubInjectedPkContext(await deliveredNanoclawMessage(input.transcript_path));
@@ -72,17 +77,13 @@ async function captureAssistant() {
       if (client === "nanoclaw" && isNoKeyError(error) && appendToSpool({
         text,
         role: "assistant",
-        memory_metadata: { client },
+        memory_metadata: metadata,
       })) log.warn("NO KEY — spooling for recovery");
     }
     return;
   }
 
-  if (text) await api.storeEpisodic(text, "assistant", log, buildCaptureMetadata({
-    client,
-    cwd: input.cwd,
-    sessionId: input.session_id,
-  }));
+  if (text) await api.storeEpisodic(text, "assistant", log, metadata);
 }
 
 try {

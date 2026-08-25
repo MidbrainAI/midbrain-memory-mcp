@@ -47,7 +47,7 @@ function payloadCwd(input) {
  */
 function payloadSessionId(input) {
   const id = typeof input?.session_id === "string" && input.session_id.trim()
-    ? input.session_id.trim()
+    ? input.session_id
     : undefined;
   return id;
 }
