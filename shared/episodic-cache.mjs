@@ -142,6 +142,41 @@ function releaseLock(flush) {
   }
 }
 
+function sameFileIdentity(left, right) {
+  return Boolean(left && right && left.dev === right.dev && left.ino === right.ino);
+}
+
+function pathMatchesFile(target, stat) {
+  try {
+    const current = fs.lstatSync(target);
+    return current.isFile() && sameFileIdentity(current, stat);
+  } catch {
+    return false;
+  }
+}
+
+function readCacheSource(target) {
+  let fd;
+  try {
+    const before = fs.lstatSync(target);
+    if (!before.isFile()) return null;
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+    fd = fs.openSync(target, flags);
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || !sameFileIdentity(before, opened)) return null;
+    const raw = fs.readFileSync(fd);
+    const after = fs.fstatSync(fd);
+    if (!sameFileIdentity(opened, after) || after.size !== raw.length) return null;
+    return pathMatchesFile(target, after) ? { raw, stat: after } : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
 function validEntriesFromRaw(raw) {
   return raw
     .split("\n")
@@ -242,11 +277,18 @@ export function beginCacheFlush(scope) {
         return emptyFlush();
       }
     }
-    const parsed = parseCacheRaw(fs.readFileSync(processingFile));
+    const claimed = readCacheSource(processingFile);
+    if (!claimed) {
+      releaseLock(flush);
+      return emptyFlush();
+    }
+    const parsed = parseCacheRaw(claimed.raw);
     return {
       claimed: true,
       entries: parsed.entries,
       segments: parsed.segments,
+      snapshotRaw: claimed.raw,
+      sourceStat: claimed.stat,
       liveFile: cacheFile,
       processingFile,
       lockFile,
@@ -269,12 +311,23 @@ export function beginCacheFlush(scope) {
 export function finishCacheFlush(flush, survivors) {
   if (!flush || !flush.claimed || !ownsLock(flush)) return;
   try {
-    const pending = preservedCacheBytes(flush, survivors);
+    const current = readCacheSource(flush.processingFile);
+    if (!current || !sameFileIdentity(current.stat, flush.sourceStat)) return;
+    const snapshot = flush.snapshotRaw || Buffer.alloc(0);
+    if (current.raw.length < snapshot.length
+      || !current.raw.subarray(0, snapshot.length).equals(snapshot)) return;
+    const pending = Buffer.concat([
+      preservedCacheBytes(flush, survivors),
+      current.raw.subarray(snapshot.length),
+    ]);
     if (pending.length > 0) {
       ensureCacheDir();
       fs.appendFileSync(flush.liveFile, pending, { mode: 0o600 });
       try { fs.chmodSync(flush.liveFile, 0o600); } catch { /* ignore */ }
     }
+    const final = readCacheSource(flush.processingFile);
+    if (!final || !sameFileIdentity(final.stat, current.stat) || !final.raw.equals(current.raw)) return;
+    if (!pathMatchesFile(flush.processingFile, final.stat)) return;
     fs.unlinkSync(flush.processingFile);
   } catch {
     // Best effort. Leaving the processing file is recoverable on next flush.
