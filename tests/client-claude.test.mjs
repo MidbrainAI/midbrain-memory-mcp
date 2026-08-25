@@ -508,6 +508,64 @@ describe("Claude capture-assistant hook wrapper", () => {
     fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });
   });
+
+  it("captures the NanoClaw message delivered before a later internal-only Stop response", () => {
+    const home = tempHomeWithKey();
+    fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-capture-client"), "nanoclaw\n", { mode: 0o600 });
+    const logPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-")), "fetch.jsonl");
+    const loaded = preload(logPath);
+    const transcript = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-transcript-")), "session.jsonl");
+    const rows = [
+      { type: "user", message: { role: "user", content: "older prompt" } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", name: "mcp__nanoclaw__send_message", input: { to: "Carlos", text: "older reply" } },
+      ] } },
+      { type: "user", message: { role: "user", content: "current prompt" } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", name: "ToolSearch", input: { query: "send_message" } },
+      ] } },
+      { type: "user", message: { role: "user", content: [
+        { type: "tool_result", tool_use_id: "tool-search", content: "loaded" },
+      ] } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", name: "mcp__nanoclaw__send_message", input: {
+          to: "Carlos", text: "delivered current reply",
+        } },
+      ] } },
+      { type: "user", message: { role: "user", content: [
+        { type: "tool_result", tool_use_id: "send-message", content: "sent" },
+      ] } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "text", text: "<internal>connection status changed after delivery</internal>" },
+      ] } },
+    ];
+    fsSync.writeFileSync(transcript, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    const result = spawnSync(process.execPath, [
+      "--import", pathToFileURL(loaded.file).href,
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
+    ], {
+      input: JSON.stringify({
+        last_assistant_message: "<internal>connection status changed after delivery</internal>",
+        transcript_path: transcript,
+        cwd: "/repo",
+      }),
+      encoding: "utf8",
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    const [body] = fsSync.readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(body.text).toBe("delivered current reply");
+    expect(body.text).not.toContain("older reply");
+    expect(body.text).not.toContain("connection status");
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
+    fsSync.rmSync(path.dirname(transcript), { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
 });
 
 describe("Claude NanoClaw spool binding boundary", () => {
