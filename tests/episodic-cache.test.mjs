@@ -2,7 +2,7 @@
  * Unit tests for shared/episodic-cache.mjs
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -339,6 +339,74 @@ describe("safe flush handoff", () => {
     finishCacheFlush(flush, []);
 
     expect(fs.readFileSync(processingFile)).toEqual(changed);
+  });
+
+  it("reappends a pre-handoff write that lands after the final processing proof", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const processingFile = `${cacheFile}.processing`;
+    appendToCache({ text: "snapshot", role: "user" }, scope);
+
+    const realAppend = fs.appendFileSync.bind(fs);
+    const realOpen = fs.openSync.bind(fs);
+    const realWriteFile = fs.writeFileSync.bind(fs);
+    const realLstat = fs.lstatSync.bind(fs);
+    let claimed;
+    let intercepted = false;
+    let processingLstats = 0;
+
+    const finishAtFinalCheck = (fd, data, args) => {
+      claimed = beginCacheFlush(scope);
+      const lstatSpy = vi.spyOn(fs, "lstatSync").mockImplementation((target, ...lstatArgs) => {
+        if (String(target) === processingFile) {
+          processingLstats += 1;
+          if (processingLstats === 5) realWriteFile(fd, data, ...args);
+        }
+        return realLstat(target, ...lstatArgs);
+      });
+      try {
+        finishCacheFlush(claimed, []);
+      } finally {
+        lstatSpy.mockRestore();
+      }
+    };
+
+    const appendSpy = vi.spyOn(fs, "appendFileSync").mockImplementation((file, data, ...args) => {
+      if (!intercepted && String(file) === cacheFile) {
+        intercepted = true;
+        const fd = realOpen(file, "a", 0o600);
+        try { finishAtFinalCheck(fd, data, args); } finally { fs.closeSync(fd); }
+        return;
+      }
+      return realAppend(file, data, ...args);
+    });
+    const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, ...args) => {
+      if (!intercepted && typeof file === "number") {
+        const opened = fs.fstatSync(file);
+        const live = fs.statSync(cacheFile);
+        if (opened.dev === live.dev && opened.ino === live.ino) {
+          intercepted = true;
+          finishAtFinalCheck(file, data, args);
+          return;
+        }
+      }
+      return realWriteFile(file, data, ...args);
+    });
+
+    try {
+      appendToCache({ text: "after-final-proof", role: "assistant" }, scope);
+    } finally {
+      writeSpy.mockRestore();
+      appendSpy.mockRestore();
+    }
+
+    expect(intercepted).toBe(true);
+    expect(processingLstats).toBe(5);
+    expect(claimed.entries.map((entry) => entry.text)).toEqual(["snapshot"]);
+    expect(fs.existsSync(cacheFile)).toBe(true);
+    expect(fs.readFileSync(cacheFile, "utf8").trim().split("\n").map(JSON.parse)
+      .map((entry) => entry.text)).toEqual(["after-final-proof"]);
+    expect(fs.existsSync(processingFile)).toBe(false);
   });
 });
 
