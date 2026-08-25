@@ -349,7 +349,7 @@ export function finishCacheFlush(flush, survivors) {
       || !current.raw.subarray(0, snapshot.length).equals(snapshot)) return;
     const retained = preservedCacheBytes(flush, survivors);
     const pending = Buffer.concat([
-      survivors.length > 0 && retained.length > 0 ? LINE_FEED : Buffer.alloc(0),
+      retained.length > 0 ? LINE_FEED : Buffer.alloc(0),
       retained,
       current.raw.subarray(snapshot.length),
     ]);

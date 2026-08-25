@@ -118,7 +118,7 @@ describe("appendToCache", () => {
     const flush = beginCacheFlush(scope);
     expect(flush.entries.map((entry) => entry.text)).toEqual(["later-valid"]);
     finishCacheFlush(flush, []);
-    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([Buffer.from("\n"), torn, Buffer.from("\n")]));
   });
 
   it("keeps a valid append separate when a torn writer lands before its write", () => {
@@ -152,7 +152,7 @@ describe("appendToCache", () => {
     const flush = beginCacheFlush(scope);
     expect(flush.entries.map((entry) => entry.text)).toEqual(["later-valid"]);
     finishCacheFlush(flush, []);
-    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([Buffer.from("\n"), torn, Buffer.from("\n")]));
   });
 });
 
@@ -205,7 +205,7 @@ describe("readAndClearCache", () => {
     expect(entries).toHaveLength(2);
     expect(entries[0].text).toBe("good");
     expect(entries[1].text).toBe("also good");
-    expect(fs.readFileSync(cacheFile, "utf8")).toBe("not json at all\n");
+    expect(fs.readFileSync(cacheFile, "utf8")).toBe("\nnot json at all\n");
   });
 
   it("skips entries missing required fields", () => {
@@ -231,7 +231,7 @@ describe("readAndClearCache", () => {
 
     const entries = readAndClearCache();
     expect(entries).toEqual([]);
-    expect(fs.readFileSync(cacheFile)).toEqual(raw);
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([Buffer.from("\n"), raw]));
   });
 
   it("ignores blank separator lines without retaining phantom cache evidence", () => {
@@ -287,7 +287,7 @@ describe("safe flush handoff", () => {
     const retry = beginCacheFlush(scope);
     expect(retry.entries.map((entry) => entry.text)).toEqual(["retry-me"]);
     finishCacheFlush(retry, []);
-    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([Buffer.from("\n"), torn, Buffer.from("\n")]));
   });
 
   it("keeps a restored survivor separate when a torn writer lands before its write", () => {
@@ -324,7 +324,7 @@ describe("safe flush handoff", () => {
     const retry = beginCacheFlush(scope);
     expect(retry.entries.map((entry) => entry.text)).toEqual(["retry-survivor"]);
     finishCacheFlush(retry, []);
-    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([Buffer.from("\n"), torn, Buffer.from("\n")]));
   });
 
   it("does not let a losing flusher delete another flusher's processing batch", () => {
@@ -382,14 +382,14 @@ describe("safe flush handoff", () => {
     expect(flush.entries.map((entry) => entry.text)).toEqual(["valid"]);
     finishCacheFlush(flush, []);
 
-    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([malformed, torn]));
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([Buffer.from("\n"), malformed, torn]));
   });
 
   it("separates malformed-only restoration from a concurrent torn live prefix", () => {
     const scope = HEX_A;
     const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
-    const malformed = Buffer.from('evil\",\"role\":\"user\",\"ts\":1}\n');
-    const tornPrefix = Buffer.from('{\"text\":\"');
+    const malformed = Buffer.from('evil","role":"user","ts":1}\n');
+    const tornPrefix = Buffer.from('{"text":"');
     fs.writeFileSync(cacheFile, malformed);
 
     const flush = beginCacheFlush(scope);
