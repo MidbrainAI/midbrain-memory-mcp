@@ -15,10 +15,15 @@ import { createHash } from "crypto";
 
 import { makeTestEnv } from "./helpers/test-env.mjs";
 import { runSelfRepair } from "../install.mjs";
+import { runFlush } from "../shared/flush-runner.mjs";
 import {
   appendToCache,
+  beginCacheFlush,
+  finishCacheFlush,
   hasCachedEntries,
   readCacheCooldownUntil,
+  writeCacheCooldownUntil,
+  clearCacheCooldown,
   _setCachePath,
 } from "../shared/episodic-cache.mjs";
 
@@ -191,6 +196,51 @@ describe("boot cache drain (runSelfRepair)", () => {
     expect(readCacheCooldownUntil(scopeB)).toBeGreaterThan(Date.now());
     expect(hasCachedEntries(scopeA)).toBe(true);
     expect(hasCachedEntries(scopeB)).toBe(true);
+  });
+
+  it("does not let one binding success erase another binding's newer global cooldown", async () => {
+    const scopeA = scopeFor("concurrent-binding-a");
+    const scopeB = scopeFor("concurrent-binding-b");
+    appendToCache({ text: "binding a", role: "user" }, scopeA);
+    appendToCache({ text: "binding b", role: "user" }, scopeB);
+    clearCacheCooldown(scopeA);
+
+    const source = (scope) => ({
+      begin: () => beginCacheFlush(scope),
+      finish: (flush, survivors) => finishCacheFlush(flush, survivors),
+      readCooldownUntil: () => readCacheCooldownUntil(scope),
+      writeCooldownUntil: (until) => writeCacheCooldownUntil(scope, until),
+      clearCooldown: () => clearCacheCooldown(scope),
+    });
+
+    let releaseA;
+    let markAStarted;
+    const aGate = new Promise((resolve) => { releaseA = resolve; });
+    const aStarted = new Promise((resolve) => { markAStarted = resolve; });
+    const runA = runFlush({
+      source: source(scopeA),
+      post: async () => {
+        markAStarted();
+        await aGate;
+        return "ok";
+      },
+      cooldownMs: 60_000,
+    });
+
+    await aStarted;
+    const summaryB = await runFlush({
+      source: source(scopeB),
+      post: async () => "rateLimited",
+      cooldownMs: 60_000,
+    });
+    const afterB = readCacheCooldownUntil(scopeB);
+    releaseA();
+    const summaryA = await runA;
+
+    expect(summaryA).toMatchObject({ sent: 1, survivors: 0, rateLimited: false });
+    expect(summaryB).toMatchObject({ sent: 0, survivors: 1, rateLimited: true });
+    expect(afterB).toBeGreaterThan(Date.now());
+    expect(readCacheCooldownUntil(scopeB)).toBe(afterB);
   });
 
   it("limits each boot and leaves the unattempted cache tail for a later boot", async () => {

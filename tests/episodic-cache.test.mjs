@@ -103,6 +103,23 @@ describe("appendToCache", () => {
     // Should not throw — best effort.
     expect(() => appendToCache({ text: "hi", role: "user" })).not.toThrow();
   });
+
+  it("separates a valid append from a retained torn tail without changing the tail", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const torn = Buffer.from('{"text":"torn');
+    fs.writeFileSync(cacheFile, torn);
+
+    appendToCache({ text: "later-valid", role: "user" }, scope);
+
+    const raw = fs.readFileSync(cacheFile);
+    expect(raw.subarray(0, torn.length)).toEqual(torn);
+    expect(raw[torn.length]).toBe(0x0a);
+    const flush = beginCacheFlush(scope);
+    expect(flush.entries.map((entry) => entry.text)).toEqual(["later-valid"]);
+    finishCacheFlush(flush, []);
+    expect(fs.readFileSync(cacheFile)).toEqual(torn);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -204,6 +221,26 @@ describe("safe flush handoff", () => {
     const remaining = readAndClearCache(scope);
     expect(remaining.map((entry) => entry.text).sort()).toEqual(["concurrent append", "survivor"]);
     expect(remaining.find((entry) => entry.text === "survivor").memory_metadata).toEqual({ client: "codex" });
+  });
+
+  it("separates a restored survivor from a concurrent torn live tail", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const torn = Buffer.from('{"text":"torn');
+    appendToCache({ text: "retry-me", role: "user" }, scope);
+
+    const flush = beginCacheFlush(scope);
+    expect(flush.entries.map((entry) => entry.text)).toEqual(["retry-me"]);
+    fs.writeFileSync(cacheFile, torn);
+    finishCacheFlush(flush, flush.entries);
+
+    const raw = fs.readFileSync(cacheFile);
+    expect(raw.subarray(0, torn.length)).toEqual(torn);
+    expect(raw[torn.length]).toBe(0x0a);
+    const retry = beginCacheFlush(scope);
+    expect(retry.entries.map((entry) => entry.text)).toEqual(["retry-me"]);
+    finishCacheFlush(retry, []);
+    expect(fs.readFileSync(cacheFile)).toEqual(torn);
   });
 
   it("does not let a losing flusher delete another flusher's processing batch", () => {
@@ -406,6 +443,65 @@ describe("safe flush handoff", () => {
     expect(fs.existsSync(cacheFile)).toBe(true);
     expect(fs.readFileSync(cacheFile, "utf8").trim().split("\n").map(JSON.parse)
       .map((entry) => entry.text)).toEqual(["after-final-proof"]);
+    expect(fs.existsSync(processingFile)).toBe(false);
+  });
+
+  it("reappends when the compensating write crosses a second final-proof handoff", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const processingFile = `${cacheFile}.processing`;
+    appendToCache({ text: "snapshot", role: "user" }, scope);
+
+    const realWriteFile = fs.writeFileSync.bind(fs);
+    const realLstat = fs.lstatSync.bind(fs);
+    const claimedBatches = [];
+    const processingLstats = [];
+    let interceptedWrites = 0;
+
+    const finishAtFinalCheck = (fd, data, args) => {
+      const batch = beginCacheFlush(scope);
+      const batchIndex = claimedBatches.push(batch) - 1;
+      processingLstats[batchIndex] = 0;
+      const lstatSpy = vi.spyOn(fs, "lstatSync").mockImplementation((target, ...lstatArgs) => {
+        if (String(target) === processingFile) {
+          processingLstats[batchIndex] += 1;
+          if (processingLstats[batchIndex] === 5) realWriteFile(fd, data, ...args);
+        }
+        return realLstat(target, ...lstatArgs);
+      });
+      try {
+        finishCacheFlush(batch, []);
+      } finally {
+        lstatSpy.mockRestore();
+      }
+    };
+
+    const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, ...args) => {
+      if (interceptedWrites < 2 && typeof file === "number" && fs.existsSync(cacheFile)) {
+        const opened = fs.fstatSync(file);
+        const live = fs.statSync(cacheFile);
+        if (opened.dev === live.dev && opened.ino === live.ino) {
+          interceptedWrites += 1;
+          finishAtFinalCheck(file, data, args);
+          return;
+        }
+      }
+      return realWriteFile(file, data, ...args);
+    });
+
+    try {
+      appendToCache({ text: "must-survive", role: "assistant" }, scope);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(interceptedWrites).toBe(2);
+    expect(processingLstats).toEqual([5, 5]);
+    expect(claimedBatches.map((batch) => batch.entries.map((entry) => entry.text)))
+      .toEqual([["snapshot"], []]);
+    expect(fs.existsSync(cacheFile)).toBe(true);
+    expect(fs.readFileSync(cacheFile, "utf8").trim().split("\n").map(JSON.parse)
+      .map((entry) => entry.text)).toEqual(["must-survive"]);
     expect(fs.existsSync(processingFile)).toBe(false);
   });
 });
