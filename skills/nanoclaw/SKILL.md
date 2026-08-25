@@ -144,13 +144,22 @@ ASSISTANT_HOOK_CMD="'${HOOK_SHIM}' assistant"
 
 The path keeps the `.midbrain/bin/claude-hook` tail, so the MCP server's
 self-repair still recognizes and refreshes these hook commands, and existing
-groups converge to the durable path on the next server start.
+groups converge to the durable path on their first upgraded server start.
+For a positively identified legacy group that has no state-dir env yet, the
+server infers this same mounted root and completes the marker, guarded key,
+owned hook rewrite, durable shim, and historical-path compatibility shim
+before MCP readiness. The first user prompt does not serve as a warm-up.
 
 Key delivery is handled by the MCP server itself: at server start it persists
 its env `MIDBRAIN_API_KEY` to the global key file for hook child processes
 (absence-only — an existing credential is never replaced). Do not put inline
 keys on hook commands: self-repair scrubs hook-command prefixes when it
 rewrites entries, so an inline key would not survive.
+
+Keyless recovery spooling is NanoClaw-only and is bound to the locally
+resolved API identity before it can accept a row. A different binding is
+preserved but never replayed, and malformed or interrupted records are kept
+for inspection/recovery rather than discarded.
 
 Do not discover or write `/pnpm/.../midbrain-memory-mcp@<version>/...` hook
 paths. Versioned package-store paths pin hooks to an old release. The shim
@@ -231,12 +240,15 @@ episodic metadata; when the marker is absent or invalid they fall back to the
 generic `claude` label. Host topologies where hook processes inherit env can
 override the label with `MIDBRAIN_CAPTURE_CLIENT` instead.
 
-The `MIDBRAIN_CAPTURE_CLIENT: "nanoclaw"` set in the group MCP env (Phase 3) is
-what lets the MCP server self-heal this marker for groups configured before
-v0.4.8: on a normal startup the server sees that env and seeds the marker into
-`~/.claude` if it is missing, so existing groups migrate to the `nanoclaw`
-label without rerunning `/add-midbrain`. Hook children never inherit that env,
-so the durable marker written here remains the label source they read.
+The `MIDBRAIN_CAPTURE_CLIENT: "nanoclaw"` set in the group MCP env (Phase 3)
+is the direct ownership signal for new groups. Pre-v0.4.8 groups do not have
+that key, so on a normal startup the server instead verifies NanoClaw's mounted
+`/workspace/agent/container.json`: the old package/client/key signals must
+match the running process. That positive topology proof lets the narrow
+startup migration seed the missing marker before MCP readiness, without
+rerunning `/add-midbrain` or waiting for unrelated repair. Plain host Claude
+has no mounted NanoClaw config and is not relabeled. Hook children never
+inherit the MCP env, so the durable marker remains the label source they read.
 
 ### Legacy form (pre-0.4.8)
 

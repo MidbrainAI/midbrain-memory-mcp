@@ -18,6 +18,8 @@ import {
   shimBinDir,
   cacheDir,
   isStateDirOverridden,
+  nanoClawStateDir,
+  activateNanoClawStateDir,
 } from "../shared/state-dir.mjs";
 
 const HOME = os.homedir();
@@ -27,6 +29,10 @@ afterEach(() => {
 });
 
 describe("state-dir defaults (MIDBRAIN_STATE_DIR unset)", () => {
+  it("activates the mounted NanoClaw root only when no explicit root exists", () => {
+    expect(activateNanoClawStateDir()).toBe(nanoClawStateDir());
+    expect(process.env.MIDBRAIN_STATE_DIR).toBe(path.join(HOME, ".claude", ".midbrain"));
+  });
   it("globalConfigDir is ~/.config/midbrain", () => {
     expect(globalConfigDir()).toBe(path.join(HOME, ".config", "midbrain"));
   });
@@ -57,6 +63,12 @@ describe("state-dir override (MIDBRAIN_STATE_DIR set)", () => {
     expect(cacheDir()).toBe(path.join(BASE, "cache"));
     expect(stateBaseDir()).toBe(BASE);
     expect(isStateDirOverridden()).toBe(true);
+  });
+
+  it("preserves an explicit nonblank root", () => {
+    process.env.MIDBRAIN_STATE_DIR = BASE;
+    expect(activateNanoClawStateDir()).toBe(BASE);
+    expect(process.env.MIDBRAIN_STATE_DIR).toBe(BASE);
   });
 
   it("trims surrounding whitespace", () => {
