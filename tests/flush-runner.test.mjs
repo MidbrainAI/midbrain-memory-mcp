@@ -30,13 +30,13 @@ function makeSource(entries, { cooldownUntil = 0 } = {}) {
 const okPost = async () => "ok";
 
 describe("runFlush", () => {
-  it("drains all entries on success and clears cooldown", async () => {
+  it("drains all entries on success without rewriting cooldown state", async () => {
     const source = makeSource([{ text: "a" }, { text: "b" }]);
     const summary = await runFlush({ source, post: okPost });
 
     expect(summary).toMatchObject({ sent: 2, survivors: 0, rateLimited: false, claimed: true });
     expect(source.state.entries).toEqual([]);
-    expect(source.state.cleared).toBe(true);
+    expect(source.state.cleared).toBe(false);
   });
 
   it("no-op when nothing is claimed", async () => {

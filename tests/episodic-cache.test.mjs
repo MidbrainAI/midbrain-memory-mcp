@@ -118,7 +118,7 @@ describe("appendToCache", () => {
     const flush = beginCacheFlush(scope);
     expect(flush.entries.map((entry) => entry.text)).toEqual(["later-valid"]);
     finishCacheFlush(flush, []);
-    expect(fs.readFileSync(cacheFile)).toEqual(torn);
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
   });
 });
 
@@ -240,7 +240,7 @@ describe("safe flush handoff", () => {
     const retry = beginCacheFlush(scope);
     expect(retry.entries.map((entry) => entry.text)).toEqual(["retry-me"]);
     finishCacheFlush(retry, []);
-    expect(fs.readFileSync(cacheFile)).toEqual(torn);
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
   });
 
   it("does not let a losing flusher delete another flusher's processing batch", () => {

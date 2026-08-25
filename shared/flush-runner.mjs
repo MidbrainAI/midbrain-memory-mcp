@@ -115,7 +115,6 @@ export async function runFlush({
       source.writeCooldownUntil(Date.now() + cooldownMs);
       log?.(`[midbrain] ${label} rate-limited after ${sent}; ${survivors.length} preserved, cooling down`);
     } else {
-      if (survivors.length === 0) source.clearCooldown();
       if (sent > 0) log?.(`[midbrain] ${label} recovered ${sent} entr${sent === 1 ? "y" : "ies"}`);
     }
     return summary;

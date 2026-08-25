@@ -158,14 +158,20 @@ function pathMatchesFile(target, stat) {
 function appendCacheBytes(target, bytes) {
   let fd;
   try {
-    const flags = fs.constants.O_WRONLY
+    const flags = fs.constants.O_RDWR
       | fs.constants.O_APPEND
       | fs.constants.O_CREAT
       | (fs.constants.O_NOFOLLOW ?? 0);
     fd = fs.openSync(target, flags, 0o600);
     const opened = fs.fstatSync(fd);
     if (!opened.isFile()) return false;
-    fs.writeFileSync(fd, bytes);
+    let prefix = Buffer.alloc(0);
+    if (opened.size > 0 && bytes.length > 0 && bytes[0] !== 0x0a) {
+      const last = Buffer.alloc(1);
+      fs.readSync(fd, last, 0, 1, opened.size - 1);
+      if (last[0] !== 0x0a) prefix = Buffer.from("\n");
+    }
+    fs.writeFileSync(fd, prefix.length > 0 ? Buffer.concat([prefix, bytes]) : bytes);
     try { fs.fchmodSync(fd, 0o600); } catch { /* ignore */ }
     const written = fs.fstatSync(fd);
     if (!sameFileIdentity(opened, written)) return false;
@@ -266,7 +272,8 @@ export function appendToCache(entry, scope) {
     ensureCacheDir();
     const cacheFile = cacheFileForScope(scope);
     const line = Buffer.from(JSON.stringify({ ...entry, ts: Date.now() }) + "\n");
-    if (appendCacheBytes(cacheFile, line) === "moved") appendCacheBytes(cacheFile, line);
+    if (appendCacheBytes(cacheFile, line) === "moved"
+      && appendCacheBytes(cacheFile, line) === "moved") appendCacheBytes(cacheFile, line);
   } catch {
     // Best effort — never crash callers over caching.
   }
@@ -345,8 +352,7 @@ export function finishCacheFlush(flush, survivors) {
     ]);
     if (pending.length > 0) {
       ensureCacheDir();
-      fs.appendFileSync(flush.liveFile, pending, { mode: 0o600 });
-      try { fs.chmodSync(flush.liveFile, 0o600); } catch { /* ignore */ }
+      if (appendCacheBytes(flush.liveFile, pending) !== "stable") return;
     }
     const final = readCacheSource(flush.processingFile);
     if (!final || !sameFileIdentity(final.stat, current.stat) || !final.raw.equals(current.raw)) return;
