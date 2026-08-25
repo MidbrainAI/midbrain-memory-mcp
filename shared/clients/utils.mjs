@@ -11,6 +11,7 @@ import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { readKeyFile } from './base.mjs';
+import { globalConfigDir } from '../state-dir.mjs';
 
 // --- Constants ---
 
@@ -173,7 +174,7 @@ function hostMigrationTarget(clientId, projectDir) {
       write(config, value) { config.apiUrl = value; },
     };
   }
-  const filePath = path.join(home(), '.config', 'midbrain', 'config.json');
+  const filePath = path.join(globalConfigDir(), 'config.json');
   return {
     filePath,
     field: `clients.${clientId}.apiUrl`,

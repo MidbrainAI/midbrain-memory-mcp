@@ -508,6 +508,101 @@ describe("Claude capture-assistant hook wrapper", () => {
     fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });
   });
+
+  it("captures the NanoClaw message delivered before a later internal-only Stop response", () => {
+    const home = tempHomeWithKey();
+    fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-capture-client"), "nanoclaw\n", { mode: 0o600 });
+    const logPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-")), "fetch.jsonl");
+    const loaded = preload(logPath);
+    const transcript = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-transcript-")), "session.jsonl");
+    const rows = [
+      { type: "user", message: { role: "user", content: "older prompt" } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", name: "mcp__nanoclaw__send_message", input: { to: "Carlos", text: "older reply" } },
+      ] } },
+      { type: "user", message: { role: "user", content: "current prompt" } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", name: "ToolSearch", input: { query: "send_message" } },
+      ] } },
+      { type: "user", message: { role: "user", content: [
+        { type: "tool_result", tool_use_id: "tool-search", content: "loaded" },
+      ] } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", name: "mcp__nanoclaw__send_message", input: {
+          to: "Carlos", text: "delivered current reply",
+        } },
+      ] } },
+      { type: "user", message: { role: "user", content: [
+        { type: "tool_result", tool_use_id: "send-message", content: "sent" },
+      ] } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "text", text: "<internal>connection status changed after delivery</internal>" },
+      ] } },
+    ];
+    fsSync.writeFileSync(transcript, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    const result = spawnSync(process.execPath, [
+      "--import", pathToFileURL(loaded.file).href,
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
+    ], {
+      input: JSON.stringify({
+        last_assistant_message: "<internal>connection status changed after delivery</internal>",
+        transcript_path: transcript,
+        cwd: "/repo",
+      }),
+      encoding: "utf8",
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    const [body] = fsSync.readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(body.text).toBe("delivered current reply");
+    expect(body.text).not.toContain("older reply");
+    expect(body.text).not.toContain("connection status");
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
+    fsSync.rmSync(path.dirname(transcript), { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
+});
+
+describe("Claude NanoClaw spool binding boundary", () => {
+  it.each([
+    ["capture-user.mjs", { prompt: "project-bound opener" }],
+    ["capture-assistant.mjs", { last_assistant_message: "project-bound reply" }],
+  ])("%s does not spool a hard project-key failure under the global sidecar", (script, payload) => {
+    const home = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-binding-home-"));
+    const project = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-binding-project-"));
+    fsSync.mkdirSync(path.join(home, ".config", "midbrain"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".config", "midbrain", ".midbrain-key"), "global-key\n", { mode: 0o600 });
+    fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-capture-client"), "nanoclaw\n", { mode: 0o600 });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-spool-binding"), `${"a".repeat(64)}\n`, { mode: 0o600 });
+    fsSync.mkdirSync(path.join(project, ".midbrain"), { recursive: true });
+    fsSync.writeFileSync(path.join(project, ".midbrain", ".midbrain-key"), "", { mode: 0o600 });
+
+    const result = spawnSync(process.execPath, [
+      path.join(REPO_ROOT, "plugins", "claude-code", script),
+    ], {
+      input: JSON.stringify({ ...payload, cwd: project }),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        MIDBRAIN_KEY_WAIT_MS: "0",
+        MIDBRAIN_API_KEY: undefined,
+        MIDBRAIN_API_URL: undefined,
+      },
+    });
+
+    expect(result.status).toBe(0);
+    expect(fsSync.existsSync(path.join(home, ".claude", ".midbrain-spool.ndjson"))).toBe(false);
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(project, { recursive: true, force: true });
+  });
 });
 
 // ===================================================================

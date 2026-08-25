@@ -196,6 +196,50 @@ Claude Code:
   (30s timeout, `Stop` async), not package-cache or checkout script paths. The
   shim resolves `npx -y midbrain-memory-mcp@latest hook claude <role>`.
 - `common.mjs` owns `createApi()`, the leveled `log` logger, and stdin parsing.
+- Opener recovery (issue #52): on a cold NanoClaw wake the opening message's
+  hook can fire before the MCP server has persisted the key
+  (`~/.config/midbrain` is ephemeral per spawn). `createApi(cwd, {waitForKey})`
+  applies a bounded key-wait (default ~20s inside the 30s hook timeout, polling
+  the resolution chain — never reading key files directly) ONLY when the
+  resolved capture-client label is `nanoclaw` (`shouldWaitForKey`); a plain host
+  with no key fails open fast. If no key resolves, the hook appends the payload
+  to a keyless recovery spool (`shared/claude-spool.mjs`) on the durable
+  `~/.claude` mount — `~/.claude/.midbrain-spool.ndjson`, key-independent so an
+  env-stripped hook can write it and a later authenticated flush can read it —
+  instead of dropping it. Bounds are env-tunable (`MIDBRAIN_KEY_WAIT_MS`,
+  `MIDBRAIN_KEY_WAIT_POLL_MS`). This closes the key race; the shim-missing race
+  on a fully-cold `--rm` spawn is inherent to NanoClaw's mount model (only
+  `~/.claude` is durable) and is tracked upstream.
+- Durable state relocation (issue #52): `MIDBRAIN_STATE_DIR` (resolver in
+  `shared/state-dir.mjs`, modeled on `logDir()`) relocates MidBrain's OWN shared
+  state — the global key/keystore/host `config.json` (`globalConfigDir()`), the
+  hook shim bin (`shimBinDir()`), and the offline cache (`cacheDir()`) — under a
+  single base. In NanoClaw the skill sets it to `/home/node/.claude/.midbrain`
+  so all of it lives on the durable `.claude-shared` mount and survives a cold
+  `--rm` spawn; because the shim then exists at t=0, this closes the
+  shim-missing race with no NanoClaw change. The base keeps the
+  `.midbrain/bin/<client>-hook` tail so `commandReferencesShim` ownership
+  matching and self-repair rewrite are unchanged. It is strictly OPT-IN: unset
+  means every path resolves to its historical location, so non-NanoClaw host
+  installs (OpenCode, host Claude, Codex, Hermes) are byte-identical. Per-client
+  native dirs (`~/.config/<client>`) are NEVER relocated — only MidBrain's own
+  shared state moves. The credential-writer's `expectedTarget`/
+  `expectedKeystorePath` validators resolve through the same resolver as the
+  writers, in lockstep, so a relocated key/keystore write is accepted at the
+  relocated path (a desync would fail every relocated write closed). No adapter
+  or installer path emits `MIDBRAIN_STATE_DIR`; only the NanoClaw skill sets it
+  in the group MCP env.
+- Spool flush (`flushClaudeSpool` in `install.mjs`, called from `runSelfRepair`
+  after `ensureHookCredential`): once the key is persisted, it drains the spool
+  in a single server-start pass via `MidbrainApi.postEpisodicResult` (a
+  controlled POST that does NOT trigger the offline-cache replay). Entries are
+  NEVER dropped: successes are removed, failures are preserved as survivors for
+  the next start. It is WAF-aware — a 429 or an HTML-bodied 403 (the issue #53
+  edge-rejection signature) stops the pass, preserves the remaining entries, and
+  persists a `~/.claude/.midbrain-spool-cooldown` timestamp so the next server
+  start defers instead of re-bursting. Small inter-POST spacing keeps a
+  recovered backlog dripping rather than bursting. Cooldown/spacing are
+  env-tunable (`MIDBRAIN_SPOOL_COOLDOWN_MS`, `MIDBRAIN_SPOOL_POST_SPACING_MS`).
 
 Codex:
 

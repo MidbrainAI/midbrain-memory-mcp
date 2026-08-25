@@ -64,6 +64,7 @@ add_mcp_server({
   env: {
     MIDBRAIN_CLIENT: "claude",
     MIDBRAIN_CAPTURE_CLIENT: "nanoclaw",
+    MIDBRAIN_STATE_DIR: "/home/node/.claude/.midbrain",
     MIDBRAIN_API_KEY: "<redacted>"
   }
 })
@@ -128,20 +129,37 @@ MidBrain hardening. Otherwise append the block once. Do not edit the composed
 ## Phase 5: Prepare Durable Hook Commands
 
 Hooks call the stable MidBrain shim, which the MCP server installs and keeps
-fresh at `~/.midbrain/bin/claude-hook` on every server start (inside NanoClaw
-containers the home directory is `/home/node`):
+fresh on every server start. Because the group MCP env sets
+`MIDBRAIN_STATE_DIR=/home/node/.claude/.midbrain`, the shim (and the API key and
+offline cache) live under the durable `.claude-shared` mount instead of the
+ephemeral `~/.midbrain` / `~/.config/midbrain` / `~/.cache/midbrain`. This is
+what lets the shim survive a cold `--rm` spawn, so the very first message's hook
+can execute even before the MCP server has finished starting:
 
 ```bash
-HOOK_SHIM="/home/node/.midbrain/bin/claude-hook"
+HOOK_SHIM="/home/node/.claude/.midbrain/bin/claude-hook"
 USER_HOOK_CMD="'${HOOK_SHIM}' user"
 ASSISTANT_HOOK_CMD="'${HOOK_SHIM}' assistant"
 ```
+
+The path keeps the `.midbrain/bin/claude-hook` tail, so the MCP server's
+self-repair still recognizes and refreshes these hook commands, and existing
+groups converge to the durable path on their first upgraded server start.
+For a positively identified legacy group that has no state-dir env yet, the
+server infers this same mounted root and completes the marker, guarded key,
+owned hook rewrite, durable shim, and historical-path compatibility shim
+before MCP readiness. The first user prompt does not serve as a warm-up.
 
 Key delivery is handled by the MCP server itself: at server start it persists
 its env `MIDBRAIN_API_KEY` to the global key file for hook child processes
 (absence-only — an existing credential is never replaced). Do not put inline
 keys on hook commands: self-repair scrubs hook-command prefixes when it
 rewrites entries, so an inline key would not survive.
+
+Keyless recovery spooling is NanoClaw-only and is bound to the locally
+resolved API identity before it can accept a row. A different binding is
+preserved but never replayed, and malformed or interrupted records are kept
+for inspection/recovery rather than discarded.
 
 Do not discover or write `/pnpm/.../midbrain-memory-mcp@<version>/...` hook
 paths. Versioned package-store paths pin hooks to an old release. The shim
@@ -185,7 +203,7 @@ The resulting settings must contain commands equivalent to this shape:
         "hooks": [
           {
             "type": "command",
-            "command": "'/home/node/.midbrain/bin/claude-hook' user",
+            "command": "'/home/node/.claude/.midbrain/bin/claude-hook' user",
             "timeout": 30
           }
         ]
@@ -196,7 +214,7 @@ The resulting settings must contain commands equivalent to this shape:
         "hooks": [
           {
             "type": "command",
-            "command": "'/home/node/.midbrain/bin/claude-hook' assistant",
+            "command": "'/home/node/.claude/.midbrain/bin/claude-hook' assistant",
             "timeout": 30,
             "async": true
           }
@@ -347,7 +365,7 @@ bash bin/ncl groups config add-mcp-server \
   --name midbrain-memory \
   --command npx \
   --args '["-y", "midbrain-memory-mcp@latest"]' \
-  --env '{"MIDBRAIN_CLIENT": "claude", "MIDBRAIN_CAPTURE_CLIENT": "nanoclaw", "MIDBRAIN_API_KEY": "<redacted>"}'
+  --env '{"MIDBRAIN_CLIENT": "claude", "MIDBRAIN_CAPTURE_CLIENT": "nanoclaw", "MIDBRAIN_STATE_DIR": "/home/node/.claude/.midbrain", "MIDBRAIN_API_KEY": "<redacted>"}'
 ```
 
 Do not approve stale pending requests that mention a pinned MidBrain version.

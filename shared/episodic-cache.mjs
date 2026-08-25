@@ -18,39 +18,42 @@
  */
 
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { createHash, randomBytes } from "crypto";
+import { cacheDir as defaultCacheDir } from "./state-dir.mjs";
 
-const DEFAULT_CACHE_DIR  = path.join(os.homedir(), ".cache", "midbrain");
 const DEFAULT_CACHE_FILE = "midbrain-episodic-cache.ndjson";
 const SCOPED_CACHE_PREFIX = "midbrain-episodic-cache-";
 const CACHE_EXT = ".ndjson";
 const PROCESSING_EXT = ".processing";
 const LOCK_EXT = ".lock";
 
-/** Resolve the current cache directory. Tests may override via _setCachePath. */
-let cacheDir  = DEFAULT_CACHE_DIR;
+/**
+ * Explicit test override for the cache directory. When null the directory is
+ * resolved lazily from state-dir on every access — honoring MIDBRAIN_STATE_DIR
+ * and a sandbox HOME set after this module is imported.
+ */
+let cacheDirOverride = null;
+function currentCacheDir() {
+  return cacheDirOverride ?? defaultCacheDir();
+}
 
 /**
- * Override cache paths for testing. Pass `null` to reset to defaults.
+ * Override cache paths for testing. Pass `null` to reset to the lazily-resolved
+ * default.
  * @param {string|null} dir
  */
 export function _setCachePath(dir) {
-  if (dir === null) {
-    cacheDir  = DEFAULT_CACHE_DIR;
-  } else {
-    cacheDir  = dir;
-  }
+  cacheDirOverride = dir === null ? null : dir;
 }
 
 function cacheFileForScope(scope) {
-  if (!scope) return path.join(cacheDir, DEFAULT_CACHE_FILE);
+  if (!scope) return path.join(currentCacheDir(), DEFAULT_CACHE_FILE);
   const scopeText = String(scope);
   const safeScope = /^[a-f0-9]{64}$/i.test(scopeText)
     ? scopeText.toLowerCase()
     : createHash("sha256").update(scopeText).digest("hex");
-  return path.join(cacheDir, `${SCOPED_CACHE_PREFIX}${safeScope}${CACHE_EXT}`);
+  return path.join(currentCacheDir(), `${SCOPED_CACHE_PREFIX}${safeScope}${CACHE_EXT}`);
 }
 
 function processingFileForScope(scope) {
@@ -62,8 +65,9 @@ function lockFileForScope(scope) {
 }
 
 function ensureCacheDir() {
-  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
-  try { fs.chmodSync(cacheDir, 0o700); } catch { /* ignore */ }
+  const dir = currentCacheDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch { /* ignore */ }
 }
 
 function emptyFlush() {
@@ -327,7 +331,7 @@ function isBindingFile(name) {
 
 function cacheBindingFiles() {
   try {
-    return fs.readdirSync(cacheDir)
+    return fs.readdirSync(currentCacheDir())
       .filter(isBindingFile)
       .map((name) => name.endsWith(PROCESSING_EXT) ? name.slice(0, -PROCESSING_EXT.length) : name);
   } catch {
@@ -359,7 +363,7 @@ export function inspectCachedEntries(scope) {
   const otherBindings = new Set(cacheBindingFiles().filter((name) => name !== currentBase));
   let otherPending = 0;
   for (const name of otherBindings) {
-    const base = path.join(cacheDir, name);
+    const base = path.join(currentCacheDir(), name);
     const live = inspectFile(base);
     const processing = inspectFile(`${base}${PROCESSING_EXT}`);
     // A binding counts as pending when it holds any content — including a
@@ -376,6 +380,6 @@ export function inspectCachedEntries(scope) {
     filesPresent,
     unparseable: filesPresent && count === 0,
     otherBindings: otherPending,
-    cacheDir,
+    cacheDir: currentCacheDir(),
   };
 }
