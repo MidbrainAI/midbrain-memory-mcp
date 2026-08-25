@@ -120,6 +120,40 @@ describe("appendToCache", () => {
     finishCacheFlush(flush, []);
     expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
   });
+
+  it("keeps a valid append separate when a torn writer lands before its write", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const torn = Buffer.from('{"text":"concurrent-torn');
+    const realWriteFile = fs.writeFileSync.bind(fs);
+    let injected = false;
+    const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, ...args) => {
+      if (!injected && typeof file === "number") {
+        const opened = fs.fstatSync(file);
+        const live = fs.statSync(cacheFile);
+        if (opened.dev === live.dev && opened.ino === live.ino) {
+          injected = true;
+          fs.appendFileSync(cacheFile, torn);
+        }
+      }
+      return realWriteFile(file, data, ...args);
+    });
+
+    try {
+      appendToCache({ text: "later-valid", role: "user" }, scope);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    const raw = fs.readFileSync(cacheFile);
+    expect(injected).toBe(true);
+    expect(raw.subarray(0, torn.length)).toEqual(torn);
+    expect(raw[torn.length]).toBe(0x0a);
+    const flush = beginCacheFlush(scope);
+    expect(flush.entries.map((entry) => entry.text)).toEqual(["later-valid"]);
+    finishCacheFlush(flush, []);
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -199,6 +233,19 @@ describe("readAndClearCache", () => {
     expect(entries).toEqual([]);
     expect(fs.readFileSync(cacheFile)).toEqual(raw);
   });
+
+  it("ignores blank separator lines without retaining phantom cache evidence", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    fs.writeFileSync(cacheFile, [
+      "",
+      JSON.stringify({ text: "valid", role: "user", ts: 1 }),
+      "",
+    ].join("\n"), "utf8");
+
+    expect(readAndClearCache(scope).map((entry) => entry.text)).toEqual(["valid"]);
+    expect(fs.existsSync(cacheFile)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -239,6 +286,43 @@ describe("safe flush handoff", () => {
     expect(raw[torn.length]).toBe(0x0a);
     const retry = beginCacheFlush(scope);
     expect(retry.entries.map((entry) => entry.text)).toEqual(["retry-me"]);
+    finishCacheFlush(retry, []);
+    expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
+  });
+
+  it("keeps a restored survivor separate when a torn writer lands before its write", () => {
+    const scope = HEX_A;
+    const cacheFile = path.join(tmpDir, `midbrain-episodic-cache-${scope}.ndjson`);
+    const torn = Buffer.from('{"text":"concurrent-torn');
+    appendToCache({ text: "retry-survivor", role: "assistant" }, scope);
+    const original = beginCacheFlush(scope);
+    const realWriteFile = fs.writeFileSync.bind(fs);
+    let injected = false;
+    const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementation((file, data, ...args) => {
+      if (!injected && typeof file === "number") {
+        const opened = fs.fstatSync(file);
+        const live = fs.statSync(cacheFile);
+        if (opened.dev === live.dev && opened.ino === live.ino) {
+          injected = true;
+          fs.appendFileSync(cacheFile, torn);
+        }
+      }
+      return realWriteFile(file, data, ...args);
+    });
+
+    try {
+      finishCacheFlush(original, original.entries);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    const raw = fs.readFileSync(cacheFile);
+    expect(injected).toBe(true);
+    expect(original.entries.map((entry) => entry.text)).toEqual(["retry-survivor"]);
+    expect(raw.subarray(0, torn.length)).toEqual(torn);
+    expect(raw[torn.length]).toBe(0x0a);
+    const retry = beginCacheFlush(scope);
+    expect(retry.entries.map((entry) => entry.text)).toEqual(["retry-survivor"]);
     finishCacheFlush(retry, []);
     expect(fs.readFileSync(cacheFile)).toEqual(Buffer.concat([torn, Buffer.from("\n")]));
   });
