@@ -184,10 +184,10 @@ Key-write policy at install time:
 
 All capture paths build episodic `memory_metadata` through
 `shared/capture-metadata.mjs` (`buildCaptureMetadata`). The originating
-`client` is always sent; `cwd` (home-relative working directory via
-`homeRelativePath`) and `session_id` (the harness session/conversation id) are
-added only when the harness payload provides them. Values are strings; absent
-fields are omitted, never sent empty.
+`client` is always sent. For `cwd`, own-home paths use `~/`, other-user
+home names are redacted, and non-user system paths remain absolute.
+`session_id` is forwarded verbatim when it is a nonblank string. Optional
+fields are omitted when absent, blank, or non-string.
 
 OpenCode:
 

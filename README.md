@@ -932,9 +932,11 @@ Auth: send an `Authorization` header with your local API key, except for
 
 `memory_metadata` on POST is optional. Values must be strings. Capture hooks
 always tag each memory with the originating client (`opencode`, `claude`,
-`codex`, or `hermes`). When the harness provides them, hooks also add scoping
-fields: `cwd` (the home-relative working directory) and `session_id` (the
-harness's own session/conversation id). Both are omitted when unavailable.
+`nanoclaw`, `codex`, or `hermes`). When the harness provides them, hooks
+also add scoping fields: `cwd` (own-home paths use `~/`, other-user home
+names are redacted, and non-user system paths remain absolute) and
+`session_id` (the harness's own session/conversation id, forwarded verbatim).
+Both are omitted when unavailable or blank.
 
 ---
 
