@@ -105,6 +105,14 @@ export async function runFlush({
       if (spacingMs > 0 && hasAnotherAttempt) await sleep(spacingMs);
     }
 
+    if (rateLimited) {
+      try {
+        source.writeCooldownUntil(Date.now() + cooldownMs);
+      } catch {
+        // Cooldown is best effort; finishing still preserves every survivor.
+      }
+    }
+
     source.finish(flush, survivors);
 
     summary.sent = sent;
@@ -112,7 +120,6 @@ export async function runFlush({
     summary.rateLimited = rateLimited;
 
     if (rateLimited) {
-      source.writeCooldownUntil(Date.now() + cooldownMs);
       log?.(`[midbrain] ${label} rate-limited after ${sent}; ${survivors.length} preserved, cooling down`);
     } else {
       if (sent > 0) log?.(`[midbrain] ${label} recovered ${sent} entr${sent === 1 ? "y" : "ies"}`);
