@@ -22,12 +22,18 @@ const CLIENT_LABEL_RE = /^[a-z][a-z0-9-]{0,31}$/;
 /**
  * Creates a MidbrainApi instance for the Claude Code client.
  * Accepts optional cwd (from hook stdin payload) for project-scoped key resolution.
+ *
+ * Passes the dynamically-detected capture-client label (see
+ * captureClientLabel) as the UA client token, so a NanoClaw-hosted Claude
+ * Code process self-identifies as "nanoclaw" rather than the static "claude"
+ * adapter id -- matching the identity already used for memory_metadata.client.
+ *
  * @param {string|undefined} cwd - The project working directory from the hook payload.
  * @returns {Promise<MidbrainApi>}
  */
 export async function createApi(cwd) {
   const projectDir = cwd?.trim() || undefined;
-  return MidbrainApi.create(getClient("claude"), projectDir);
+  return MidbrainApi.create(getClient("claude"), projectDir, { clientLabel: await captureClientLabel() });
 }
 
 /**

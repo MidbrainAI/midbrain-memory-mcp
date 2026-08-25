@@ -8,6 +8,7 @@ import os from "os";
 import path from "path";
 import { createHash } from "crypto";
 import { MidbrainApi } from "../shared/midbrain-api.mjs";
+import { PKG_VERSION } from "../shared/clients/utils.mjs";
 import {
   _setCachePath,
   readAndClearCache,
@@ -174,6 +175,32 @@ describe("MidbrainApi.fetch diagnostics", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(fetchSpy.mock.calls[1][1]).toMatchObject({ method: "POST" });
   });
+
+  it("sends X-Midbrain-User-Agent on the GET path", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ items: [] }),
+    });
+    const api = new MidbrainApi("test-key", "test-source");
+
+    await api.fetch(api.EPISODIC, { page: 1 });
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION}`);
+  });
+
+  it("sends X-Midbrain-User-Agent on the POST fallback path", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce({ ok: false, status: 405, text: vi.fn().mockResolvedValue("") })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: vi.fn().mockResolvedValue({ items: [] }) });
+    const api = new MidbrainApi("test-key", "test-source");
+
+    await api.fetch(api.EPISODIC, { page: 1 });
+
+    const [, opts] = fetchSpy.mock.calls[1];
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION}`);
+  });
 });
 
 describe("MidbrainApi diagnostic output audit", () => {
@@ -265,8 +292,18 @@ describe("MidbrainApi.storeEpisodic", () => {
     expect(url).toBe(MidbrainApi.EPISODIC);
     expect(opts.method).toBe("POST");
     expect(opts.headers.Authorization).toBe("Bearer test-key");
-    expect(opts.headers["User-Agent"]).toBe("midbrain-memory-mcp");
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION}`);
     expect(JSON.parse(opts.body)).toEqual({ text: "hello world", role: "user" });
+  });
+
+  it("appends the client id as a second UA token when configured", async () => {
+    api = new MidbrainApi("test-key", "test-source", { clientId: "opencode" });
+    api.storeEpisodic("hello world", "user", makeLog());
+
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} opencode`);
   });
 
   it("POSTs episodic data to the injected instance endpoint", async () => {
@@ -470,7 +507,7 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
     // fetch was called: once for the failed attempt, once for the new msg, once for the cached flush.
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     for (const [, options] of fetchSpy.mock.calls) {
-      expect(options.headers["User-Agent"]).toBe("midbrain-memory-mcp");
+      expect(options.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION}`);
     }
   });
 
@@ -674,6 +711,14 @@ describe("MidbrainApi.searchProcedural", () => {
     expect(opts.headers.Authorization).toBe("Bearer test-key");
   });
 
+  it("sends X-Midbrain-User-Agent header", async () => {
+    fetchSpy.mockReturnValueOnce(okJson(MOCK_RESULTS));
+    await api.searchProcedural({ query: "test" });
+
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION}`);
+  });
+
   it("appends exclude_ids as repeated query params", async () => {
     fetchSpy.mockReturnValueOnce(okJson([]));
     await api.searchProcedural({ query: "test", excludeIds: [1, 3, 7] });
@@ -771,6 +816,40 @@ describe("MidbrainApi.create", () => {
     );
   });
 
+  it("uses the client adapter's id as the UA client token", async () => {
+    const mockClient = {
+      id: "opencode",
+      resolveKey: vi.fn().mockResolvedValue({ key: "abc123", source: "test", scope: "global" }),
+    };
+    const api = await MidbrainApi.create(mockClient, "/some/dir");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ items: [] }),
+    });
+    await api.fetch(api.EPISODIC);
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} opencode`);
+    fetchSpy.mockRestore();
+  });
+
+  it("prefers an explicit clientLabel override over the adapter's id", async () => {
+    const mockClient = {
+      id: "claude",
+      resolveKey: vi.fn().mockResolvedValue({ key: "abc123", source: "test", scope: "global" }),
+    };
+    const api = await MidbrainApi.create(mockClient, "/some/dir", { clientLabel: "nanoclaw" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ items: [] }),
+    });
+    await api.fetch(api.EPISODIC);
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} nanoclaw`);
+    fetchSpy.mockRestore();
+  });
+
   it("exposes secret-free credential diagnostics from the client resolver", async () => {
     const diagnosticState = {
       entries: [
@@ -838,6 +917,18 @@ describe("MidbrainApi account operations", () => {
     await expect(MidbrainApi.createForUser(noKey)).rejects.toThrow(/No user API key configured/);
   });
 
+  it("createForUser uses the client adapter's id as the UA client token", async () => {
+    const client = {
+      id: "hermes",
+      resolveUserKey: vi.fn().mockResolvedValue({ key: "sk-user", source: "ks" }),
+    };
+    const api = await MidbrainApi.createForUser(client);
+    fetchSpy.mockResolvedValue(jsonResponse(200, []));
+    await api.listAgents();
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} hermes`);
+  });
+
   it("listAgents sends the key as a Bearer token to the account endpoint", async () => {
     fetchSpy.mockResolvedValue(jsonResponse(200, [{ agent_id: "a1", name: "One" }]));
     const api = new MidbrainApi("sk-user", "test");
@@ -845,6 +936,14 @@ describe("MidbrainApi account operations", () => {
     const [url, opts] = fetchSpy.mock.calls[0];
     expect(url).toMatch(/\/api\/v1\/account\/agents$/);
     expect(opts.headers.Authorization).toBe("Bearer sk-user");
+  });
+
+  it("listAgents sends X-Midbrain-User-Agent to the account endpoint", async () => {
+    fetchSpy.mockResolvedValue(jsonResponse(200, []));
+    const api = new MidbrainApi("sk-user", "test", { clientId: "codex" });
+    await api.listAgents();
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} codex`);
   });
 
   it("listAgents tolerates a non-array body", async () => {
