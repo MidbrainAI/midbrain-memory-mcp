@@ -231,7 +231,8 @@ Claude Code:
   in the group MCP env.
 - Spool flush (`flushClaudeSpool` in `install.mjs`, called from `runSelfRepair`
   after `ensureHookCredential`): once the key is persisted, it drains the spool
-  in a single server-start pass via `MidbrainApi.postEpisodicResult` (a
+  in a single server-start pass via the shared `runFlush`
+  (`shared/flush-runner.mjs`) using `MidbrainApi.postEpisodicResult` (a
   controlled POST that does NOT trigger the offline-cache replay). Entries are
   NEVER dropped: successes are removed, failures are preserved as survivors for
   the next start. It is WAF-aware — a 429 or an HTML-bodied 403 (the issue #53
@@ -240,6 +241,27 @@ Claude Code:
   start defers instead of re-bursting. Small inter-POST spacing keeps a
   recovered backlog dripping rather than bursting. Cooldown/spacing are
   env-tunable (`MIDBRAIN_SPOOL_COOLDOWN_MS`, `MIDBRAIN_SPOOL_POST_SPACING_MS`).
+
+Offline episodic cache discipline (issue #53):
+
+- `storeEpisodic` caches a failed POST but NO LONGER flushes the backlog on the
+  next successful store. Replaying the whole cache on every hook was the
+  amplification behind the 1,610-error incident (the same ~26 rejected entries
+  re-sent across ~60 flush cycles). A failed store now simply caches and is
+  retried at the next client/server start.
+- The cache drains once at boot via `flushEpisodicCache` in `runSelfRepair`
+  (right after `flushClaudeSpool`), through the SAME shared `runFlush` runner —
+  single-pass, WAF-aware, cooldown-gated, and paced after every attempted POST.
+- There is no permanent failure, quarantine, per-entry retry cap, or expiry: a
+  rotated/absent key, a 4xx, a 5xx, a network error, or a WAF rejection leaves
+  the entry cached to retry on a later start. A finite per-boot attempt limit
+  preserves its unattempted raw tail; it never becomes a permanent retry cap.
+  (The deleted-then-restored agent-key case recovers automatically this way.)
+- The boot drain posts only the binding proven by the current API's
+  `sha256(apiBase\0key)` cache scope. Other opaque host/key/agent buckets remain
+  untouched and visible through `memory_diagnostics` as
+  `other_cache_bindings`. One cache-wide cooldown suppresses every binding
+  across rapid restarts after a WAF rejection.
 
 Codex:
 
