@@ -7,8 +7,9 @@
  * The failure model (issue #53) is deliberately simple: there is no permanent
  * failure. Any entry that fails to POST — 4xx (e.g. a rotated/absent key),
  * 5xx, network, or a WAF rejection — is retryable and stays cached to be
- * retried on the next client/server start. Nothing is ever dropped, capped,
- * aged out, or quarantined.
+ * retried on the next client/server start. Entries have no permanent retry
+ * cap, age expiry, or quarantine. A caller may bound one pass; unattempted
+ * entries remain survivors for a later start.
  *
  * Discipline (kills the "replay the whole backlog on every hook" amplification
  * that produced 1,610 errors in 32 minutes):
@@ -52,11 +53,20 @@ const sleep = (ms) => new Promise((resolve) => (ms > 0 ? setTimeout(resolve, ms)
  * @param {(entry: object) => Promise<PostResult>} opts.post  POST one entry.
  * @param {number} [opts.spacingMs]   Inter-POST spacing (default 0).
  * @param {number} [opts.cooldownMs]  Cooldown to persist on WAF stop (default 0).
+ * @param {number} [opts.maxEntries]  Maximum entries attempted in this pass.
  * @param {(msg: string) => void} [opts.log]  Optional status logger.
  * @param {string} [opts.label]       Human label for log lines.
  * @returns {Promise<{ sent: number, survivors: number, rateLimited: boolean, claimed: boolean }>}
  */
-export async function runFlush({ source, post, spacingMs = 0, cooldownMs = 0, log, label = "flush" }) {
+export async function runFlush({
+  source,
+  post,
+  spacingMs = 0,
+  cooldownMs = 0,
+  maxEntries = Infinity,
+  log,
+  label = "flush",
+}) {
   const summary = { sent: 0, survivors: 0, rateLimited: false, claimed: false };
   try {
     if (Date.now() < source.readCooldownUntil()) {
@@ -71,15 +81,18 @@ export async function runFlush({ source, post, spacingMs = 0, cooldownMs = 0, lo
     const survivors = [];
     let rateLimited = false;
     let sent = 0;
+    const attemptLimit = Number.isFinite(maxEntries)
+      ? Math.max(0, Math.floor(maxEntries))
+      : flush.entries.length;
 
     for (let i = 0; i < flush.entries.length; i += 1) {
       const entry = flush.entries[i];
+      if (i >= attemptLimit) { survivors.push(entry); continue; }
       if (rateLimited) { survivors.push(entry); continue; }
 
       const result = await post(entry);
       if (result === "ok") {
         sent += 1;
-        if (spacingMs > 0 && i < flush.entries.length - 1) await sleep(spacingMs);
       } else if (result === "rateLimited") {
         // Stop the pass; preserve this and every remaining entry.
         rateLimited = true;
@@ -88,6 +101,8 @@ export async function runFlush({ source, post, spacingMs = 0, cooldownMs = 0, lo
         // Any other failure — retry on the next run (single pass here).
         survivors.push(entry);
       }
+      const hasAnotherAttempt = !rateLimited && i + 1 < Math.min(attemptLimit, flush.entries.length);
+      if (spacingMs > 0 && hasAnotherAttempt) await sleep(spacingMs);
     }
 
     source.finish(flush, survivors);

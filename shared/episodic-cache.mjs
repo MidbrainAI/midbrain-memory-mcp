@@ -152,9 +152,44 @@ function validEntriesFromRaw(raw) {
     .filter((entry) => entry && typeof entry.text === "string" && typeof entry.role === "string");
 }
 
-function serializeEntries(entries) {
-  if (entries.length === 0) return "";
-  return entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+function parseCacheRaw(raw) {
+  const entries = [];
+  const segments = [];
+  let start = 0;
+  while (start < raw.length) {
+    const newline = raw.indexOf(0x0a, start);
+    const end = newline === -1 ? raw.length : newline + 1;
+    const bytes = Buffer.from(raw.subarray(start, end));
+    const line = bytes.toString("utf8").trim();
+    let entry = null;
+    if (line) {
+      try { entry = JSON.parse(line); } catch { /* preserve below */ }
+    }
+    if (entry && typeof entry.text === "string" && typeof entry.role === "string") {
+      entries.push(entry);
+      segments.push({ entry, bytes });
+    } else {
+      segments.push({ bytes });
+    }
+    start = end;
+  }
+  return { entries, segments };
+}
+
+function preservedCacheBytes(flush, survivors) {
+  const survivorSet = new Set(survivors);
+  const represented = new Set();
+  const chunks = [];
+  for (const segment of flush.segments ?? []) {
+    if (!segment.entry || survivorSet.has(segment.entry)) {
+      chunks.push(segment.bytes);
+      if (segment.entry) represented.add(segment.entry);
+    }
+  }
+  for (const entry of survivors) {
+    if (!represented.has(entry)) chunks.push(Buffer.from(`${JSON.stringify(entry)}\n`));
+  }
+  return Buffer.concat(chunks);
 }
 
 /**
@@ -207,10 +242,11 @@ export function beginCacheFlush(scope) {
         return emptyFlush();
       }
     }
-    const raw = fs.readFileSync(processingFile, "utf8");
+    const parsed = parseCacheRaw(fs.readFileSync(processingFile));
     return {
       claimed: true,
-      entries: validEntriesFromRaw(raw),
+      entries: parsed.entries,
+      segments: parsed.segments,
       liveFile: cacheFile,
       processingFile,
       lockFile,
@@ -233,9 +269,10 @@ export function beginCacheFlush(scope) {
 export function finishCacheFlush(flush, survivors) {
   if (!flush || !flush.claimed || !ownsLock(flush)) return;
   try {
-    if (survivors.length > 0) {
+    const pending = preservedCacheBytes(flush, survivors);
+    if (pending.length > 0) {
       ensureCacheDir();
-      fs.appendFileSync(flush.liveFile, serializeEntries(survivors), { encoding: "utf8", mode: 0o600 });
+      fs.appendFileSync(flush.liveFile, pending, { mode: 0o600 });
       try { fs.chmodSync(flush.liveFile, 0o600); } catch { /* ignore */ }
     }
     fs.unlinkSync(flush.processingFile);
@@ -425,22 +462,21 @@ export function hasAnyCachedEntries() {
 }
 
 // ---------------------------------------------------------------------------
-// Per-scope cooldown sidecar (issue #53): a WAF rejection during the boot drain
-// persists a "do not drain before" timestamp next to the scope's cache file so
-// the next server start defers instead of re-bursting. Mirrors the spool's
-// cooldown, but scoped per binding. Never throws.
+// Cache-wide cooldown sidecar (issue #53): a WAF rejection during the boot
+// drain persists one "do not drain before" timestamp for the whole cache so a
+// rapid restart under a different binding cannot re-burst. Never throws.
 // ---------------------------------------------------------------------------
 
 const COOLDOWN_EXT = ".cooldown";
 
-function cooldownFileForScope(scope) {
-  return `${cacheFileForScope(scope)}${COOLDOWN_EXT}`;
+function cacheCooldownFile() {
+  return `${path.join(currentCacheDir(), DEFAULT_CACHE_FILE)}${COOLDOWN_EXT}`;
 }
 
 /** @returns {number} epoch-ms before which draining should be skipped; 0 when unset/corrupt. */
-export function readCacheCooldownUntil(scope) {
+export function readCacheCooldownUntil(_scope) {
   try {
-    const raw = fs.readFileSync(cooldownFileForScope(scope), "utf8").trim();
+    const raw = fs.readFileSync(cacheCooldownFile(), "utf8").trim();
     const value = Number(raw);
     return Number.isFinite(value) && value > 0 ? value : 0;
   } catch {
@@ -448,17 +484,17 @@ export function readCacheCooldownUntil(scope) {
   }
 }
 
-export function writeCacheCooldownUntil(scope, until) {
+export function writeCacheCooldownUntil(_scope, until) {
   try {
     if (!Number.isFinite(until) || until <= 0) return;
     ensureCacheDir();
-    fs.writeFileSync(cooldownFileForScope(scope), String(Math.floor(until)), { encoding: "utf8", mode: 0o600 });
-    try { fs.chmodSync(cooldownFileForScope(scope), 0o600); } catch { /* ignore */ }
+    fs.writeFileSync(cacheCooldownFile(), String(Math.floor(until)), { encoding: "utf8", mode: 0o600 });
+    try { fs.chmodSync(cacheCooldownFile(), 0o600); } catch { /* ignore */ }
   } catch {
     // Best effort.
   }
 }
 
-export function clearCacheCooldown(scope) {
-  try { fs.unlinkSync(cooldownFileForScope(scope)); } catch { /* ignore */ }
+export function clearCacheCooldown(_scope) {
+  try { fs.unlinkSync(cacheCooldownFile()); } catch { /* ignore */ }
 }

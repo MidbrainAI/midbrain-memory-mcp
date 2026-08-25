@@ -424,6 +424,7 @@ function spoolPostSpacingMs() {
 // discipline as the spool; separate env knobs so they can be tuned apart.
 const CACHE_COOLDOWN_MS = 5 * 60_000;
 const CACHE_POST_SPACING_MS = 150;
+const CACHE_MAX_ENTRIES_PER_BOOT = 100;
 
 function cacheCooldownMs() {
   const raw = Number(process.env.MIDBRAIN_CACHE_COOLDOWN_MS);
@@ -433,6 +434,11 @@ function cacheCooldownMs() {
 function cachePostSpacingMs() {
   const raw = Number(process.env.MIDBRAIN_CACHE_POST_SPACING_MS);
   return Number.isFinite(raw) && raw >= 0 ? raw : CACHE_POST_SPACING_MS;
+}
+
+function cacheMaxEntriesPerBoot() {
+  const raw = Number(process.env.MIDBRAIN_CACHE_MAX_ENTRIES_PER_BOOT);
+  return Number.isInteger(raw) && raw > 0 ? raw : CACHE_MAX_ENTRIES_PER_BOOT;
 }
 
 /**
@@ -487,13 +493,13 @@ async function flushClaudeSpool({ binding, adoptUnbound = false } = {}) {
  * The cache no longer flushes on every capture (that amplification replayed the
  * whole backlog per hook and produced the 1,610-error incident). Instead we
  * drain it once at boot, throttled, through the same shared runner as the
- * spool. There is no permanent failure: a rotated/absent key, a 4xx, a 5xx, or
- * a WAF rejection all leave the entry cached to retry on the next start —
- * nothing is dropped, capped, or quarantined.
+ * spool. There is no permanent entry failure: a rotated/absent key, a 4xx, a
+ * 5xx, or a WAF rejection leaves the entry cached to retry on a later start.
+ * One boot attempts a finite batch, but entries have no permanent retry cap,
+ * expiry, or quarantine.
  *
- * Drains EVERY scope binding in the cache dir (not just the current scope) with
- * the current authenticated key, so entries orphaned by a past key rotation are
- * recovered automatically.
+ * Only the binding proven by the current authenticated API is eligible.
+ * Opaque buckets from another host/key/agent binding remain untouched.
  *
  * Never throws — fail-open like the rest of self-repair.
  */
@@ -511,27 +517,25 @@ async function flushEpisodicCache() {
     const post = (e) => api.postEpisodicResult(e.text, e.role, e.memory_metadata);
     const spacingMs = cachePostSpacingMs();
     const cooldownMs = cacheCooldownMs();
+    const maxEntries = cacheMaxEntriesPerBoot();
 
-    // Drain every binding (current scope + orphans from past keys/hosts).
-    for (const scope of listCacheBindings()) {
-      const result = await runFlush({
-        source: {
-          begin: () => beginCacheFlush(scope),
-          finish: (flush, survivors) => finishCacheFlush(flush, survivors),
-          readCooldownUntil: () => readCacheCooldownUntil(scope),
-          writeCooldownUntil: (until) => writeCacheCooldownUntil(scope, until),
-          clearCooldown: () => clearCacheCooldown(scope),
-        },
-        post,
-        spacingMs,
-        cooldownMs,
-        log: (msg) => console.error(msg),
-        label: 'cache drain',
-      });
-      // Stop touching further bindings once the edge signals rate-limiting —
-      // one cooldown protects the whole drain, no cross-binding burst.
-      if (result.rateLimited) break;
-    }
+    const scope = api.cacheScope;
+    if (!listCacheBindings().includes(scope)) return;
+    await runFlush({
+      source: {
+        begin: () => beginCacheFlush(scope),
+        finish: (flush, survivors) => finishCacheFlush(flush, survivors),
+        readCooldownUntil: () => readCacheCooldownUntil(scope),
+        writeCooldownUntil: (until) => writeCacheCooldownUntil(scope, until),
+        clearCooldown: () => clearCacheCooldown(scope),
+      },
+      post,
+      spacingMs,
+      cooldownMs,
+      maxEntries,
+      log: (msg) => console.error(msg),
+      label: 'cache drain',
+    });
   } catch {
     // Non-fatal: cache drain must never affect the rest of startup.
   }
