@@ -73,6 +73,37 @@ describe("runFlush", () => {
     expect(source.state.cooldownUntil).toBeGreaterThan(Date.now());
   });
 
+  it("publishes a global cooldown before releasing a rate-limited binding", async () => {
+    const cooldown = { until: 0 };
+    const sourceA = makeSource([{ text: "a" }]);
+    const sourceB = makeSource([{ text: "b" }]);
+    for (const source of [sourceA, sourceB]) {
+      source.readCooldownUntil = () => cooldown.until;
+      source.writeCooldownUntil = (until) => { cooldown.until = until; };
+    }
+
+    const postB = vi.fn(okPost);
+    let runB;
+    const finishA = sourceA.finish.bind(sourceA);
+    sourceA.finish = (flush, survivors) => {
+      finishA(flush, survivors);
+      runB = runFlush({ source: sourceB, post: postB });
+    };
+
+    const summaryA = await runFlush({
+      source: sourceA,
+      post: async () => "rateLimited",
+      cooldownMs: 300_000,
+    });
+    const summaryB = await runB;
+
+    expect(summaryA).toMatchObject({ sent: 0, survivors: 1, rateLimited: true, claimed: true });
+    expect(summaryB).toMatchObject({ sent: 0, survivors: 0, rateLimited: false, claimed: false });
+    expect(postB).not.toHaveBeenCalled();
+    expect(sourceB.state.entries).toEqual([{ text: "b" }]);
+    expect(cooldown.until).toBeGreaterThan(Date.now());
+  });
+
   it("preserves ordinary failures as survivors (retry next run), single pass", async () => {
     const source = makeSource([{ text: "a" }, { text: "b" }]);
     const post = vi.fn(async (e) => (e.text === "a" ? "ok" : "failed"));
