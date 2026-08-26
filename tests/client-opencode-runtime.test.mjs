@@ -17,6 +17,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { formatPkContext } from "../shared/pk-inject.mjs";
+import { PKG_VERSION } from "../shared/clients/utils.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -70,6 +71,29 @@ describe("OpenCode plugin bundle", () => {
     const bundle = await import(pathToFileURL(BUNDLE_PATH).href);
     const client = bundle.getClient("opencode");
     expect(client.id).toBe("opencode");
+  });
+
+  it("keeps the package version after the bundle is relocated to the plugin directory", async () => {
+    const installRoot = fsSync.mkdtempSync(path.join(os.tmpdir(), "opencode-bundle-relocated-"));
+    const installedBundle = path.join(installRoot, ".config", "opencode", "plugins", "midbrain-shared.mjs");
+    fsSync.mkdirSync(path.dirname(installedBundle), { recursive: true });
+    fsSync.copyFileSync(BUNDLE_PATH, installedBundle);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [] }),
+    });
+    try {
+      const bundle = await import(`${pathToFileURL(installedBundle).href}?test=${Date.now()}`);
+      const api = new bundle.MidbrainApi("test-key", "test-source", { clientId: "opencode" });
+      await api.fetch(api.EPISODIC);
+      const [, opts] = fetchSpy.mock.calls[0];
+      expect(opts.headers["X-Midbrain-User-Agent"])
+        .toBe(`midbrain-memory-mcp/${PKG_VERSION} opencode`);
+    } finally {
+      fetchSpy.mockRestore();
+      fsSync.rmSync(installRoot, { recursive: true, force: true });
+    }
   });
 
   it("bundle buildCaptureMetadata builds client/cwd/session_id metadata", async () => {

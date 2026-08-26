@@ -425,6 +425,8 @@ describe("MidbrainApi.postEpisodicResult", () => {
     fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: true, status: 201 }));
     await expect(api.postEpisodicResult("hi", "user", { client: "nanoclaw" })).resolves.toBe("ok");
     const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION}`);
+    expect(opts.headers["User-Agent"]).toBeUndefined();
     expect(JSON.parse(opts.body)).toEqual({ text: "hi", role: "user", memory_metadata: { client: "nanoclaw" } });
   });
 
