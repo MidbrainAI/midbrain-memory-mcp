@@ -24,6 +24,7 @@ import { startMcpServer } from "../index.js";
 import { captureClientLabel } from "../plugins/claude-code/common.mjs";
 import { installShim, stableShimPath, shellQuote } from "../shared/clients/shim.mjs";
 import { MidbrainApi } from "../shared/midbrain-api.mjs";
+import { PKG_VERSION } from "../shared/clients/utils.mjs";
 import { establishSpoolBinding } from "../shared/claude-spool.mjs";
 
 const IS_WIN = process.platform === "win32";
@@ -1060,7 +1061,7 @@ describe("Issue #52 — server-start spool flush discipline", () => {
     const posts = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, opts = {}) => {
       if (String(url).includes("/memories/episodic")) {
-        posts.push(JSON.parse(opts.body));
+        posts.push({ body: JSON.parse(opts.body), headers: opts.headers });
         return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
       }
       return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
@@ -1076,17 +1077,21 @@ describe("Issue #52 — server-start spool flush discipline", () => {
       delete process.env.MIDBRAIN_SPOOL_POST_SPACING_MS;
     }
 
-    expect(posts.map((p) => p.text).sort()).toEqual(["opener one", "reply one"]);
-    expect(posts.find((post) => post.text === "opener one").memory_metadata).toEqual({
+    expect(posts.map((p) => p.body.text).sort()).toEqual(["opener one", "reply one"]);
+    expect(posts.find((post) => post.body.text === "opener one").body.memory_metadata).toEqual({
       client: "nanoclaw",
       cwd: "~/user",
       session_id: "  user-session  ",
     });
-    expect(posts.find((post) => post.text === "reply one").memory_metadata).toEqual({
+    expect(posts.find((post) => post.body.text === "reply one").body.memory_metadata).toEqual({
       client: "nanoclaw",
       cwd: "~/assistant",
       session_id: "assistant-session",
     });
+    expect(posts.every(({ headers }) =>
+      headers["X-Midbrain-User-Agent"] === `midbrain-memory-mcp/${PKG_VERSION} nanoclaw`
+      && !("User-Agent" in headers)
+    )).toBe(true);
     // Spool cleared after a fully-successful flush.
     await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
   });

@@ -33,7 +33,10 @@ async function captureUser() {
 
   let api;
   try {
-    api = await createApi(input.cwd, { waitForKey: shouldWaitForKey(client) });
+    api = await createApi(input.cwd, {
+      waitForKey: shouldWaitForKey(client),
+      clientLabel: client,
+    });
   } catch (error) {
     // No key even after the bounded wait (issue #52): spool the opener to the
     // durable ~/.claude surface so a later authenticated server-start flush

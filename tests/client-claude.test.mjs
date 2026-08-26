@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
 import { makeTestEnv } from "./helpers/test-env.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
+import { PKG_VERSION } from "../shared/clients/utils.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -637,19 +638,32 @@ describe("Claude capture hooks client label (issue #48)", () => {
 
   /**
    * Spawns a real capture script with a body-logging fetch preload and returns
-   * the episodic POST it made: { raw, body }. Proves the label actually flows
-   * into the stored memory_metadata, not just out of a helper function.
+   * the episodic POST it made: { raw, body, headers }. Proves the label
+   * actually flows into the stored memory_metadata AND the UA header, not
+   * just out of a helper function.
    */
-  function capturedEpisodic(script, homeOpts = {}, extraEnv = {}) {
+  function capturedEpisodic(script, homeOpts = {}, extraEnv = {}, testOpts = {}) {
     const home = tempHomeWithKey(homeOpts);
+    const markerPath = path.join(home, MARKER_REL);
     const logPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-label-log-")), "fetch.jsonl");
     const preloadDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-label-preload-"));
     const preloadFile = path.join(preloadDir, "fetch-preload.mjs");
     fsSync.writeFileSync(preloadFile, `
       import fs from "node:fs";
+      import fsp from "node:fs/promises";
+      const originalReadFile = fsp.readFile.bind(fsp);
+      let markerReads = 0;
+      fsp.readFile = async (file, ...args) => {
+        const result = await originalReadFile(file, ...args);
+        if (${JSON.stringify(Boolean(testOpts.mutateMarkerAfterFirstRead))} &&
+            String(file) === ${JSON.stringify(markerPath)} && ++markerReads === 1) {
+          fs.writeFileSync(${JSON.stringify(markerPath)}, ${JSON.stringify(testOpts.mutateMarkerAfterFirstRead || "")});
+        }
+        return result;
+      };
       globalThis.fetch = async (url, opts = {}) => {
         fs.appendFileSync(${JSON.stringify(logPath)},
-          JSON.stringify({ url: String(url), body: opts.body ?? null }) + "\\n");
+          JSON.stringify({ url: String(url), body: opts.body ?? null, headers: opts.headers ?? null }) + "\\n");
         return { ok: true, status: 201 };
       };
     `);
@@ -673,11 +687,15 @@ describe("Claude capture hooks client label (issue #48)", () => {
     fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
     fsSync.rmSync(preloadDir, { recursive: true, force: true });
     expect(episodic).toBeDefined();
-    return { raw: episodic.body, body: JSON.parse(episodic.body) };
+    return { raw: episodic.body, body: JSON.parse(episodic.body), headers: episodic.headers };
   }
 
   function capturedClient(script, homeOpts = {}, extraEnv = {}) {
     return capturedEpisodic(script, homeOpts, extraEnv).body.memory_metadata?.client;
+  }
+
+  function capturedUserAgent(script, homeOpts = {}, extraEnv = {}) {
+    return capturedEpisodic(script, homeOpts, extraEnv).headers?.["X-Midbrain-User-Agent"];
   }
 
   it("marker present: episodic POST body carries client nanoclaw", () => {
@@ -705,6 +723,28 @@ describe("Claude capture hooks client label (issue #48)", () => {
 
   it("defaults to claude when no marker exists", () => {
     expect(capturedClient("capture-user.mjs")).toBe("claude");
+  });
+
+  it("marker present: X-Midbrain-User-Agent carries the same nanoclaw label as memory_metadata.client", () => {
+    const { body, headers } = capturedEpisodic("capture-user.mjs", { marker: "nanoclaw\n" });
+    expect(headers["X-Midbrain-User-Agent"]).toBe(
+      `midbrain-memory-mcp/${PKG_VERSION} ${body.memory_metadata.client}`,
+    );
+  });
+
+  it("reuses the captured label when the marker changes before API creation", () => {
+    const { body, headers } = capturedEpisodic(
+      "capture-user.mjs",
+      { marker: "nanoclaw\n" },
+      {},
+      { mutateMarkerAfterFirstRead: "claude\n" },
+    );
+    expect(body.memory_metadata.client).toBe("nanoclaw");
+    expect(headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} nanoclaw`);
+  });
+
+  it("defaults X-Midbrain-User-Agent to the claude token when no marker exists", () => {
+    expect(capturedUserAgent("capture-user.mjs")).toBe(`midbrain-memory-mcp/${PKG_VERSION} claude`);
   });
 
   it("MIDBRAIN_CAPTURE_CLIENT env wins over the marker", () => {

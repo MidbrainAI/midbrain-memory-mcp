@@ -61,18 +61,24 @@ export function isNoKeyError(err) {
  * plain host Claude install with no key must fail open FAST (no 20s block), so
  * when `waitForKey` is false a missing key throws on the first attempt.
  *
+ * Passes the dynamically-detected capture-client label (see
+ * captureClientLabel) as the UA client token, so a NanoClaw-hosted Claude
+ * Code process self-identifies as "nanoclaw" rather than the static "claude"
+ * adapter id -- matching the identity already used for memory_metadata.client.
+ *
  * @param {string|undefined} cwd - The project working directory from the hook payload.
- * @param {{ waitForKey?: boolean }} [opts]
+ * @param {{ waitForKey?: boolean, clientLabel?: string }} [opts]
  * @returns {Promise<MidbrainApi>}
  */
-export async function createApi(cwd, { waitForKey = false } = {}) {
+export async function createApi(cwd, { waitForKey = false, clientLabel } = {}) {
   const projectDir = cwd?.trim() || undefined;
   const client = getClient("claude");
+  const resolvedClientLabel = clientLabel || await captureClientLabel();
   const deadline = Date.now() + (waitForKey ? keyWaitDeadlineMs() : 0);
   const pollMs = keyWaitPollMs();
   for (;;) {
     try {
-      return await MidbrainApi.create(client, projectDir);
+      return await MidbrainApi.create(client, projectDir, { clientLabel: resolvedClientLabel });
     } catch (err) {
       if (!isNoKeyError(err) || Date.now() + pollMs > deadline) throw err;
       await sleep(pollMs);

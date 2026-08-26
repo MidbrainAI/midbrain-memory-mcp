@@ -24,6 +24,9 @@ import { createHash } from "crypto";
 
 import { appendToCache } from "./episodic-cache.mjs";
 import { DEFAULT_API_BASE, resolveApiHost } from "./api-host.mjs";
+import { PKG_NAME, PKG_VERSION } from "./clients/utils.mjs";
+
+/* global __MIDBRAIN_PACKAGE_NAME__, __MIDBRAIN_PACKAGE_VERSION__ */
 
 const API_BASE_FROM_ENV = Boolean(process.env.MIDBRAIN_API_URL);
 const API_BASE = process.env.MIDBRAIN_API_URL || DEFAULT_API_BASE;
@@ -50,8 +53,27 @@ const PK_DEFAULT_MIN_SCORE = 0.5;
 const PK_DEFAULT_TIMEOUT_MS = 2000;
 
 const DEFAULT_SEARCH_LIMIT = 10;
-const PRODUCT_USER_AGENT = "midbrain-memory-mcp";
+const CLIENT_LABEL_RE = /^[a-z][a-z0-9-]{0,31}$/;
+// Base UA product token, e.g. "midbrain-memory-mcp/0.4.8". Per-instance
+// #userAgent appends the resolved client id (e.g. "opencode") as a second
+// space-separated UA-stack token -- see MidbrainApi constructor and #headers.
+const PRODUCT_NAME = typeof __MIDBRAIN_PACKAGE_NAME__ === "string"
+  ? __MIDBRAIN_PACKAGE_NAME__
+  : PKG_NAME;
+const PRODUCT_VERSION = typeof __MIDBRAIN_PACKAGE_VERSION__ === "string"
+  ? __MIDBRAIN_PACKAGE_VERSION__
+  : PKG_VERSION;
+const PRODUCT_USER_AGENT = `${PRODUCT_NAME}/${PRODUCT_VERSION}`;
 const ERROR_BODY_MAX = 200;
+
+/** Resolve an explicit or runtime client label without admitting new UA tokens. */
+function resolveClientLabel(clientId, override) {
+  const candidate = override === undefined
+    ? process.env.MIDBRAIN_CAPTURE_CLIENT
+    : override;
+  const normalized = typeof candidate === "string" ? candidate.trim() : "";
+  return CLIENT_LABEL_RE.test(normalized) ? normalized : clientId;
+}
 
 /**
  * Bound and sanitize an account-API error body before surfacing it: cap the
@@ -94,13 +116,16 @@ export class MidbrainApi {
   #credentialScopes;
   #credentialShadowNote;
   #endpoints;
+  #userAgent;
 
   /**
    * @param {string} key API key.
    * @param {string} source Debug label for key origin.
    * @param {{apiBase?: string, apiBaseScope?: string, apiBaseSource?: string,
    *   keyScope?: string, credentialScopes?: object[],
-   *   credentialShadowNote?: string|null}} [options]
+   *   credentialShadowNote?: string|null, clientId?: string}} [options]
+   *   `clientId` (e.g. "opencode", "codex", "generic") is appended as a
+   *   second UA-stack token -- see #headers.
    */
   constructor(key, source, options = {}) {
     this.#key = key;
@@ -112,17 +137,39 @@ export class MidbrainApi {
     this.#credentialScopes = options.credentialScopes || [];
     this.#credentialShadowNote = options.credentialShadowNote || null;
     this.#endpoints = buildEndpoints(this.#apiBase);
+    this.#userAgent = options.clientId ? `${PRODUCT_USER_AGENT} ${options.clientId}` : PRODUCT_USER_AGENT;
     this.#cacheScope = createHash("sha256")
       .update(`${this.#apiBase}\0${key}`)
       .digest("hex");
   }
 
   /**
+   * Shared header builder for every request to the memory/account API.
+   * @param {{json?: boolean}} [opts] Set `json: true` to add Content-Type
+   *   for a JSON request body.
+   * @returns {Record<string, string>}
+   */
+  #headers({ json = false } = {}) {
+    const headers = {
+      Authorization: `Bearer ${this.#key}`,
+      "X-Midbrain-User-Agent": this.#userAgent,
+    };
+    if (json) headers["Content-Type"] = "application/json";
+    return headers;
+  }
+
+  /**
    * Factory: resolve key from a client adapter, return ready-to-use instance.
    * @param {import('./clients/base.mjs').BaseClient} client
    * @param {string} [projectDir]
+   * @param {{clientLabel?: string}} [opts] `clientLabel` overrides `client.id`
+   *   as the UA client token; when omitted, a validated
+   *   `MIDBRAIN_CAPTURE_CLIENT` runtime label wins. This supports clients whose
+   *   reported identity can
+   *   differ at runtime from their static adapter id (e.g. Claude Code
+   *   running inside a NanoClaw container reports "nanoclaw", not "claude").
    */
-  static async create(client, projectDir) {
+  static async create(client, projectDir, { clientLabel } = {}) {
     const result = await client.resolveKey(projectDir, { includeScope: true });
     if (!result) throw new Error("No API key configured. Run: npx midbrain-memory-mcp install");
     const host = await resolveApiHost({
@@ -138,6 +185,7 @@ export class MidbrainApi {
       keyScope: result.scope,
       credentialScopes: credentialState.entries,
       credentialShadowNote: credentialState.shadowNote,
+      clientId: resolveClientLabel(client.id, clientLabel),
     });
   }
 
@@ -148,8 +196,10 @@ export class MidbrainApi {
    * authenticated with the user key rather than an agent key.
    *
    * @param {import('./clients/base.mjs').BaseClient} client
+   * @param {{clientLabel?: string}} [opts] `clientLabel` overrides `client.id`;
+   *   when omitted, a validated `MIDBRAIN_CAPTURE_CLIENT` runtime label wins.
    */
-  static async createForUser(client) {
+  static async createForUser(client, { clientLabel } = {}) {
     const result = await client.resolveUserKey();
     if (!result) {
       throw new Error(
@@ -167,6 +217,7 @@ export class MidbrainApi {
       apiBaseScope: host.scope,
       apiBaseSource: host.source,
       keyScope: "global",
+      clientId: resolveClientLabel(client.id, clientLabel),
     });
   }
 
@@ -222,7 +273,7 @@ export class MidbrainApi {
 
     let response = await fetch(url.toString(), {
       method: "GET",
-      headers: { Authorization: `Bearer ${this.#key}` },
+      headers: this.#headers(),
     });
 
     // GET->POST fallback: if GET endpoint not yet deployed, retry with legacy POST.
@@ -230,10 +281,7 @@ export class MidbrainApi {
       console.error(`[API] GET ${url.toString()} returned ${response.status}, retrying with POST`);
       response = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.#key}`,
-          "Content-Type": "application/json",
-        },
+        headers: this.#headers({ json: true }),
         body: JSON.stringify(params),
       });
     }
@@ -301,11 +349,7 @@ export class MidbrainApi {
     try {
       const response = await fetch(this.#endpoints.EPISODIC, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.#key}`,
-          "User-Agent": PRODUCT_USER_AGENT,
-        },
+        headers: this.#headers({ json: true }),
         body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
       });
       if (response.ok) return "ok";
@@ -340,11 +384,7 @@ export class MidbrainApi {
     try {
       const response = await fetch(this.#endpoints.EPISODIC, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.#key}`,
-          "User-Agent": PRODUCT_USER_AGENT,
-        },
+        headers: this.#headers({ json: true }),
         body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
       });
       if (!response.ok) {
@@ -384,7 +424,7 @@ export class MidbrainApi {
 
       const response = await fetch(url.toString(), {
         method:  "GET",
-        headers: { Authorization: `Bearer ${this.#key}` },
+        headers: this.#headers(),
         signal:  AbortSignal.timeout(timeoutMs ?? PK_DEFAULT_TIMEOUT_MS),
       });
 
@@ -415,11 +455,7 @@ export class MidbrainApi {
    * @returns {Promise<any>}  Parsed JSON, or null for 204.
    */
   async #accountRequest(method, suffix, body) {
-    const headers = {
-      Authorization: `Bearer ${this.#key}`,
-      "User-Agent": PRODUCT_USER_AGENT,
-    };
-    if (body !== undefined) headers["Content-Type"] = "application/json";
+    const headers = this.#headers({ json: body !== undefined });
 
     // Build the URL from the instance base (resolved per user-key scope), never
     // a module-level default — a self-hosted user must not hit memory.midbrain.ai.
