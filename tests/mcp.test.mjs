@@ -19,6 +19,7 @@ import os from "os";
 import path from "path";
 
 import { createServer } from "../index.js";
+import { PKG_VERSION } from "../shared/clients/utils.mjs";
 
 // Windows cannot represent POSIX 0o600 file modes; skip exact-mode assertions
 // there (the key file is still written; only the permission bits differ).
@@ -341,6 +342,28 @@ describe("memory_search tool", () => {
     expect(text).toContain("[user |");
     expect(text).toContain("relevance=");
     expect(text).toContain("How do I set up the project?");
+  });
+
+  it("uses the validated runtime client label for NanoClaw MCP requests", async () => {
+    const savedClient = process.env.MIDBRAIN_CLIENT;
+    const savedCaptureClient = process.env.MIDBRAIN_CAPTURE_CLIENT;
+    const callOffset = fetchSpy.mock.calls.length;
+    process.env.MIDBRAIN_CLIENT = "claude";
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+    try {
+      await client.callTool({ name: "memory_search", arguments: { query: "setup" } });
+    } finally {
+      if (savedClient === undefined) delete process.env.MIDBRAIN_CLIENT;
+      else process.env.MIDBRAIN_CLIENT = savedClient;
+      if (savedCaptureClient === undefined) delete process.env.MIDBRAIN_CAPTURE_CLIENT;
+      else process.env.MIDBRAIN_CAPTURE_CLIENT = savedCaptureClient;
+    }
+
+    const requestHeaders = fetchSpy.mock.calls.slice(callOffset).map(([, opts]) => opts.headers);
+    expect(requestHeaders.length).toBeGreaterThan(0);
+    expect(requestHeaders.every((headers) =>
+      headers["X-Midbrain-User-Agent"] === `midbrain-memory-mcp/${PKG_VERSION} nanoclaw`
+    )).toBe(true);
   });
 
   it("includes source:line for semantic memories with metadata", async () => {

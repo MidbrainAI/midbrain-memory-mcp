@@ -53,6 +53,7 @@ const PK_DEFAULT_MIN_SCORE = 0.5;
 const PK_DEFAULT_TIMEOUT_MS = 2000;
 
 const DEFAULT_SEARCH_LIMIT = 10;
+const CLIENT_LABEL_RE = /^[a-z][a-z0-9-]{0,31}$/;
 // Base UA product token, e.g. "midbrain-memory-mcp/0.4.8". Per-instance
 // #userAgent appends the resolved client id (e.g. "opencode") as a second
 // space-separated UA-stack token -- see MidbrainApi constructor and #headers.
@@ -64,6 +65,15 @@ const PRODUCT_VERSION = typeof __MIDBRAIN_PACKAGE_VERSION__ === "string"
   : PKG_VERSION;
 const PRODUCT_USER_AGENT = `${PRODUCT_NAME}/${PRODUCT_VERSION}`;
 const ERROR_BODY_MAX = 200;
+
+/** Resolve an explicit or runtime client label without admitting new UA tokens. */
+function resolveClientLabel(clientId, override) {
+  const candidate = override === undefined
+    ? process.env.MIDBRAIN_CAPTURE_CLIENT
+    : override;
+  const normalized = typeof candidate === "string" ? candidate.trim() : "";
+  return CLIENT_LABEL_RE.test(normalized) ? normalized : clientId;
+}
 
 /**
  * Bound and sanitize an account-API error body before surfacing it: cap the
@@ -153,7 +163,9 @@ export class MidbrainApi {
    * @param {import('./clients/base.mjs').BaseClient} client
    * @param {string} [projectDir]
    * @param {{clientLabel?: string}} [opts] `clientLabel` overrides `client.id`
-   *   as the UA client token -- used by clients whose reported identity can
+   *   as the UA client token; when omitted, a validated
+   *   `MIDBRAIN_CAPTURE_CLIENT` runtime label wins. This supports clients whose
+   *   reported identity can
    *   differ at runtime from their static adapter id (e.g. Claude Code
    *   running inside a NanoClaw container reports "nanoclaw", not "claude").
    */
@@ -173,7 +185,7 @@ export class MidbrainApi {
       keyScope: result.scope,
       credentialScopes: credentialState.entries,
       credentialShadowNote: credentialState.shadowNote,
-      clientId: clientLabel || client.id,
+      clientId: resolveClientLabel(client.id, clientLabel),
     });
   }
 
@@ -184,8 +196,10 @@ export class MidbrainApi {
    * authenticated with the user key rather than an agent key.
    *
    * @param {import('./clients/base.mjs').BaseClient} client
+   * @param {{clientLabel?: string}} [opts] `clientLabel` overrides `client.id`;
+   *   when omitted, a validated `MIDBRAIN_CAPTURE_CLIENT` runtime label wins.
    */
-  static async createForUser(client) {
+  static async createForUser(client, { clientLabel } = {}) {
     const result = await client.resolveUserKey();
     if (!result) {
       throw new Error(
@@ -203,7 +217,7 @@ export class MidbrainApi {
       apiBaseScope: host.scope,
       apiBaseSource: host.source,
       keyScope: "global",
-      clientId: client.id,
+      clientId: resolveClientLabel(client.id, clientLabel),
     });
   }
 

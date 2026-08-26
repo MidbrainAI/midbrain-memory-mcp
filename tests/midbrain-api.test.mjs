@@ -881,6 +881,54 @@ describe("MidbrainApi.create", () => {
     fetchSpy.mockRestore();
   });
 
+  it("uses a validated MIDBRAIN_CAPTURE_CLIENT when no explicit override is provided", async () => {
+    const saved = process.env.MIDBRAIN_CAPTURE_CLIENT;
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+    const mockClient = {
+      id: "claude",
+      resolveKey: vi.fn().mockResolvedValue({ key: "abc123", source: "test", scope: "global" }),
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ items: [] }),
+    });
+    try {
+      const api = await MidbrainApi.create(mockClient, "/some/dir");
+      await api.fetch(api.EPISODIC);
+      const [, opts] = fetchSpy.mock.calls[0];
+      expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} nanoclaw`);
+    } finally {
+      fetchSpy.mockRestore();
+      if (saved === undefined) delete process.env.MIDBRAIN_CAPTURE_CLIENT;
+      else process.env.MIDBRAIN_CAPTURE_CLIENT = saved;
+    }
+  });
+
+  it("rejects an invalid runtime client label and falls back to the adapter id", async () => {
+    const saved = process.env.MIDBRAIN_CAPTURE_CLIENT;
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw extra";
+    const mockClient = {
+      id: "claude",
+      resolveKey: vi.fn().mockResolvedValue({ key: "abc123", source: "test", scope: "global" }),
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({ items: [] }),
+    });
+    try {
+      const api = await MidbrainApi.create(mockClient, "/some/dir");
+      await api.fetch(api.EPISODIC);
+      const [, opts] = fetchSpy.mock.calls[0];
+      expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} claude`);
+    } finally {
+      fetchSpy.mockRestore();
+      if (saved === undefined) delete process.env.MIDBRAIN_CAPTURE_CLIENT;
+      else process.env.MIDBRAIN_CAPTURE_CLIENT = saved;
+    }
+  });
+
   it("exposes secret-free credential diagnostics from the client resolver", async () => {
     const diagnosticState = {
       entries: [
@@ -958,6 +1006,25 @@ describe("MidbrainApi account operations", () => {
     await api.listAgents();
     const [, opts] = fetchSpy.mock.calls[0];
     expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} hermes`);
+  });
+
+  it("createForUser uses the validated runtime client label", async () => {
+    const saved = process.env.MIDBRAIN_CAPTURE_CLIENT;
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+    const client = {
+      id: "claude",
+      resolveUserKey: vi.fn().mockResolvedValue({ key: "sk-user", source: "ks" }),
+    };
+    try {
+      const api = await MidbrainApi.createForUser(client);
+      fetchSpy.mockResolvedValue(jsonResponse(200, []));
+      await api.listAgents();
+      const [, opts] = fetchSpy.mock.calls[0];
+      expect(opts.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION} nanoclaw`);
+    } finally {
+      if (saved === undefined) delete process.env.MIDBRAIN_CAPTURE_CLIENT;
+      else process.env.MIDBRAIN_CAPTURE_CLIENT = saved;
+    }
   });
 
   it("listAgents sends the key as a Bearer token to the account endpoint", async () => {
