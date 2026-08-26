@@ -11,6 +11,7 @@ Each release can have three files:
 
 Latest releases:
 
+- [v0.4.9 full](v0.4.9.md), [light](v0.4.9-light.md), [TLDR](v0.4.9-tldr.md)
 - [v0.4.8 full](v0.4.8.md), [light](v0.4.8-light.md), [TLDR](v0.4.8-tldr.md)
 - [v0.4.7 full](v0.4.7.md), [light](v0.4.7-light.md), [TLDR](v0.4.7-tldr.md)
 - [v0.4.6 full](v0.4.6.md), [light](v0.4.6-light.md), [TLDR](v0.4.6-tldr.md)

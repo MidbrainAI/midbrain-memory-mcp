@@ -3,6 +3,43 @@
 All notable public release changes for `midbrain-memory-mcp` are tracked here.
 Full release-note bodies live in `docs/releases/`.
 
+## 0.4.9
+
+Full notes: [docs/releases/v0.4.9.md](docs/releases/v0.4.9.md)
+
+### Added
+
+- Added optional `cwd` and `session_id` metadata to episodic captures across
+  OpenCode, Claude Code, Codex, Hermes, and NanoClaw, with cross-user path
+  privacy normalization.
+- Added `X-Midbrain-User-Agent` to authenticated memory and account requests,
+  reporting the package version and resolved client identity without replacing
+  the standard user-agent header.
+
+### Changed
+
+- Moved failed episodic-cache replay to one bounded, paced, binding-scoped
+  boot pass instead of replaying the backlog from successful capture hooks.
+- Made NanoClaw's MidBrain-owned state relocatable to its durable Claude mount,
+  including keys, shims, host config, keystore, and offline cache.
+
+### Fixed
+
+- Migrated existing NanoClaw groups to the `nanoclaw` capture label before MCP
+  readiness while leaving ordinary Claude Code hosts labeled `claude`.
+- Recovered the first user and assistant captures on a cold NanoClaw wake with
+  bounded key resolution and a binding-scoped, loss-preserving recovery spool.
+- Prevented offline-cache replay amplification and cross-binding replay while
+  preserving failed, malformed, torn, concurrent, and rate-limited evidence.
+- Kept NanoClaw spool and offline-cache recovery metadata aligned with direct
+  capture metadata.
+
+### Notes
+
+- No MCP tools were removed or renamed, and there are no breaking changes.
+- Recovery remains deliberately at-least-once; uncertain evidence is retained
+  rather than discarded.
+
 ## 0.4.8
 
 Full notes: [docs/releases/v0.4.8.md](docs/releases/v0.4.8.md)
