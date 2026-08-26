@@ -17,10 +17,10 @@
  */
 
 import { readFile } from 'fs/promises';
-import { homedir } from 'os';
 import { join } from 'path';
 import { readKeystore, getUserKey } from '../keystore.mjs';
 import { classifyScopeError, credentialShadowNote } from '../credential-scope.mjs';
+import { globalConfigDir } from '../state-dir.mjs';
 
 const KEY_FILENAME = ".midbrain-key";
 const KEYSTORE_FILENAME = '.midbrain-keystore.json';
@@ -169,7 +169,7 @@ export class BaseClient {
   }
 
   async #resolveGlobalKey() {
-    const globalPath = join(homedir(), '.config', 'midbrain', KEY_FILENAME);
+    const globalPath = join(globalConfigDir(), KEY_FILENAME);
     const key = await readKeyFile(globalPath);
     return key ? { key, source: globalPath } : null;
   }
@@ -189,7 +189,7 @@ export class BaseClient {
       const key = process.env[USER_ENV_VAR].trim();
       if (key) return { key, source: `env:${USER_ENV_VAR}` };
     }
-    const globalDir = join(homedir(), '.config', 'midbrain');
+    const globalDir = globalConfigDir();
     const ks = await readKeystore(join(globalDir, KEYSTORE_FILENAME));
     if (ks) {
       const key = getUserKey(ks);

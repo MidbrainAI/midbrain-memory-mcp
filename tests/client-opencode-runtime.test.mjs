@@ -72,6 +72,17 @@ describe("OpenCode plugin bundle", () => {
     expect(client.id).toBe("opencode");
   });
 
+  it("bundle buildCaptureMetadata builds client/cwd/session_id metadata", async () => {
+    const bundle = await import(pathToFileURL(BUNDLE_PATH).href);
+    const cwd = path.join(os.homedir(), "proj");
+    expect(bundle.buildCaptureMetadata({ client: "opencode", cwd, sessionId: "s1" })).toEqual({
+      client: "opencode",
+      cwd: "~/proj",
+      session_id: "s1",
+    });
+    expect(bundle.buildCaptureMetadata({ client: "opencode" })).toEqual({ client: "opencode" });
+  });
+
   it("dev shim re-exports the same symbols as the bundle", async () => {
     const shim = await import(pathToFileURL(SHIM_PATH).href);
     expect(typeof shim.MidbrainApi).toBe("function");
@@ -217,6 +228,15 @@ describe("OpenCode plugin PK delivery helpers", () => {
 
     expect(output.parts[0].text).toBe("How does OpenCode deliver context?");
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("/search/procedural"))).toBe(false);
+    await vi.waitFor(() => {
+      const episodicCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/memories/episodic"));
+      expect(episodicCall).toBeDefined();
+      expect(JSON.parse(episodicCall[1].body).memory_metadata).toEqual({
+        client: "opencode",
+        cwd: "/repo",
+        session_id: "session-1",
+      });
+    });
   });
 
   it("mutates the current chat.message text part when PK matches and injection is opted in", async () => {
@@ -302,6 +322,11 @@ describe("OpenCode plugin PK delivery helpers", () => {
       expect(body.text).toBe("Visible answer");
       expect(body.text).not.toContain("Echo Risk");
       expect(body.text).not.toContain("<!-- mb:pk 13 -->");
+      expect(body.memory_metadata).toEqual({
+        client: "opencode",
+        cwd: "/repo",
+        session_id: "session-1",
+      });
     });
   });
 });

@@ -79,6 +79,23 @@ describe("buildShimBody — canonical byte parity with e0abf99", () => {
   });
 });
 
+describe("buildShimBody — NanoClaw state propagation", () => {
+  const stateDir = "/home/node/.claude/.midbrain";
+
+  it("exports the nonsecret state root in POSIX Claude shims", () => {
+    const body = buildShimBody("claude", { platform: "linux", stateDir });
+    expect(body).toContain(`MIDBRAIN_STATE_DIR='${stateDir}'`);
+    expect(body).toContain("export MIDBRAIN_STATE_DIR");
+    expect(body).toContain('hook claude "$@"');
+  });
+
+  it("sets the nonsecret state root in Windows Claude shims", () => {
+    const body = buildShimBody("claude", { platform: "win32", stateDir: "C:\\Users\\node\\.claude\\.midbrain" });
+    expect(body).toContain('set "MIDBRAIN_STATE_DIR=C:\\Users\\node\\.claude\\.midbrain"');
+    expect(body).toContain('hook claude "%~1"');
+  });
+});
+
 describe("buildShimBody — dev variants (S3)", () => {
   it("posix dev bodies carry the dev marker and shellQuoted checkout paths", () => {
     for (const client of ["claude", "hermes"]) {
@@ -246,6 +263,25 @@ describe("installShim (sandboxed)", () => {
       const statAfter = await fs.stat(shimFile);
       expect(statAfter.mode & 0o777).toBe(0o755); // exec restored
       expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs);
+    } finally {
+      await env.restore();
+    }
+  });
+
+  it.skipIf(IS_WIN)("repair replaces the generated dev state assignment instead of leaving stale state effective", async () => {
+    const env = await makeTestEnv();
+    try {
+      const firstState = path.join(env.home, "state-one");
+      const secondState = path.join(env.home, "state-two");
+      await installShim("claude", { mode: "install", isDev: true, stateDir: firstState });
+
+      const result = await installShim("claude", { mode: "repair", stateDir: secondState });
+      const body = await fs.readFile(stableShimPath("claude"), "utf8");
+
+      expect(result.written).toBe(true);
+      expect(body.match(/^MIDBRAIN_STATE_DIR=/gm)).toHaveLength(1);
+      expect(body).toContain(`MIDBRAIN_STATE_DIR='${secondState}'`);
+      expect(body).not.toContain(firstState);
     } finally {
       await env.restore();
     }

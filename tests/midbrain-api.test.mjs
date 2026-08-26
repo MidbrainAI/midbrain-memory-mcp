@@ -400,6 +400,70 @@ describe("MidbrainApi.storeEpisodic", () => {
 });
 
 // ---------------------------------------------------------------------------
+// postEpisodicResult — disciplined single-entry POST for the spool flush (#52)
+// ---------------------------------------------------------------------------
+
+describe("MidbrainApi.postEpisodicResult", () => {
+  let fetchSpy;
+  let api;
+
+  beforeEach(() => {
+    api = new MidbrainApi("test-key", "test-source");
+  });
+
+  afterEach(() => {
+    fetchSpy?.mockRestore();
+  });
+
+  function mockResponse({ ok, status, contentType }) {
+    const headers = new Map();
+    if (contentType) headers.set("content-type", contentType);
+    return { ok, status, headers, text: async () => "", json: async () => ({}) };
+  }
+
+  it("returns 'ok' on 2xx", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: true, status: 201 }));
+    await expect(api.postEpisodicResult("hi", "user", { client: "nanoclaw" })).resolves.toBe("ok");
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({ text: "hi", role: "user", memory_metadata: { client: "nanoclaw" } });
+  });
+
+  it("returns 'rateLimited' on 429", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: false, status: 429 }));
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("rateLimited");
+  });
+
+  it("returns 'rateLimited' on an HTML-bodied 403 (WAF/edge rejection)", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ ok: false, status: 403, contentType: "text/html" }),
+    );
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("rateLimited");
+  });
+
+  it("returns 'failed' on a JSON 403 (genuine auth/permission denial)", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ ok: false, status: 403, contentType: "application/json" }),
+    );
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("failed");
+  });
+
+  it("returns 'failed' on 5xx and on a network error, never throwing", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: false, status: 503 }));
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("failed");
+    fetchSpy.mockRestore();
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("boom"));
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("failed");
+  });
+
+  it("does not touch the offline cache (no flush side effects)", async () => {
+    // A pure POST helper: only one fetch call, no cache-flush GET/POST storm.
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: true, status: 201 }));
+    await api.postEpisodicResult("hi", "user");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // storeEpisodic — cache-on-fail / flush-on-success
 // ---------------------------------------------------------------------------
 
@@ -443,13 +507,21 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
   it("caches entry on network failure", async () => {
     fetchSpy.mockRejectedValueOnce(new Error("network down"));
 
-    await api.storeEpisodic("hello", "user", log, { client: "opencode" });
+    await api.storeEpisodic("hello", "user", log, {
+      client: "opencode",
+      cwd: "~/project",
+      session_id: "session-cache",
+    });
 
     const cached = readAndClearCache(cacheScopeForKey("test-key"));
     expect(cached).toHaveLength(1);
     expect(cached[0].text).toBe("hello");
     expect(cached[0].role).toBe("user");
-    expect(cached[0].memory_metadata).toEqual({ client: "opencode" });
+    expect(cached[0].memory_metadata).toEqual({
+      client: "opencode",
+      cwd: "~/project",
+      session_id: "session-cache",
+    });
   });
 
   it("caches entry on non-2xx response", async () => {
@@ -492,26 +564,28 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
     expect(hasCachedEntries(cacheScopeForKey("test-key"))).toBe(false);
   });
 
-  it("flushes cached entries on next successful POST", async () => {
+  it("does NOT flush the backlog on a successful store (issue #53: no per-hook amplification)", async () => {
     // First call fails — entry gets cached.
     fetchSpy.mockRejectedValueOnce(new Error("offline"));
     await api.storeEpisodic("cached msg", "user", log, { client: "claude" });
     expect(hasCachedEntries(cacheScopeForKey("test-key"))).toBe(true);
 
-    // Second call succeeds — should flush the cache.
+    // Second call succeeds — it must POST ONLY itself, never replay the backlog.
     fetchSpy.mockResolvedValue({ ok: true, status: 200 });
     await api.storeEpisodic("new msg", "assistant", log);
 
-    // Cache should be empty now.
-    expect(hasCachedEntries(cacheScopeForKey("test-key"))).toBe(false);
-    // fetch was called: once for the failed attempt, once for the new msg, once for the cached flush.
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    // fetch was called exactly twice: the failed attempt + the new msg. NO
+    // third call for a backlog flush. The cached entry remains for boot drain.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
     for (const [, options] of fetchSpy.mock.calls) {
       expect(options.headers["X-Midbrain-User-Agent"]).toBe(`midbrain-memory-mcp/${PKG_VERSION}`);
     }
+    expect(hasCachedEntries(cacheScopeForKey("test-key"))).toBe(true);
+    const stillCached = readAndClearCache(cacheScopeForKey("test-key"));
+    expect(stillCached.map((e) => e.text)).toEqual(["cached msg"]);
   });
 
-  it("does not flush one API key's cached entries under another API key", async () => {
+  it("a successful store under one key never POSTs another key's cached entry", async () => {
     const apiA = new MidbrainApi("key-a", "source-a");
     const apiB = new MidbrainApi("key-b", "source-b");
 
@@ -522,22 +596,17 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
     await apiB.storeEpisodic("trigger from key B", "user", log, { client: "codex" });
     await apiA.storeEpisodic("trigger from key A", "user", log, { client: "codex" });
 
-    const posts = fetchSpy.mock.calls.map(([, opts]) => ({
-      authorization: opts.headers.Authorization,
-      body: JSON.parse(opts.body),
-    }));
-
-    expect(posts).not.toContainEqual(expect.objectContaining({
-      authorization: "Bearer key-b",
-      body: expect.objectContaining({ text: "cached under key A" }),
-    }));
-    expect(posts).toContainEqual(expect.objectContaining({
-      authorization: "Bearer key-a",
-      body: expect.objectContaining({ text: "cached under key A" }),
-    }));
+    // "cached under key A" was POSTed exactly ONCE — the original failed
+    // attempt. With no per-store flush, no later store re-POSTs it; it stays
+    // cached under key-a's scope for the boot drain.
+    const postsOfA = fetchSpy.mock.calls
+      .map(([, opts]) => JSON.parse(opts.body).text)
+      .filter((t) => t === "cached under key A");
+    expect(postsOfA).toHaveLength(1);
+    expect(hasCachedEntries(cacheScopeForKey("key-a"))).toBe(true);
   });
 
-  it("does not flush cached entries across API-host bindings", async () => {
+  it("caches per host-binding scope without cross-binding flush on store", async () => {
     const hostA = "http://127.0.0.1:43123";
     const hostB = "http://127.0.0.1:43124";
     const apiA = new MidbrainApi("shared-key", "source", { apiBase: hostA });
@@ -551,6 +620,7 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
 
     fetchSpy.mockResolvedValue({ ok: true, status: 200 });
     await apiB.storeEpisodic("write B", "user", log);
+    // host B's successful store never touches host A's cached entry.
     expect(hasCachedEntries(scopeA)).toBe(true);
     expect(hasCachedEntries(scopeB)).toBe(false);
     const hostBBodies = fetchSpy.mock.calls
@@ -558,11 +628,14 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
       .map(([, opts]) => JSON.parse(opts.body).text);
     expect(hostBBodies).not.toContain("pending A");
 
+    // A later successful store under host A also does not flush (boot drains it).
     await apiA.storeEpisodic("return A", "user", log);
-    expect(hasCachedEntries(scopeA)).toBe(false);
-    const flushed = fetchSpy.mock.calls.find(([, opts]) =>
+    expect(hasCachedEntries(scopeA)).toBe(true);
+    // "pending A" was POSTed exactly once — the original failed attempt — and
+    // never re-flushed by a subsequent store.
+    const pendingAPosts = fetchSpy.mock.calls.filter(([, opts]) =>
       JSON.parse(opts.body).text === "pending A");
-    expect(flushed[0]).toBe(`${hostA}/api/v1/memories/episodic`);
+    expect(pendingAPosts).toHaveLength(1);
   });
 
   it("leaves a pre-normalization trailing-slash bucket orphaned", async () => {
@@ -584,65 +657,21 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
       .toEqual(["old raw bucket"]);
   });
 
-  it("re-caches entries that still fail during flush", async () => {
-    // Seed two entries into the cache.
+  it("a successful store leaves seeded backlog entries untouched (drained at boot, not on store)", async () => {
+    // Seed two entries into the cache as a prior offline session would have.
     appendToCache(
       { text: "entry1", role: "user", memory_metadata: { client: "codex" } },
       cacheScopeForKey("test-key"),
     );
     appendToCache({ text: "entry2", role: "assistant" }, cacheScopeForKey("test-key"));
 
-    // The current call succeeds, first flush entry fails, second flush entry succeeds.
-    fetchSpy
-      .mockResolvedValueOnce({ ok: true, status: 200 })   // current storeEpisodic call
-      .mockResolvedValueOnce({                              // flush entry1 — fail
-        ok: false,
-        status: 500,
-        text: vi.fn().mockResolvedValue("server error"),
-      })
-      .mockResolvedValueOnce({ ok: true, status: 200 });   // flush entry2 — success
-
-    await api.storeEpisodic("trigger", "user", log);
-
-    // entry1 should still be cached, entry2 should be gone.
-    const remaining = readAndClearCache(cacheScopeForKey("test-key"));
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].text).toBe("entry1");
-    expect(remaining[0].memory_metadata).toEqual({ client: "codex" });
-  });
-
-  it("preserves concurrent appends when failed flush survivors are re-cached", async () => {
-    appendToCache({ text: "survivor", role: "user" }, cacheScopeForKey("test-key"));
-    appendToCache({ text: "flush succeeds", role: "assistant" }, cacheScopeForKey("test-key"));
-
-    fetchSpy
-      .mockResolvedValueOnce({ ok: true, status: 200 })
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: vi.fn().mockImplementation(async () => {
-          appendToCache({ text: "concurrent append", role: "user" }, cacheScopeForKey("test-key"));
-          return "server error";
-        }),
-      })
-      .mockResolvedValueOnce({ ok: true, status: 200 });
-
-    await api.storeEpisodic("trigger", "user", log);
-
-    const remaining = readAndClearCache(cacheScopeForKey("test-key"));
-    expect(remaining.map((entry) => entry.text).sort()).toEqual(["concurrent append", "survivor"]);
-  });
-
-  it("clears cache completely when all flush entries succeed", async () => {
-    appendToCache({ text: "a", role: "user" }, cacheScopeForKey("test-key"));
-    appendToCache({ text: "b", role: "assistant" }, cacheScopeForKey("test-key"));
-
+    // A fresh successful store must POST only itself and NOT replay the backlog.
     fetchSpy.mockResolvedValue({ ok: true, status: 200 });
-
     await api.storeEpisodic("trigger", "user", log);
 
-    expect(hasCachedEntries(cacheScopeForKey("test-key"))).toBe(false);
-    expect(readAndClearCache(cacheScopeForKey("test-key"))).toEqual([]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1); // only "trigger", no backlog replay
+    const remaining = readAndClearCache(cacheScopeForKey("test-key"));
+    expect(remaining.map((e) => e.text).sort()).toEqual(["entry1", "entry2"]);
   });
 
   it("logs cache activity", async () => {

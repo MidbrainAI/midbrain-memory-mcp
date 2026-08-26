@@ -10,6 +10,7 @@ import os from 'os';
 import path from 'path';
 import { readKeyFile } from './base.mjs';
 import { KEY_FILENAME, MIDBRAIN_DIR } from './utils.mjs';
+import { globalConfigDir } from '../state-dir.mjs';
 
 const TEST_SANDBOX_ENV = 'MIDBRAIN_TEST_SANDBOX';
 const CLIENT_IDS = new Set(['opencode', 'claude', 'codex', 'nanoclaw', 'hermes']);
@@ -106,7 +107,9 @@ async function enforceTestGuard(targetPath) {
 
 function expectedTarget(clientId, scope, projectDir) {
   if (scope === 'global' && clientId === 'generic') {
-    return path.join(os.homedir(), '.config', 'midbrain', KEY_FILENAME);
+    // Honors MIDBRAIN_STATE_DIR in lockstep with the writers (Generic.writeKey,
+    // ensureHookCredential) so a relocated global key write is not refused.
+    return path.join(globalConfigDir(), KEY_FILENAME);
   }
   if (scope === 'client' && CLIENT_IDS.has(clientId)) {
     return path.join(os.homedir(), '.config', clientId, KEY_FILENAME);
@@ -266,7 +269,7 @@ export async function writeCredential({
 
 /** The only permitted keystore target: the global keystore path. */
 function expectedKeystorePath() {
-  return path.join(os.homedir(), '.config', 'midbrain', KEYSTORE_FILENAME);
+  return path.join(globalConfigDir(), KEYSTORE_FILENAME);
 }
 
 /**

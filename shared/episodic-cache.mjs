@@ -18,39 +18,43 @@
  */
 
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { createHash, randomBytes } from "crypto";
+import { cacheDir as defaultCacheDir } from "./state-dir.mjs";
 
-const DEFAULT_CACHE_DIR  = path.join(os.homedir(), ".cache", "midbrain");
 const DEFAULT_CACHE_FILE = "midbrain-episodic-cache.ndjson";
 const SCOPED_CACHE_PREFIX = "midbrain-episodic-cache-";
 const CACHE_EXT = ".ndjson";
 const PROCESSING_EXT = ".processing";
 const LOCK_EXT = ".lock";
-
-/** Resolve the current cache directory. Tests may override via _setCachePath. */
-let cacheDir  = DEFAULT_CACHE_DIR;
+const LINE_FEED = Buffer.from("\n");
 
 /**
- * Override cache paths for testing. Pass `null` to reset to defaults.
+ * Explicit test override for the cache directory. When null the directory is
+ * resolved lazily from state-dir on every access — honoring MIDBRAIN_STATE_DIR
+ * and a sandbox HOME set after this module is imported.
+ */
+let cacheDirOverride = null;
+function currentCacheDir() {
+  return cacheDirOverride ?? defaultCacheDir();
+}
+
+/**
+ * Override cache paths for testing. Pass `null` to reset to the lazily-resolved
+ * default.
  * @param {string|null} dir
  */
 export function _setCachePath(dir) {
-  if (dir === null) {
-    cacheDir  = DEFAULT_CACHE_DIR;
-  } else {
-    cacheDir  = dir;
-  }
+  cacheDirOverride = dir === null ? null : dir;
 }
 
 function cacheFileForScope(scope) {
-  if (!scope) return path.join(cacheDir, DEFAULT_CACHE_FILE);
+  if (!scope) return path.join(currentCacheDir(), DEFAULT_CACHE_FILE);
   const scopeText = String(scope);
   const safeScope = /^[a-f0-9]{64}$/i.test(scopeText)
     ? scopeText.toLowerCase()
     : createHash("sha256").update(scopeText).digest("hex");
-  return path.join(cacheDir, `${SCOPED_CACHE_PREFIX}${safeScope}${CACHE_EXT}`);
+  return path.join(currentCacheDir(), `${SCOPED_CACHE_PREFIX}${safeScope}${CACHE_EXT}`);
 }
 
 function processingFileForScope(scope) {
@@ -62,8 +66,9 @@ function lockFileForScope(scope) {
 }
 
 function ensureCacheDir() {
-  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
-  try { fs.chmodSync(cacheDir, 0o700); } catch { /* ignore */ }
+  const dir = currentCacheDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch { /* ignore */ }
 }
 
 function emptyFlush() {
@@ -138,6 +143,65 @@ function releaseLock(flush) {
   }
 }
 
+function sameFileIdentity(left, right) {
+  return Boolean(left && right && left.dev === right.dev && left.ino === right.ino);
+}
+
+function pathMatchesFile(target, stat) {
+  try {
+    const current = fs.lstatSync(target);
+    return current.isFile() && sameFileIdentity(current, stat);
+  } catch {
+    return false;
+  }
+}
+
+function appendCacheBytes(target, bytes) {
+  let fd;
+  try {
+    const flags = fs.constants.O_RDWR
+      | fs.constants.O_APPEND
+      | fs.constants.O_CREAT
+      | (fs.constants.O_NOFOLLOW ?? 0);
+    fd = fs.openSync(target, flags, 0o600);
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile()) return false;
+    fs.writeFileSync(fd, bytes);
+    try { fs.fchmodSync(fd, 0o600); } catch { /* ignore */ }
+    const written = fs.fstatSync(fd);
+    if (!sameFileIdentity(opened, written)) return false;
+    return pathMatchesFile(target, written) ? "stable" : "moved";
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
+function readCacheSource(target) {
+  let fd;
+  try {
+    const before = fs.lstatSync(target);
+    if (!before.isFile()) return null;
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+    fd = fs.openSync(target, flags);
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || !sameFileIdentity(before, opened)) return null;
+    const raw = fs.readFileSync(fd);
+    const after = fs.fstatSync(fd);
+    if (!sameFileIdentity(opened, after) || after.size !== raw.length) return null;
+    return pathMatchesFile(target, after) ? { raw, stat: after } : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
 function validEntriesFromRaw(raw) {
   return raw
     .split("\n")
@@ -148,9 +212,47 @@ function validEntriesFromRaw(raw) {
     .filter((entry) => entry && typeof entry.text === "string" && typeof entry.role === "string");
 }
 
-function serializeEntries(entries) {
-  if (entries.length === 0) return "";
-  return entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
+function parseCacheRaw(raw) {
+  const entries = [];
+  const segments = [];
+  let start = 0;
+  while (start < raw.length) {
+    const newline = raw.indexOf(0x0a, start);
+    const end = newline === -1 ? raw.length : newline + 1;
+    const bytes = Buffer.from(raw.subarray(start, end));
+    const line = bytes.toString("utf8").trim();
+    if (!line) {
+      // Leading LF separators are framing, not malformed cache evidence.
+      start = end;
+      continue;
+    }
+    let entry = null;
+    try { entry = JSON.parse(line); } catch { /* preserve below */ }
+    if (entry && typeof entry.text === "string" && typeof entry.role === "string") {
+      entries.push(entry);
+      segments.push({ entry, bytes });
+    } else {
+      segments.push({ bytes });
+    }
+    start = end;
+  }
+  return { entries, segments };
+}
+
+function preservedCacheBytes(flush, survivors) {
+  const survivorSet = new Set(survivors);
+  const represented = new Set();
+  const chunks = [];
+  for (const segment of flush.segments ?? []) {
+    if (!segment.entry || survivorSet.has(segment.entry)) {
+      chunks.push(segment.bytes);
+      if (segment.entry) represented.add(segment.entry);
+    }
+  }
+  for (const entry of survivors) {
+    if (!represented.has(entry)) chunks.push(Buffer.from(`${JSON.stringify(entry)}\n`));
+  }
+  return Buffer.concat(chunks);
 }
 
 /**
@@ -167,9 +269,12 @@ export function appendToCache(entry, scope) {
   try {
     ensureCacheDir();
     const cacheFile = cacheFileForScope(scope);
-    const line = JSON.stringify({ ...entry, ts: Date.now() }) + "\n";
-    fs.appendFileSync(cacheFile, line, { encoding: "utf8", mode: 0o600 });
-    try { fs.chmodSync(cacheFile, 0o600); } catch { /* ignore */ }
+    const line = Buffer.concat([
+      LINE_FEED,
+      Buffer.from(`${JSON.stringify({ ...entry, ts: Date.now() })}\n`),
+    ]);
+    if (appendCacheBytes(cacheFile, line) === "moved"
+      && appendCacheBytes(cacheFile, line) === "moved") appendCacheBytes(cacheFile, line);
   } catch {
     // Best effort — never crash callers over caching.
   }
@@ -203,10 +308,18 @@ export function beginCacheFlush(scope) {
         return emptyFlush();
       }
     }
-    const raw = fs.readFileSync(processingFile, "utf8");
+    const claimed = readCacheSource(processingFile);
+    if (!claimed) {
+      releaseLock(flush);
+      return emptyFlush();
+    }
+    const parsed = parseCacheRaw(claimed.raw);
     return {
       claimed: true,
-      entries: validEntriesFromRaw(raw),
+      entries: parsed.entries,
+      segments: parsed.segments,
+      snapshotRaw: claimed.raw,
+      sourceStat: claimed.stat,
       liveFile: cacheFile,
       processingFile,
       lockFile,
@@ -229,11 +342,24 @@ export function beginCacheFlush(scope) {
 export function finishCacheFlush(flush, survivors) {
   if (!flush || !flush.claimed || !ownsLock(flush)) return;
   try {
-    if (survivors.length > 0) {
+    const current = readCacheSource(flush.processingFile);
+    if (!current || !sameFileIdentity(current.stat, flush.sourceStat)) return;
+    const snapshot = flush.snapshotRaw || Buffer.alloc(0);
+    if (current.raw.length < snapshot.length
+      || !current.raw.subarray(0, snapshot.length).equals(snapshot)) return;
+    const retained = preservedCacheBytes(flush, survivors);
+    const pending = Buffer.concat([
+      retained.length > 0 ? LINE_FEED : Buffer.alloc(0),
+      retained,
+      current.raw.subarray(snapshot.length),
+    ]);
+    if (pending.length > 0) {
       ensureCacheDir();
-      fs.appendFileSync(flush.liveFile, serializeEntries(survivors), { encoding: "utf8", mode: 0o600 });
-      try { fs.chmodSync(flush.liveFile, 0o600); } catch { /* ignore */ }
+      if (appendCacheBytes(flush.liveFile, pending) !== "stable") return;
     }
+    const final = readCacheSource(flush.processingFile);
+    if (!final || !sameFileIdentity(final.stat, current.stat) || !final.raw.equals(current.raw)) return;
+    if (!pathMatchesFile(flush.processingFile, final.stat)) return;
     fs.unlinkSync(flush.processingFile);
   } catch {
     // Best effort. Leaving the processing file is recoverable on next flush.
@@ -327,7 +453,7 @@ function isBindingFile(name) {
 
 function cacheBindingFiles() {
   try {
-    return fs.readdirSync(cacheDir)
+    return fs.readdirSync(currentCacheDir())
       .filter(isBindingFile)
       .map((name) => name.endsWith(PROCESSING_EXT) ? name.slice(0, -PROCESSING_EXT.length) : name);
   } catch {
@@ -359,7 +485,7 @@ export function inspectCachedEntries(scope) {
   const otherBindings = new Set(cacheBindingFiles().filter((name) => name !== currentBase));
   let otherPending = 0;
   for (const name of otherBindings) {
-    const base = path.join(cacheDir, name);
+    const base = path.join(currentCacheDir(), name);
     const live = inspectFile(base);
     const processing = inspectFile(`${base}${PROCESSING_EXT}`);
     // A binding counts as pending when it holds any content — including a
@@ -376,6 +502,84 @@ export function inspectCachedEntries(scope) {
     filesPresent,
     unparseable: filesPresent && count === 0,
     otherBindings: otherPending,
-    cacheDir,
+    cacheDir: currentCacheDir(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Boot drain support (issue #53): enumerate ALL scope bindings so a single
+// authenticated drain at server start can recover entries orphaned by a past
+// key rotation or host change — not just the current scope.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the scope token from a base binding filename. Returns undefined for
+ * the unscoped default file (so cacheFileForScope(undefined) maps back to it).
+ * @param {string} name
+ * @returns {string|undefined}
+ */
+function scopeFromFilename(name) {
+  if (name === DEFAULT_CACHE_FILE) return undefined;
+  if (name.startsWith(SCOPED_CACHE_PREFIX) && name.endsWith(CACHE_EXT)) {
+    return name.slice(SCOPED_CACHE_PREFIX.length, -CACHE_EXT.length);
+  }
+  return undefined;
+}
+
+/**
+ * List every cache-binding scope currently on disk (live or processing),
+ * de-duplicated. Each returned value round-trips through cacheFileForScope()
+ * to the same file, so a caller can begin/finish a flush per binding.
+ * @returns {Array<string|undefined>}
+ */
+export function listCacheBindings() {
+  const seen = new Map(); // key -> scope (dedupes undefined default too)
+  for (const name of cacheBindingFiles()) {
+    const scope = scopeFromFilename(name);
+    seen.set(scope ?? "", scope);
+  }
+  return [...seen.values()];
+}
+
+/** True when ANY binding (current or orphaned) holds pending entries. */
+export function hasAnyCachedEntries() {
+  return listCacheBindings().some((scope) => hasCachedEntries(scope));
+}
+
+// ---------------------------------------------------------------------------
+// Cache-wide cooldown sidecar (issue #53): a WAF rejection during the boot
+// drain persists one "do not drain before" timestamp for the whole cache so a
+// rapid restart under a different binding cannot re-burst. Never throws.
+// ---------------------------------------------------------------------------
+
+const COOLDOWN_EXT = ".cooldown";
+
+function cacheCooldownFile() {
+  return `${path.join(currentCacheDir(), DEFAULT_CACHE_FILE)}${COOLDOWN_EXT}`;
+}
+
+/** @returns {number} epoch-ms before which draining should be skipped; 0 when unset/corrupt. */
+export function readCacheCooldownUntil(_scope) {
+  try {
+    const raw = fs.readFileSync(cacheCooldownFile(), "utf8").trim();
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function writeCacheCooldownUntil(_scope, until) {
+  try {
+    if (!Number.isFinite(until) || until <= 0) return;
+    ensureCacheDir();
+    fs.writeFileSync(cacheCooldownFile(), String(Math.floor(until)), { encoding: "utf8", mode: 0o600 });
+    try { fs.chmodSync(cacheCooldownFile(), 0o600); } catch { /* ignore */ }
+  } catch {
+    // Best effort.
+  }
+}
+
+export function clearCacheCooldown(_scope) {
+  try { fs.unlinkSync(cacheCooldownFile()); } catch { /* ignore */ }
 }

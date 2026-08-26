@@ -6,6 +6,9 @@
  *   - pre_llm_call  -> capture the user prompt   (extra.user_message)
  *   - post_llm_call -> capture the assistant text (extra.assistant_response)
  *
+ * Top-level `cwd` and `session_id` are forwarded into episodic memory_metadata
+ * for scoping.
+ *
  * Failure policy: best-effort capture. A hook must never crash Hermes — every
  * path fails open and returns {} (or the injection payload) on stdout.
  */
@@ -13,9 +16,8 @@
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
 import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
+import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
-
-const HERMES_METADATA = { client: "hermes" };
 
 export async function createApi(cwd) {
   return MidbrainApi.create(getClient("hermes"), cwd);
@@ -40,6 +42,17 @@ function payloadCwd(input) {
 }
 
 /**
+ * Pull the Hermes session id. Per the shell-hook wire protocol it rides the
+ * top level of the payload (alongside `cwd`), not inside `extra`.
+ */
+function payloadSessionId(input) {
+  const id = typeof input?.session_id === "string" && input.session_id.trim()
+    ? input.session_id
+    : undefined;
+  return id;
+}
+
+/**
  * Capture the user prompt as episodic memory. When PK injection is explicitly
  * enabled (legacy opt-in), search for relevant entries and return a Hermes
  * context-injection payload: { context: "..." }.
@@ -60,7 +73,7 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
   }
   logKeySource(deps, api);
 
-  await postEpisodic(prompt, "user", deps, api);
+  await postEpisodic(prompt, "user", input, deps, api);
 
   if (!isPkInjectionEnabled()) return undefined;
 
@@ -95,14 +108,19 @@ export async function captureAssistant(input, deps = makeDefaultDeps()) {
   }
   logKeySource(deps, api);
 
-  await postEpisodic(text, "assistant", deps, api);
+  await postEpisodic(text, "assistant", input, deps, api);
   return undefined;
 }
 
-async function postEpisodic(text, role, deps, api) {
+async function postEpisodic(text, role, input, deps, api) {
   try {
     if (!text) return true;
-    const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.logger, HERMES_METADATA));
+    const metadata = buildCaptureMetadata({
+      client: "hermes",
+      cwd: payloadCwd(input),
+      sessionId: payloadSessionId(input),
+    });
+    const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.logger, metadata));
     return stored !== false;
   } catch (err) {
     safeLog(deps.logger, `HERMES CAPTURE ERROR (${role}): ${errorMessage(err)}`);

@@ -23,14 +23,19 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import os from 'os';
+import { globalConfigDir } from './state-dir.mjs';
 
 export const KEYSTORE_FILENAME = '.midbrain-keystore.json';
 export const KEYSTORE_VERSION = 1;
 
-/** Absolute path to the global keystore (~/.config/midbrain/.midbrain-keystore.json). */
+/**
+ * Absolute path to the global keystore. Default:
+ * ~/.config/midbrain/.midbrain-keystore.json; relocated under
+ * MIDBRAIN_STATE_DIR when set (in lockstep with the credential-writer's
+ * keystore validator).
+ */
 export function globalKeystorePath() {
-  return path.join(os.homedir(), '.config', 'midbrain', KEYSTORE_FILENAME);
+  return path.join(globalConfigDir(), KEYSTORE_FILENAME);
 }
 
 /** Read the global keystore, or an empty keystore if absent. */

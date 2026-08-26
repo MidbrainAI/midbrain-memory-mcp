@@ -12,6 +12,7 @@ import { createHash, randomUUID } from "crypto";
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
 import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
+import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-assistant-turns");
 const TOOL_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-tool-events");
@@ -21,7 +22,6 @@ const MAX_ASSISTANT_NOTES_CHARS = 4_000;
 const MAX_DETAIL_CHARS = 500;
 const MAX_EVENTS = 10;
 const REDACTED = "[redacted]";
-const CODEX_METADATA = { client: "codex" };
 const SECRET_KEY_RE = /(?:api[_-]?key|authorization|bearer|client[_-]?secret|password|secret|token)/i;
 const SECRET_VALUE_RES = [
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
@@ -56,7 +56,7 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
     return undefined;
   }
 
-  await postEpisodic(prompt, "user", input?.cwd, deps, api);
+  await postEpisodic(prompt, "user", input, deps, api);
 
   if (!isPkInjectionEnabled()) return undefined;
 
@@ -84,11 +84,11 @@ export async function captureAssistant(input, deps = makeDefaultDeps()) {
   if (plan.deferred) return;
   let stored = true;
   for (const entry of plan.entries) {
-    stored = await postEpisodic(entry, "assistant", input?.cwd, deps) && stored;
+    stored = await postEpisodic(entry, "assistant", input, deps) && stored;
   }
   const summary = plan.skipToolSummary ? "" : readToolSummary(input, deps);
   if (summary) {
-    const summaryStored = await postEpisodic(summary, "assistant", input?.cwd, deps);
+    const summaryStored = await postEpisodic(summary, "assistant", input, deps);
     if (summaryStored) removeToolBuffer(input, deps);
     stored = summaryStored && stored;
   }
@@ -149,15 +149,16 @@ async function runSelfUpdate() {
   } catch { /* never break the hook */ }
 }
 
-async function postEpisodic(text, role, cwd, deps, api) {
+async function postEpisodic(text, role, input, deps, api) {
   try {
     if (role === "assistant") text = scrubInjectedPkContext(text);
     if (!text) return true;
+    const cwd = typeof input?.cwd === "string" && input.cwd.trim() ? input.cwd : undefined;
     if (!api) {
-      const projectDir = typeof cwd === "string" && cwd.trim() ? cwd : undefined;
-      api = await deps.createApi(projectDir);
+      api = await deps.createApi(cwd);
     }
-    const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.logger, CODEX_METADATA));
+    const metadata = buildCaptureMetadata({ client: "codex", cwd, sessionId: input?.session_id });
+    const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.logger, metadata));
     return stored !== false;
   } catch (err) {
     safeLog(deps.logger, `CODEX CAPTURE ERROR (${role}): ${errorMessage(err)}`);

@@ -61,7 +61,7 @@ describe("Codex hook capture", () => {
   });
 
   it("captureUser stores a non-empty prompt with Codex metadata", async () => {
-    await captureUser({ prompt: "remember this", cwd: "/repo" }, deps);
+    await captureUser({ prompt: "remember this", cwd: "/repo", session_id: "  user-session  " }, deps);
 
     expect(deps.createApi).toHaveBeenCalledOnce();
     expect(deps.createApi).toHaveBeenCalledWith("/repo");
@@ -69,7 +69,7 @@ describe("Codex hook capture", () => {
       "remember this",
       "user",
       deps.logger,
-      { client: "codex" },
+      { client: "codex", cwd: "/repo", session_id: "  user-session  " },
     ]);
   });
 
@@ -115,13 +115,17 @@ describe("Codex hook capture", () => {
   });
 
   it("captureAssistant stores the last assistant message", async () => {
-    await captureAssistant({ last_assistant_message: "done", cwd: "/repo" }, deps);
+    await captureAssistant({
+      last_assistant_message: "done",
+      cwd: "/repo",
+      session_id: "  assistant-session  ",
+    }, deps);
 
     expect(firstStore(deps)).toEqual([
       "done",
       "assistant",
       deps.logger,
-      { client: "codex" },
+      { client: "codex", cwd: "/repo", session_id: "  assistant-session  " },
     ]);
   });
 
@@ -233,7 +237,7 @@ describe("Codex hook capture", () => {
 
   it("captureToolUse buffers events and Stop emits one summary per turn", async () => {
     await captureToolUse({
-      session_id: "s1",
+      session_id: "  s1  ",
       turn_id: "t1",
       tool_name: "Bash",
       tool_use_id: "u1",
@@ -255,7 +259,7 @@ describe("Codex hook capture", () => {
     expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(1);
     const [summary, role, , metadata] = firstStore(deps);
     expect(role).toBe("assistant");
-    expect(metadata).toEqual({ client: "codex" });
+    expect(metadata).toEqual({ client: "codex", session_id: "s1" });
     expect(summary).toContain("Tool activity summary");
     expect(summary).toContain("Bash x1");
     expect(summary).toContain("apply_patch x1");
@@ -277,12 +281,22 @@ describe("Codex hook capture", () => {
       tool_response: { exit_code: 0 },
     }, deps);
 
-    await captureAssistant({ transcript_path: transcript, session_id: "s1", turn_id: "t1" }, deps);
+    await captureAssistant({
+      transcript_path: transcript,
+      cwd: "/repo",
+      session_id: "  s1  ",
+      turn_id: "t1",
+    }, deps);
 
     expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(3);
     expect(deps.api.storeEpisodic.mock.calls[0][0]).toBe("done");
     expect(deps.api.storeEpisodic.mock.calls[1][0]).toContain("Assistant reasoning/commentary summary");
     expect(deps.api.storeEpisodic.mock.calls[2][0]).toContain("Tool activity summary");
+    expect(deps.api.storeEpisodic.mock.calls.map((call) => call[3])).toEqual([
+      { client: "codex", cwd: "/repo", session_id: "  s1  " },
+      { client: "codex", cwd: "/repo", session_id: "  s1  " },
+      { client: "codex", cwd: "/repo", session_id: "  s1  " },
+    ]);
   });
 
   it("keeps tool buffers retryable when summary storage fails", async () => {
@@ -491,12 +505,13 @@ describe("Codex hook wrappers", () => {
     expect(result.stdout).toBe("");
   });
 
-  it("UserPromptSubmit wrapper caches outage memory and only flushes it with the original key", () => {
+  it("UserPromptSubmit wrapper caches an outage memory under the current key scope (issue #53: no per-store flush; a different key never re-POSTs it)", () => {
     const home = tempHomeWithNamedKey("key-a");
     const loaded = preloadWithRequestLog();
     const fetchLog = path.join(home, "fetch-log.ndjson");
 
     try {
+      // Capture fails for key-a -> entry is cached (never lost).
       const outage = runPersistentUserHook({
         home,
         preloadFile: loaded.file,
@@ -508,37 +523,26 @@ describe("Codex hook wrappers", () => {
       expect(outage.stdout).toBe("");
       expect(cachedTexts(home)).toContain("outage prompt from key A");
 
+      // A later successful capture under a DIFFERENT key must never re-POST
+      // key-a's cached entry (per-key scoping). The entry stays cached under
+      // key-a's scope; boot-time drain recovery is covered deterministically in
+      // tests/cache-boot-drain.test.mjs (runSelfRepair), not here.
       writeHomeKey(home, "key-b");
-      const wrongKeyRecovery = runPersistentUserHook({
+      const otherKey = runPersistentUserHook({
         home,
         preloadFile: loaded.file,
         fetchLog,
         mode: "ok",
         prompt: "fresh prompt from key B",
       });
-      expect(wrongKeyRecovery.status).toBe(0);
-      expect(cachedTexts(home)).toContain("outage prompt from key A");
+      expect(otherKey.status).toBe(0);
 
-      writeHomeKey(home, "key-a");
-      const originalKeyRecovery = runPersistentUserHook({
-        home,
-        preloadFile: loaded.file,
-        fetchLog,
-        mode: "ok",
-        prompt: "fresh prompt from key A",
-      });
-      expect(originalKeyRecovery.status).toBe(0);
-
-      const posts = readFetchLog(fetchLog);
-      expect(posts).not.toContainEqual(expect.objectContaining({
+      expect(readFetchLog(fetchLog)).not.toContainEqual(expect.objectContaining({
         authorization: "Bearer key-b",
         body: expect.objectContaining({ text: "outage prompt from key A" }),
       }));
-      expect(posts).toContainEqual(expect.objectContaining({
-        authorization: "Bearer key-a",
-        body: expect.objectContaining({ text: "outage prompt from key A" }),
-      }));
-      expect(cachedTexts(home)).not.toContain("outage prompt from key A");
+      // key-a's entry is untouched by the key-b session (still in key-a's bucket).
+      expect(cachedTexts(home)).toContain("outage prompt from key A");
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
       fs.rmSync(loaded.dir, { recursive: true, force: true });

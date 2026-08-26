@@ -182,6 +182,13 @@ Key-write policy at install time:
 
 ## Capture Paths
 
+All capture paths build episodic `memory_metadata` through
+`shared/capture-metadata.mjs` (`buildCaptureMetadata`). The originating
+`client` is always sent. For `cwd`, own-home paths use `~/`, other-user
+home names are redacted, and non-user system paths remain absolute.
+`session_id` is forwarded verbatim when it is a nonblank string. Optional
+fields are omitted when absent, blank, or non-string.
+
 OpenCode:
 
 - `plugins/opencode/midbrain-memory.ts` runs in Bun.
@@ -196,6 +203,72 @@ Claude Code:
   (30s timeout, `Stop` async), not package-cache or checkout script paths. The
   shim resolves `npx -y midbrain-memory-mcp@latest hook claude <role>`.
 - `common.mjs` owns `createApi()`, the leveled `log` logger, and stdin parsing.
+- Opener recovery (issue #52): on a cold NanoClaw wake the opening message's
+  hook can fire before the MCP server has persisted the key
+  (`~/.config/midbrain` is ephemeral per spawn). `createApi(cwd, {waitForKey})`
+  applies a bounded key-wait (default ~20s inside the 30s hook timeout, polling
+  the resolution chain — never reading key files directly) ONLY when the
+  resolved capture-client label is `nanoclaw` (`shouldWaitForKey`); a plain host
+  with no key fails open fast. If no key resolves, the hook appends the payload
+  to a keyless recovery spool (`shared/claude-spool.mjs`) on the durable
+  `~/.claude` mount — `~/.claude/.midbrain-spool.ndjson`, key-independent so an
+  env-stripped hook can write it and a later authenticated flush can read it —
+  instead of dropping it. Bounds are env-tunable (`MIDBRAIN_KEY_WAIT_MS`,
+  `MIDBRAIN_KEY_WAIT_POLL_MS`). This closes the key race; the shim-missing race
+  on a fully-cold `--rm` spawn is inherent to NanoClaw's mount model (only
+  `~/.claude` is durable) and is tracked upstream.
+- Durable state relocation (issue #52): `MIDBRAIN_STATE_DIR` (resolver in
+  `shared/state-dir.mjs`, modeled on `logDir()`) relocates MidBrain's OWN shared
+  state — the global key/keystore/host `config.json` (`globalConfigDir()`), the
+  hook shim bin (`shimBinDir()`), and the offline cache (`cacheDir()`) — under a
+  single base. In NanoClaw the skill sets it to `/home/node/.claude/.midbrain`
+  so all of it lives on the durable `.claude-shared` mount and survives a cold
+  `--rm` spawn; because the shim then exists at t=0, this closes the
+  shim-missing race with no NanoClaw change. The base keeps the
+  `.midbrain/bin/<client>-hook` tail so `commandReferencesShim` ownership
+  matching and self-repair rewrite are unchanged. It is strictly OPT-IN: unset
+  means every path resolves to its historical location, so non-NanoClaw host
+  installs (OpenCode, host Claude, Codex, Hermes) are byte-identical. Per-client
+  native dirs (`~/.config/<client>`) are NEVER relocated — only MidBrain's own
+  shared state moves. The credential-writer's `expectedTarget`/
+  `expectedKeystorePath` validators resolve through the same resolver as the
+  writers, in lockstep, so a relocated key/keystore write is accepted at the
+  relocated path (a desync would fail every relocated write closed). No adapter
+  or installer path emits `MIDBRAIN_STATE_DIR`; only the NanoClaw skill sets it
+  in the group MCP env.
+- Spool flush (`flushClaudeSpool` in `install.mjs`, called from `runSelfRepair`
+  after `ensureHookCredential`): once the key is persisted, it drains the spool
+  in a single server-start pass via the shared `runFlush`
+  (`shared/flush-runner.mjs`) using `MidbrainApi.postEpisodicResult` (a
+  controlled POST that does NOT trigger the offline-cache replay). Entries are
+  NEVER dropped: successes are removed, failures are preserved as survivors for
+  the next start. It is WAF-aware — a 429 or an HTML-bodied 403 (the issue #53
+  edge-rejection signature) stops the pass, preserves the remaining entries, and
+  persists a `~/.claude/.midbrain-spool-cooldown` timestamp so the next server
+  start defers instead of re-bursting. Small inter-POST spacing keeps a
+  recovered backlog dripping rather than bursting. Cooldown/spacing are
+  env-tunable (`MIDBRAIN_SPOOL_COOLDOWN_MS`, `MIDBRAIN_SPOOL_POST_SPACING_MS`).
+
+Offline episodic cache discipline (issue #53):
+
+- `storeEpisodic` caches a failed POST but NO LONGER flushes the backlog on the
+  next successful store. Replaying the whole cache on every hook was the
+  amplification behind the 1,610-error incident (the same ~26 rejected entries
+  re-sent across ~60 flush cycles). A failed store now simply caches and is
+  retried at the next client/server start.
+- The cache drains once at boot via `flushEpisodicCache` in `runSelfRepair`
+  (right after `flushClaudeSpool`), through the SAME shared `runFlush` runner —
+  single-pass, WAF-aware, cooldown-gated, and paced after every attempted POST.
+- There is no permanent failure, quarantine, per-entry retry cap, or expiry: a
+  rotated/absent key, a 4xx, a 5xx, a network error, or a WAF rejection leaves
+  the entry cached to retry on a later start. A finite per-boot attempt limit
+  preserves its unattempted raw tail; it never becomes a permanent retry cap.
+  (The deleted-then-restored agent-key case recovers automatically this way.)
+- The boot drain posts only the binding proven by the current API's
+  `sha256(apiBase\0key)` cache scope. Other opaque host/key/agent buckets remain
+  untouched and visible through `memory_diagnostics` as
+  `other_cache_bindings`. One cache-wide cooldown suppresses every binding
+  across rapid restarts after a WAF rejection.
 
 Codex:
 

@@ -106,6 +106,63 @@ describe('writeCredential guard and validation', () => {
   });
 });
 
+describe('writeCredential honors MIDBRAIN_STATE_DIR in lockstep (relocation, #52)', () => {
+  // The validator (expectedTarget/expectedKeystorePath) and the writers both
+  // resolve through state-dir, so a relocated global write must be ACCEPTED at
+  // the relocated path and REFUSED at the old path — proving they never desync
+  // (a desync would fail every relocated credential write closed).
+  it('accepts a global key write at the relocated path and refuses the old one', async () => {
+    const { CredentialTargetError, writeCredential } = await loadWriter();
+    const stateDir = path.join(testEnv.home, '.claude', '.midbrain');
+    const relocatedKey = path.join(stateDir, '.midbrain-key');
+    const saved = process.env.MIDBRAIN_STATE_DIR;
+    process.env.MIDBRAIN_STATE_DIR = stateDir;
+    try {
+      const result = await writeCredential({
+        clientId: 'generic',
+        scope: 'global',
+        targetPath: relocatedKey,
+        key: 'relocated-dummy',
+      });
+      expect(result.action).toBe('written');
+      expect(await fs.readFile(relocatedKey, 'utf8')).toBe('relocated-dummy\n');
+
+      // With the override active, the OLD ~/.config/midbrain path is no longer
+      // the canonical target and must be refused.
+      await expect(writeCredential({
+        clientId: 'generic',
+        scope: 'global',
+        targetPath: globalKeyPath,
+        key: 'should-be-refused',
+      })).rejects.toBeInstanceOf(CredentialTargetError);
+    } finally {
+      if (saved === undefined) delete process.env.MIDBRAIN_STATE_DIR;
+      else process.env.MIDBRAIN_STATE_DIR = saved;
+      await fs.rm(relocatedKey, { force: true });
+    }
+  });
+
+  it('accepts a keystore write at the relocated path', async () => {
+    const { writeKeystoreFile } = await loadWriter();
+    const { emptyKeystore } = await import('../shared/keystore.mjs');
+    const stateDir = path.join(testEnv.home, '.claude', '.midbrain');
+    const relocatedKeystore = path.join(stateDir, '.midbrain-keystore.json');
+    const saved = process.env.MIDBRAIN_STATE_DIR;
+    process.env.MIDBRAIN_STATE_DIR = stateDir;
+    try {
+      const result = await writeKeystoreFile(relocatedKeystore, emptyKeystore());
+      expect(result.action).toBe('written');
+      expect(JSON.parse(await fs.readFile(relocatedKeystore, 'utf8'))).toMatchObject({
+        version: expect.any(Number),
+      });
+    } finally {
+      if (saved === undefined) delete process.env.MIDBRAIN_STATE_DIR;
+      else process.env.MIDBRAIN_STATE_DIR = saved;
+      await fs.rm(relocatedKeystore, { force: true });
+    }
+  });
+});
+
 describe('writeCredential atomic writes', () => {
   it('creates a canonical key atomically with mode 0600', async () => {
     const { writeCredential } = await loadWriter();

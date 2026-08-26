@@ -6,11 +6,11 @@
  * Config-writing methods are no-ops (only named clients write configs).
  */
 
-import { homedir } from 'os';
 import { join } from 'path';
 import { BaseClient } from './base.mjs';
 import { writeCredential } from './credential-writer.mjs';
 import { KEY_FILENAME, MIDBRAIN_DIR, resolveProjectKey } from './utils.mjs';
+import { globalConfigDir } from '../state-dir.mjs';
 
 export class Generic extends BaseClient {
   get id() { return 'generic'; }
@@ -20,7 +20,7 @@ export class Generic extends BaseClient {
 
   /** Write the global key. Returns a summary line. */
   async writeKey(key, { replaceApproved = false } = {}) {
-    const gp = join(homedir(), '.config', 'midbrain', KEY_FILENAME);
+    const gp = join(globalConfigDir(), KEY_FILENAME);
     await writeCredential({
       clientId: this.id,
       scope: 'global',

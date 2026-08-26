@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "fs/promises";
 import path from "path";
 import { pathToFileURL } from "node:url";
@@ -23,12 +23,15 @@ import { runSelfRepair } from "../install.mjs";
 import { startMcpServer } from "../index.js";
 import { captureClientLabel } from "../plugins/claude-code/common.mjs";
 import { installShim, stableShimPath, shellQuote } from "../shared/clients/shim.mjs";
+import { MidbrainApi } from "../shared/midbrain-api.mjs";
+import { establishSpoolBinding } from "../shared/claude-spool.mjs";
 
 const IS_WIN = process.platform === "win32";
 
 const DURABLE = { context: { kind: "durable", path: "/durable/install" } };
 const NPX_CTX = {
   context: { kind: "npx-cache", path: "/Users/u/.npm/_npx/abc123/node_modules/midbrain-memory-mcp" },
+  isDev: true,
 };
 
 const TEST_KEY = "test-key-nanoclaw-prd039";
@@ -63,6 +66,7 @@ afterEach(async () => {
   delete process.env.MIDBRAIN_API_URL;
   delete process.env.MIDBRAIN_CLIENT;
   delete process.env.MIDBRAIN_CAPTURE_CLIENT;
+  delete process.env.MIDBRAIN_STATE_DIR;
   await env.restore();
 });
 
@@ -457,6 +461,86 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
     releaseRepair();
   });
 
+  // NanoClaw's container topology is Linux; Windows shim bytes have separate
+  // unit coverage and cannot be executed through this /bin/sh harness.
+  it.skipIf(IS_WIN)("first legacy wake prepares durable and cached hook paths before readiness without a warm-up", async () => {
+    await seedPre048Group();
+    const durableRoot = path.join(env.home, ".claude", ".midbrain");
+    const durableShim = path.join(durableRoot, "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+    const cachedShim = path.join(env.home, ".midbrain", "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+    const fetchLog = path.join(env.tmp, "first-wake-fetch.ndjson");
+    const preload = path.join(env.tmp, "first-wake-preload.mjs");
+    await fs.writeFile(preload, `
+      import fs from "node:fs";
+      globalThis.fetch = async (url, opts = {}) => {
+        const headers = opts.headers || {};
+        fs.appendFileSync(process.env.MIDBRAIN_TEST_FETCH_LOG, JSON.stringify({
+          url: String(url),
+          hasAuth: typeof headers.Authorization === "string" && headers.Authorization.length > 0,
+          body: opts.body ? JSON.parse(opts.body) : undefined,
+        }) + "\\n");
+        return { ok: true, status: 201, text: async () => "", json: async () => ({}) };
+      };
+    `);
+    const childEnv = env.childEnv({
+      NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
+      MIDBRAIN_TEST_FETCH_LOG: fetchLog,
+    });
+    const runHook = (shim, role, input) => spawnSync("/bin/sh", [shim, role], {
+      input: JSON.stringify(input),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: childEnv,
+    });
+    expect(childEnv).not.toHaveProperty("MIDBRAIN_API_KEY");
+    expect(childEnv).not.toHaveProperty("MIDBRAIN_STATE_DIR");
+
+    await startMcpServer({
+      serverFactory: () => ({
+        async connect() {
+          expect(process.env.MIDBRAIN_STATE_DIR).toBe(durableRoot);
+          expect(await readMarker()).toBe("nanoclaw\n");
+          expect((await fs.readFile(path.join(durableRoot, ".midbrain-key"), "utf8")).trim()).toBe(TEST_KEY);
+          for (const shim of [durableShim, cachedShim]) {
+            const body = await fs.readFile(shim, "utf8");
+            expect(body).toContain("MIDBRAIN_STATE_DIR");
+            expect(body).not.toContain(TEST_KEY);
+            const suffix = shim === cachedShim ? "cached" : "durable";
+            const user = runHook(shim, "user", { prompt: `first-user-${suffix}`, cwd: env.home });
+            const assistant = runHook(shim, "assistant", {
+              last_assistant_message: `first-assistant-${suffix}`,
+              cwd: env.home,
+            });
+            expect(user.status).toBe(0);
+            expect(assistant.status).toBe(0);
+          }
+          const settings = JSON.parse(await fs.readFile(env.paths.claudeSettings, "utf8"));
+          const commands = Object.values(settings.hooks)
+            .flatMap((groups) => groups.flatMap((group) => group.hooks.map((hook) => hook.command)));
+          expect(commands.every((command) => command.includes(durableShim))).toBe(true);
+        },
+      }),
+      transportFactory: () => ({}),
+      prepareOptions: { ...NPX_CTX, nanoclawConfigPath: containerConfigPath() },
+      checkForUpdateFn: () => undefined,
+      log: () => {},
+    });
+
+    const posts = (await fs.readFile(fetchLog, "utf8")).trim().split("\n").filter(Boolean)
+      .map(JSON.parse).filter((entry) => entry.url.includes("/memories/episodic"));
+    expect(posts).toHaveLength(4);
+    expect(posts.every((post) => post.hasAuth)).toBe(true);
+    expect(posts.every((post) => post.body?.memory_metadata?.client === "nanoclaw")).toBe(true);
+    expect(posts.map((post) => post.body.text).sort()).toEqual([
+      "first-assistant-cached",
+      "first-assistant-durable",
+      "first-user-cached",
+      "first-user-durable",
+    ]);
+    await expect(fs.stat(path.join(env.home, ".claude", ".midbrain-spool.ndjson")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("removes only its partial marker after an injected post-create write failure so the next repair succeeds", async () => {
     await seedPre048Group();
     const failure = failMarkerWriteAfterPartialCreate();
@@ -785,5 +869,464 @@ describe.skipIf(IS_WIN)("Issue #51 e2e — migrated marker labels the capture na
     const episodic = (await readFetchLog()).filter((r) => r.url.includes("/memories/episodic"));
     expect(episodic).toHaveLength(1);
     expect(episodic[0].body?.memory_metadata?.client).toBe("nanoclaw");
+  });
+});
+
+// ===================================================================
+// Issue #52 — cold-wake opener recovery: bounded key-wait, keyless spool on
+// the durable ~/.claude surface, and a disciplined server-start flush.
+// ===================================================================
+
+describe.skipIf(IS_WIN)("Issue #52 — opener recovery (spool + flush)", () => {
+  const spoolPath = () => path.join(env.home, ".claude", ".midbrain-spool.ndjson");
+
+  async function readSpool() {
+    const raw = await fs.readFile(spoolPath(), "utf8");
+    return raw.trim().split("\n").filter(Boolean).map(JSON.parse);
+  }
+
+  let workspace;
+  let preloadUrl;
+
+  beforeEach(async () => {
+    await fs.writeFile(
+      env.paths.claudeSettings,
+      JSON.stringify(migratedClaudeSettings(), null, 2) + "\n",
+    );
+    workspace = path.join(env.home, "workspace");
+    await fs.mkdir(workspace, { recursive: true });
+    // A hermetic dev shim pointing at this checkout (repair preserves dev bodies).
+    await installShim("claude", { mode: "install", isDev: true });
+    await fs.mkdir(path.dirname(markerPath()), { recursive: true });
+    await fs.writeFile(markerPath(), "nanoclaw\n", { mode: 0o600 });
+    establishSpoolBinding(new MidbrainApi(TEST_KEY, "test").cacheScope);
+
+    // Hook children must fail fast on the key-wait (no key will ever appear in
+    // the child) so the spool path runs without a 20s real wait.
+    const preload = path.join(env.tmp, "spool-preload.mjs");
+    await fs.writeFile(preload, `
+      globalThis.fetch = async () => ({ ok: false, status: 503, text: async () => "", json: async () => ({}) });
+    `);
+    preloadUrl = pathToFileURL(preload).href;
+  });
+
+  function runShim(role, input) {
+    return spawnSync("/bin/sh", [stableShimPath("claude"), role], {
+      input: JSON.stringify(input),
+      encoding: "utf8",
+      timeout: 30_000,
+      env: env.childEnv({
+        NODE_OPTIONS: `--import ${preloadUrl}`,
+        MIDBRAIN_KEY_WAIT_MS: "0", // no key will arrive in the child; don't wait
+      }),
+    });
+  }
+
+  it("cold wake with no key spools complete user and assistant metadata", async () => {
+    // No key on any resolution path, no MIDBRAIN_* in the hook child env.
+    const user = runShim("user", {
+      prompt: "the very first message",
+      cwd: workspace,
+      session_id: "  opener-session  ",
+    });
+    const assistant = runShim("assistant", {
+      last_assistant_message: "the very first reply",
+      cwd: workspace,
+      session_id: "reply-session",
+    });
+
+    expect(user.status).toBe(0);
+    expect(assistant.status).toBe(0);
+    await assertSandboxed(env, spoolPath());
+    const spooled = await readSpool();
+    expect(spooled).toHaveLength(2);
+    expect(spooled.map(({ text, role, memory_metadata }) => ({ text, role, memory_metadata }))).toEqual([
+      {
+        text: "the very first message",
+        role: "user",
+        memory_metadata: {
+          client: "nanoclaw",
+          cwd: "~/workspace",
+          session_id: "  opener-session  ",
+        },
+      },
+      {
+        text: "the very first reply",
+        role: "assistant",
+        memory_metadata: {
+          client: "nanoclaw",
+          cwd: "~/workspace",
+          session_id: "reply-session",
+        },
+      },
+    ]);
+    if (!IS_WIN) {
+      const { mode } = await fs.stat(spoolPath());
+      expect(mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("host Claude with no key creates no NanoClaw spool", async () => {
+    await fs.unlink(markerPath());
+    await fs.unlink(path.join(env.home, ".claude", ".midbrain-spool-binding"));
+
+    const result = runShim("user", { prompt: "host no-key negative", cwd: workspace });
+
+    expect(result.status).toBe(0);
+    await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("bounded key-wait: a key created after child start is used, and nothing is spooled", async () => {
+    // This child records fetches so we can assert a real authenticated POST.
+    const fetchLog = path.join(env.tmp, "keywait-fetch.ndjson");
+    const preload = path.join(env.tmp, "keywait-preload.mjs");
+    await fs.writeFile(preload, `
+      import fs from "node:fs";
+      globalThis.fetch = async (url, opts = {}) => {
+        const headers = opts.headers || {};
+        fs.appendFileSync(process.env.MIDBRAIN_TEST_FETCH_LOG, JSON.stringify({
+          url: String(url),
+          hasAuth: typeof headers.Authorization === "string" && headers.Authorization.length > 0,
+          body: opts.body ? JSON.parse(opts.body) : undefined,
+        }) + "\\n");
+        if (String(url).includes("/memories/episodic")) return { ok: true, status: 201, text: async () => "", json: async () => ({}) };
+        return { ok: false, status: 404, text: async () => "", json: async () => ({}) };
+      };
+    `);
+    await expect(fs.stat(env.paths.globalKey)).rejects.toMatchObject({ code: "ENOENT" });
+    const child = spawn("/bin/sh", [stableShimPath("claude"), "user"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: env.childEnv({
+        NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
+        MIDBRAIN_TEST_FETCH_LOG: fetchLog,
+        MIDBRAIN_KEY_WAIT_MS: "1500",
+        MIDBRAIN_KEY_WAIT_POLL_MS: "20",
+      }),
+    });
+    child.stdin.end(JSON.stringify({ prompt: "captured not spooled", cwd: workspace }));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(child.exitCode).toBeNull();
+    await fs.mkdir(path.dirname(env.paths.globalKey), { recursive: true });
+    await fs.writeFile(env.paths.globalKey, `${TEST_KEY}\n`, { mode: 0o600 });
+    const status = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+
+    expect(status).toBe(0);
+    await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
+    const log = (await fs.readFile(fetchLog, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
+    const episodic = log.filter((r) => r.url.includes("/memories/episodic"));
+    expect(episodic).toHaveLength(1);
+    expect(episodic[0].hasAuth).toBe(true);
+    expect(episodic[0].body?.text).toBe("captured not spooled");
+  });
+
+});
+
+// Flush/cooldown behavior is driven by in-process runSelfRepair + a mocked
+// fetch, so (unlike the shim-based blocks above) it needs no POSIX shell and
+// runs on every platform.
+describe("Issue #52 — server-start spool flush discipline", () => {
+  const spoolPath = () => path.join(env.home, ".claude", ".midbrain-spool.ndjson");
+  const cooldownPath = () => path.join(env.home, ".claude", ".midbrain-spool-cooldown");
+
+  async function readSpool() {
+    const raw = await fs.readFile(spoolPath(), "utf8");
+    return raw.trim().split("\n").filter(Boolean).map(JSON.parse);
+  }
+
+  beforeEach(async () => {
+    await fs.writeFile(env.paths.claudeSettings, JSON.stringify(migratedClaudeSettings(), null, 2) + "\n");
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+    process.env.MIDBRAIN_CLIENT = "claude";
+    establishSpoolBinding(new MidbrainApi(TEST_KEY, "test").cacheScope);
+  });
+
+  it("server-start flush drains the spool once the key is present (each entry POSTed once)", async () => {
+    // Spool two entries as a keyless hook would.
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({
+      text: "opener one",
+      role: "user",
+      memory_metadata: { client: "nanoclaw", cwd: "~/user", session_id: "  user-session  " },
+    });
+    appendToSpool({
+      text: "reply one",
+      role: "assistant",
+      memory_metadata: { client: "nanoclaw", cwd: "~/assistant", session_id: "assistant-session" },
+    });
+
+    const posts = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, opts = {}) => {
+      if (String(url).includes("/memories/episodic")) {
+        posts.push(JSON.parse(opts.body));
+        return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    process.env.MIDBRAIN_SPOOL_POST_SPACING_MS = "0";
+    try {
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+      delete process.env.MIDBRAIN_SPOOL_POST_SPACING_MS;
+    }
+
+    expect(posts.map((p) => p.text).sort()).toEqual(["opener one", "reply one"]);
+    expect(posts.find((post) => post.text === "opener one").memory_metadata).toEqual({
+      client: "nanoclaw",
+      cwd: "~/user",
+      session_id: "  user-session  ",
+    });
+    expect(posts.find((post) => post.text === "reply one").memory_metadata).toEqual({
+      client: "nanoclaw",
+      cwd: "~/assistant",
+      session_id: "assistant-session",
+    });
+    // Spool cleared after a fully-successful flush.
+    await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("WAF rejection: flush stops, entries are preserved (never dropped), cooldown is set", async () => {
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "opener a", role: "user", memory_metadata: { client: "nanoclaw" } });
+    appendToSpool({ text: "opener b", role: "user", memory_metadata: { client: "nanoclaw" } });
+    appendToSpool({ text: "opener c", role: "user", memory_metadata: { client: "nanoclaw" } });
+
+    // First POST 429s → the whole pass stops immediately.
+    let calls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) {
+        calls += 1;
+        return { ok: false, status: 429, headers: new Map(), text: async () => "rate limited", json: async () => ({}) };
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    process.env.MIDBRAIN_SPOOL_POST_SPACING_MS = "0";
+    process.env.MIDBRAIN_SPOOL_COOLDOWN_MS = "300000";
+    try {
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+      delete process.env.MIDBRAIN_SPOOL_POST_SPACING_MS;
+      delete process.env.MIDBRAIN_SPOOL_COOLDOWN_MS;
+    }
+
+    // Only one POST attempted (the pass stopped on the 429), no burst.
+    expect(calls).toBe(1);
+    // All three entries preserved — nothing dropped.
+    const spooled = await readSpool();
+    expect(spooled.map((e) => e.text).sort()).toEqual(["opener a", "opener b", "opener c"]);
+    // Cooldown persisted in the future.
+    const until = Number((await fs.readFile(cooldownPath(), "utf8")).trim());
+    expect(until).toBeGreaterThan(Date.now());
+  });
+
+  it("different binding posts zero rows and preserves the old row", async () => {
+    establishSpoolBinding("f".repeat(64));
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "other-agent row", role: "user", memory_metadata: { client: "nanoclaw" } });
+
+    let calls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) calls += 1;
+      return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+
+    expect(calls).toBe(0);
+    expect((await readSpool()).map((entry) => entry.text)).toEqual(["other-agent row"]);
+  });
+
+  it("a binding change after preparation posts zero rows through the fresh API", async () => {
+    const preparedBinding = "e".repeat(64);
+    establishSpoolBinding(preparedBinding);
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "prepared-binding row", role: "user", memory_metadata: { client: "nanoclaw" } });
+
+    let calls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) calls += 1;
+      return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      await runSelfRepair({
+        ...NPX_CTX,
+        preparation: {
+          skipped: false,
+          owned: true,
+          kind: "npx-cache",
+          binding: preparedBinding,
+          adoptUnbound: false,
+        },
+      });
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+
+    expect(new MidbrainApi(TEST_KEY, "test").cacheScope).not.toBe(preparedBinding);
+    expect(calls).toBe(0);
+    expect((await readSpool()).map((entry) => entry.text)).toEqual(["prepared-binding row"]);
+  });
+
+  it("cooldown defers the next flush: no POST while cooling down, entries kept", async () => {
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "still pending", role: "user", memory_metadata: { client: "nanoclaw" } });
+    // Active cooldown in the future.
+    await fs.writeFile(cooldownPath(), String(Date.now() + 300_000), { mode: 0o600 });
+
+    let calls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) calls += 1;
+      return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      fetchSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+
+    expect(calls).toBe(0); // deferred, no POST
+    const spooled = await readSpool();
+    expect(spooled.map((e) => e.text)).toEqual(["still pending"]); // preserved
+  });
+
+  it("never-drop across repeated failing starts: entry count is non-decreasing until success", async () => {
+    const { appendToSpool } = await import("../shared/claude-spool.mjs");
+    appendToSpool({ text: "durable opener", role: "user", memory_metadata: { client: "nanoclaw" } });
+
+    // Two failing (503) server starts — the entry must survive both.
+    const failSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) {
+        return { ok: false, status: 503, headers: new Map(), text: async () => "", json: async () => ({}) };
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    process.env.MIDBRAIN_SPOOL_POST_SPACING_MS = "0";
+    try {
+      await runSelfRepair(NPX_CTX);
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      failSpy.mockRestore();
+    }
+    expect((await readSpool()).map((e) => e.text)).toEqual(["durable opener"]);
+
+    // Now a successful start drains it.
+    const okSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/memories/episodic")) {
+        return { ok: true, status: 201, headers: new Map(), text: async () => "", json: async () => ({}) };
+      }
+      return { ok: false, status: 404, headers: new Map(), text: async () => "", json: async () => ({}) };
+    });
+    try {
+      await runSelfRepair(NPX_CTX);
+    } finally {
+      okSpy.mockRestore();
+      delete process.env.MIDBRAIN_API_KEY;
+      delete process.env.MIDBRAIN_SPOOL_POST_SPACING_MS;
+    }
+    await expect(fs.stat(spoolPath())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+// ===================================================================
+// Issue #52 — MIDBRAIN_STATE_DIR relocation closes the shim-missing race by
+// putting the shim + key under the durable ~/.claude mount, so both survive a
+// cold --rm respawn and exist at t=0. Cross-platform (in-process; no shell).
+// ===================================================================
+
+describe("Issue #52 — durable state under ~/.claude (MIDBRAIN_STATE_DIR)", () => {
+  const stateDir = () => path.join(env.home, ".claude", ".midbrain");
+  const relocatedShim = () =>
+    path.join(stateDir(), "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+  const relocatedKey = () => path.join(stateDir(), ".midbrain-key");
+
+  // Ephemeral container dirs that a --rm respawn wipes (everything NOT under
+  // the ~/.claude mount).
+  async function wipeEphemeralDirs() {
+    await fs.rm(path.join(env.home, ".midbrain"), { recursive: true, force: true });
+    await fs.rm(path.join(env.home, ".config", "midbrain"), { recursive: true, force: true });
+    await fs.rm(path.join(env.home, ".cache", "midbrain"), { recursive: true, force: true });
+  }
+
+  const hostShim = () =>
+    path.join(env.home, ".midbrain", "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+  const hostKey = () => path.join(env.home, ".config", "midbrain", ".midbrain-key");
+
+  it("relocates the shim and persisted key under ~/.claude when the env is set", async () => {
+    process.env.MIDBRAIN_STATE_DIR = stateDir();
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      // The MCP server writes the shim (installShim → stableShimPath) and, via
+      // runSelfRepair, persists the env key. Both honor MIDBRAIN_STATE_DIR.
+      await installShim("claude", { mode: "install", isDev: true });
+      await runSelfRepair(NPX_CTX);
+
+      // Shim + key landed under the durable mount, not the ephemeral dirs.
+      await assertSandboxed(env, relocatedShim());
+      await assertSandboxed(env, relocatedKey());
+      expect(await fs.stat(relocatedShim())).toBeTruthy();
+      expect((await fs.readFile(relocatedKey(), "utf8")).trim()).toBe(TEST_KEY);
+      // The ephemeral locations were NOT used.
+      await expect(fs.stat(hostShim())).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.stat(hostKey())).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      delete process.env.MIDBRAIN_STATE_DIR;
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+  });
+
+  it("shim + key survive a cold respawn: the ephemeral dirs are wiped but ~/.claude persists", async () => {
+    process.env.MIDBRAIN_STATE_DIR = stateDir();
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      await installShim("claude", { mode: "install", isDev: true });
+      await runSelfRepair(NPX_CTX); // "first boot" writes durable state
+
+      // Simulate the --rm respawn: wipe everything NOT under ~/.claude.
+      await wipeEphemeralDirs();
+
+      // The durable shim + key are still present at t=0 of the next spawn,
+      // BEFORE any server work — this is what closes the shim-missing race.
+      expect(await fs.stat(relocatedShim())).toBeTruthy();
+      expect((await fs.readFile(relocatedKey(), "utf8")).trim()).toBe(TEST_KEY);
+    } finally {
+      delete process.env.MIDBRAIN_STATE_DIR;
+      delete process.env.MIDBRAIN_API_KEY;
+    }
+  });
+
+  it("host parity: with the env UNSET, everything stays on the historical paths", async () => {
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    try {
+      await installShim("claude", { mode: "install", isDev: true });
+      await runSelfRepair(NPX_CTX);
+
+      // Historical locations used; nothing relocated under ~/.claude/.midbrain.
+      expect(await fs.stat(hostShim())).toBeTruthy();
+      expect((await fs.readFile(hostKey(), "utf8")).trim()).toBe(TEST_KEY);
+      await expect(fs.stat(stateDir())).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      delete process.env.MIDBRAIN_API_KEY;
+    }
   });
 });
