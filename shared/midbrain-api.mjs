@@ -26,6 +26,8 @@ import { appendToCache } from "./episodic-cache.mjs";
 import { DEFAULT_API_BASE, resolveApiHost } from "./api-host.mjs";
 import { PKG_NAME, PKG_VERSION } from "./clients/utils.mjs";
 
+/* global __MIDBRAIN_PACKAGE_NAME__, __MIDBRAIN_PACKAGE_VERSION__ */
+
 const API_BASE_FROM_ENV = Boolean(process.env.MIDBRAIN_API_URL);
 const API_BASE = process.env.MIDBRAIN_API_URL || DEFAULT_API_BASE;
 const API_BASE_SCOPE = API_BASE_FROM_ENV ? "environment" : "default";
@@ -54,7 +56,13 @@ const DEFAULT_SEARCH_LIMIT = 10;
 // Base UA product token, e.g. "midbrain-memory-mcp/0.4.8". Per-instance
 // #userAgent appends the resolved client id (e.g. "opencode") as a second
 // space-separated UA-stack token -- see MidbrainApi constructor and #headers.
-const PRODUCT_USER_AGENT = `${PKG_NAME}/${PKG_VERSION}`;
+const PRODUCT_NAME = typeof __MIDBRAIN_PACKAGE_NAME__ === "string"
+  ? __MIDBRAIN_PACKAGE_NAME__
+  : PKG_NAME;
+const PRODUCT_VERSION = typeof __MIDBRAIN_PACKAGE_VERSION__ === "string"
+  ? __MIDBRAIN_PACKAGE_VERSION__
+  : PKG_VERSION;
+const PRODUCT_USER_AGENT = `${PRODUCT_NAME}/${PRODUCT_VERSION}`;
 const ERROR_BODY_MAX = 200;
 
 /**
@@ -327,11 +335,7 @@ export class MidbrainApi {
     try {
       const response = await fetch(this.#endpoints.EPISODIC, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.#key}`,
-          "User-Agent": PRODUCT_USER_AGENT,
-        },
+        headers: this.#headers({ json: true }),
         body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
       });
       if (response.ok) return "ok";

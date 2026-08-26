@@ -67,18 +67,18 @@ export function isNoKeyError(err) {
  * adapter id -- matching the identity already used for memory_metadata.client.
  *
  * @param {string|undefined} cwd - The project working directory from the hook payload.
- * @param {{ waitForKey?: boolean }} [opts]
+ * @param {{ waitForKey?: boolean, clientLabel?: string }} [opts]
  * @returns {Promise<MidbrainApi>}
  */
-export async function createApi(cwd, { waitForKey = false } = {}) {
+export async function createApi(cwd, { waitForKey = false, clientLabel } = {}) {
   const projectDir = cwd?.trim() || undefined;
   const client = getClient("claude");
-  const clientLabel = await captureClientLabel();
+  const resolvedClientLabel = clientLabel || await captureClientLabel();
   const deadline = Date.now() + (waitForKey ? keyWaitDeadlineMs() : 0);
   const pollMs = keyWaitPollMs();
   for (;;) {
     try {
-      return await MidbrainApi.create(client, projectDir, { clientLabel });
+      return await MidbrainApi.create(client, projectDir, { clientLabel: resolvedClientLabel });
     } catch (err) {
       if (!isNoKeyError(err) || Date.now() + pollMs > deadline) throw err;
       await sleep(pollMs);

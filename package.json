@@ -47,7 +47,7 @@
   "scripts": {
     "start": "node index.js",
     "setup": "node install.mjs",
-    "build:plugin": "esbuild shared/plugin-entry.mjs --bundle --format=esm --platform=node --external:jsonc-parser --external:smol-toml --external:yaml --outfile=dist/midbrain-shared.mjs",
+    "build:plugin": "node scripts/build-plugin.mjs",
     "bootstrap": "npm install && npm run build:plugin && husky",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
