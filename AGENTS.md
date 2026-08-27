@@ -248,6 +248,16 @@ Claude Code:
   start defers instead of re-bursting. Small inter-POST spacing keeps a
   recovered backlog dripping rather than bursting. Cooldown/spacing are
   env-tunable (`MIDBRAIN_SPOOL_COOLDOWN_MS`, `MIDBRAIN_SPOOL_POST_SPACING_MS`).
+- Untouched-v0.4.8 opener recovery (issue #71): the NanoClaw Stop hook may
+  recover one missing user opener only from a guarded final-4-MiB transcript
+  tail whose terminal assistant is bound to the exact Stop session, cwd, and
+  final response and whose ancestry contains exactly one owned historical
+  `UserPromptSubmit` shim failure with exit 127. Every assistant transcript
+  consumer uses the same no-follow, regular-file, identity-checked reader.
+  Before API creation, recovery creates one zero-byte terminal receipt with
+  exclusive creation under the durable Claude mount. The sole winner makes one
+  `postEpisodicResult` attempt; it is never spooled, cached, retried, or reset,
+  and every recovery failure preserves the existing assistant capture path.
 
 Offline episodic cache discipline (issue #53):
 

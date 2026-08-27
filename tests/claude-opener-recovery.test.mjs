@@ -136,12 +136,14 @@ describe("guarded Claude transcript recovery", () => {
   });
 
   it.each([
-    ["wrong Stop event", transcriptRows(), { hookEventName: "SubagentStop" }],
-    ["wrong session", transcriptRows({ assistantSessionId: "55555555-5555-4555-8555-555555555555" }), {}],
-    ["wrong cwd", transcriptRows({ assistantCwd: "/other" }), {}],
-    ["wrong final response", transcriptRows(), { lastAssistantMessage: "later reply" }],
-  ])("rejects a transcript not bound to the invoking %s", (_label, fixture, input) => {
-    const rows = readClaudeTranscript(writeTranscript(fixture));
+    ["wrong Stop event", {}, { hookEventName: "SubagentStop" }],
+    ["wrong session", { assistantSessionId: "55555555-5555-4555-8555-555555555555" }, {}],
+    ["wrong cwd", { assistantCwd: "/other" }, {}],
+    ["cross-session opener", { userSessionId: "other-session" }, {}],
+    ["cross-cwd failure", { failureCwd: "/other" }, {}],
+    ["wrong final response", {}, { lastAssistantMessage: "later reply" }],
+  ])("rejects a transcript not bound to the invoking %s", (_label, rowOverrides, input) => {
+    const rows = readClaudeTranscript(writeTranscript(transcriptRows(rowOverrides)));
     expect(recoverLegacyOpener(rows, recoveryInput(input))).toBe("");
   });
 

@@ -184,6 +184,7 @@ export function recoverLegacyOpener(rows, input = {}) {
   let failures = 0;
   for (let hops = 0; hops <= MAX_ANCESTRY_HOPS; hops += 1) {
     if (duplicates.has(current.uuid)) return "";
+    if (current.sessionId !== input.sessionId || current.cwd !== input.cwd) return "";
     if (current.type === "user" && current.message?.role === "user" &&
         typeof current.message.content === "string") {
       const text = current.message.content;
