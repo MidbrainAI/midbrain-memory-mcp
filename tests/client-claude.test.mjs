@@ -510,6 +510,90 @@ describe("Claude capture-assistant hook wrapper", () => {
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });
   });
 
+  it("recovers an untouched v0.4.8 cold opener before the assistant", () => {
+    const home = tempHomeWithKey();
+    const claudeDir = path.join(home, ".claude");
+    fsSync.mkdirSync(claudeDir, { recursive: true });
+    fsSync.writeFileSync(
+      path.join(claudeDir, ".midbrain-capture-client"),
+      "nanoclaw\n",
+      { mode: 0o600 },
+    );
+    const logDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-"));
+    const logPath = path.join(logDir, "fetch.jsonl");
+    const loaded = preload(logPath);
+    const transcriptDir = path.join(claudeDir, "projects", "-workspace-agent");
+    fsSync.mkdirSync(transcriptDir, { recursive: true });
+    const transcript = path.join(transcriptDir, "11111111-1111-4111-8111-111111111111.jsonl");
+    const rows = [
+      {
+        type: "user",
+        uuid: "22222222-2222-4222-8222-222222222222",
+        message: { role: "user", content: "first cold opener" },
+      },
+      {
+        type: "attachment",
+        uuid: "33333333-3333-4333-8333-333333333333",
+        parentUuid: "22222222-2222-4222-8222-222222222222",
+        attachment: {
+          type: "hook_non_blocking_error",
+          hookName: "UserPromptSubmit",
+          hookEvent: "UserPromptSubmit",
+          exitCode: 127,
+          command: `${path.join(home, ".midbrain", "bin", "claude-hook")} user`,
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "44444444-4444-4444-8444-444444444444",
+        parentUuid: "33333333-3333-4333-8333-333333333333",
+        message: { role: "assistant", content: [{ type: "text", text: "first cold reply" }] },
+      },
+    ];
+    fsSync.writeFileSync(transcript, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    const result = spawnSync(process.execPath, [
+      "--import", pathToFileURL(loaded.file).href,
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
+    ], {
+      input: JSON.stringify({
+        last_assistant_message: "first cold reply",
+        transcript_path: transcript,
+        cwd: "/workspace/agent",
+        session_id: "cold-session",
+      }),
+      encoding: "utf8",
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    const bodies = fsSync.readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(bodies.map(({ text, role, memory_metadata }) => ({ text, role, memory_metadata }))).toEqual([
+      {
+        text: "first cold opener",
+        role: "user",
+        memory_metadata: {
+          client: "nanoclaw",
+          cwd: "/workspace/agent",
+          session_id: "cold-session",
+        },
+      },
+      {
+        text: "first cold reply",
+        role: "assistant",
+        memory_metadata: {
+          client: "nanoclaw",
+          cwd: "/workspace/agent",
+          session_id: "cold-session",
+        },
+      },
+    ]);
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(logDir, { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
+
   it("captures the NanoClaw message delivered before a later internal-only Stop response", () => {
     const home = tempHomeWithKey();
     fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
