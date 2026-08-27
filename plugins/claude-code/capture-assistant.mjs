@@ -10,43 +10,18 @@
  * Fails silently on any error.
  */
 
-import fs from "node:fs/promises";
-
 import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
+import { claimLegacyOpenerRecovery } from "../../shared/claude-opener-recovery.mjs";
+import {
+  deliveredNanoclawMessage,
+  readClaudeTranscript,
+  recoverLegacyOpener,
+} from "../../shared/claude-transcript.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
-const NANOCLAW_SEND_MESSAGE = "mcp__nanoclaw__send_message";
 const INTERNAL_ONLY_RE = /^\s*<internal>[\s\S]*<\/internal>\s*$/;
-
-/** Recover the last message NanoClaw actually delivered in the current human turn. */
-async function deliveredNanoclawMessage(transcriptPath) {
-  if (typeof transcriptPath !== "string" || !transcriptPath.trim()) return "";
-  try {
-    let delivered = "";
-    for (const line of (await fs.readFile(transcriptPath, "utf8")).split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      let item;
-      try { item = JSON.parse(line); } catch { continue; }
-      const message = item?.message;
-      if (item?.type === "user" && message?.role === "user" && typeof message.content === "string") {
-        delivered = "";
-        continue;
-      }
-      if (item?.type !== "assistant" || message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-      for (const block of message.content) {
-        if (block?.type === "tool_use" && block.name === NANOCLAW_SEND_MESSAGE &&
-            typeof block.input?.text === "string" && block.input.text.trim()) {
-          delivered = block.input.text.trim();
-        }
-      }
-    }
-    return delivered;
-  } catch {
-    return "";
-  }
-}
 
 async function captureAssistant() {
   const input = await readStdinJSON();
@@ -61,11 +36,27 @@ async function captureAssistant() {
     cwd: input.cwd,
     sessionId: input.session_id,
   });
+  const transcriptRows = client === "nanoclaw"
+    ? readClaudeTranscript(input.transcript_path)
+    : null;
   let text = scrubInjectedPkContext(input.last_assistant_message);
   if (client === "nanoclaw" && INTERNAL_ONLY_RE.test(text)) {
-    text = scrubInjectedPkContext(await deliveredNanoclawMessage(input.transcript_path));
+    text = scrubInjectedPkContext(deliveredNanoclawMessage(transcriptRows));
   }
   if (!text) return;
+
+  let recoveredUser = "";
+  if (client === "nanoclaw") {
+    try {
+      const candidate = recoverLegacyOpener(transcriptRows, {
+        sessionId: input.session_id,
+        cwd: input.cwd,
+        hookEventName: input.hook_event_name,
+        lastAssistantMessage: input.last_assistant_message,
+      });
+      if (candidate && claimLegacyOpenerRecovery()) recoveredUser = candidate;
+    } catch { /* recovery uncertainty never blocks assistant capture */ }
+  }
 
   let api;
   try {
@@ -86,7 +77,10 @@ async function captureAssistant() {
     return;
   }
 
-  if (text) await api.storeEpisodic(text, "assistant", log, metadata);
+  if (recoveredUser) {
+    try { await api.postEpisodicResult(recoveredUser, "user", metadata); } catch { /* terminal: never retry */ }
+  }
+  await api.storeEpisodic(text, "assistant", log, metadata);
 }
 
 try {
