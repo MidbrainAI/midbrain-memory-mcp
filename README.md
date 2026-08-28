@@ -107,7 +107,7 @@ then tells the user to restart.
 | Tool | Purpose |
 |---|---|
 | `memory_search` | Semantic search across all memories |
-| `grep` | Exact pattern matching (names, IDs, code, URLs) |
+| `grep` | Exact pattern matching across semantic and episodic memories, with optional type filtering |
 | `get_episodic_memories_by_date` | Conversation history by date range |
 | `list_files` | Browse semantic memory documents |
 | `read_file` | Read a semantic memory document by line range |
@@ -922,7 +922,7 @@ Auth: send an `Authorization` header with your local API key, except for
 | Method | Endpoint | Params / Body | Returns |
 |---|---|---|---|
 | GET | `/api/v1/memories/search/semantic` | `?query=...&limit=10` | `[{role, text, score, occurred_at}]` |
-| GET | `/api/v1/memories/search/lexical` | `?pattern=...&source=...&limit=50` | `[{source, line_number, text}]` |
+| GET | `/api/v1/memories/search/lexical` | `?pattern=...&source=...&limit=50&memory_type=all\|semantic\|episodic` | Mixed semantic and episodic rows with `text`, optional `source`, and `line_number` or `line_start` |
 | GET | `/api/v1/memories/episodic` | `?page=1&limit=100&start_date=...&end_date=...` | `{items, total, page, limit}` |
 | GET | `/api/v1/memories/semantic/files` | -- | `[{source, chunk_count}]` |
 | GET | `/api/v1/memories/semantic/files/{path}` | `?start_line=1&num_lines=200` | `{path, start_line, content}` |
