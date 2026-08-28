@@ -95,7 +95,7 @@ function jsonResponse(body, status = 200) {
 }
 
 /** Route fetch calls by URL path, return mock responses. */
-function mockFetch(url, _opts) {
+function mockFetch(url, opts) {
   const parsed = new URL(url);
   const p = parsed.pathname;
 
@@ -149,6 +149,9 @@ function mockFetch(url, _opts) {
   if (p.startsWith("/api/v1/memories/semantic/files/")) {
     const filePath = decodeURIComponent(p.replace("/api/v1/memories/semantic/files/", ""));
     if (filePath === "nonexistent.md") {
+      if (opts?.method === "POST") {
+        return Promise.resolve(jsonResponse({ detail: "Method Not Allowed" }, 405));
+      }
       return Promise.resolve(jsonResponse({ detail: "Not found" }, 404));
     }
     return Promise.resolve(jsonResponse(MOCK_DATA.readFile));
@@ -550,12 +553,17 @@ describe("read_file tool", () => {
   });
 
   it("returns not-found message for missing file", async () => {
+    const callOffset = fetchSpy.mock.calls.length;
     const result = await client.callTool({
       name: "read_file",
       arguments: { file_path: "nonexistent.md" },
     });
     const text = result.content[0].text;
-    expect(text).toContain("No content found");
+    expect(text).toBe("No content found for 'nonexistent.md' at line 1.");
+
+    const requests = fetchSpy.mock.calls.slice(callOffset);
+    expect(requests).toHaveLength(1);
+    expect(requests[0][1]).toMatchObject({ method: "GET" });
   });
 });
 

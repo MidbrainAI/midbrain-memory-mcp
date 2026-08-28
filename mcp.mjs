@@ -331,7 +331,11 @@ after memory_search to read context around a search hit.`,
       try {
         const a = await createApi();
         const url = `${a.SEMANTIC_FILES}/${encodeURIComponent(file_path).replace(/%2F/g, "/")}`;
-        const result = await a.fetch(url, { start_line, num_lines });
+        const result = await a.fetch(
+          url,
+          { start_line, num_lines },
+          { allowPostFallback: false },
+        );
 
         const hint = await peekRecency();
         return { content: [{ type: "text", text: `${result.path}:${result.start_line}\n${result.content}` + (hint || "") }] };
