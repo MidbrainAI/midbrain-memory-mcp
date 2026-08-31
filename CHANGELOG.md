@@ -3,6 +3,36 @@
 All notable public release changes for `midbrain-memory-mcp` are tracked here.
 Full release-note bodies live in `docs/releases/`.
 
+## 0.4.10
+
+Full notes: [docs/releases/v0.4.10.md](docs/releases/v0.4.10.md)
+
+### Changed
+
+- Made `grep` preserve both semantic and episodic lexical matches by default,
+  with an optional `memory_type` filter and stable formatting for mixed API
+  result shapes.
+
+### Fixed
+
+- Kept `read_file` missing-file responses on the semantic-file endpoint's GET
+  path so a real 404 returns the existing friendly response without an invalid
+  POST retry.
+- Recovered the opening user message for the exact untouched NanoClaw legacy
+  cold-start case where the historical v0.4.8 `UserPromptSubmit` shim fails
+  before self-repair, while preserving normal assistant capture.
+
+### Notes
+
+- Legacy-opener recovery is narrowly transcript-attested and NanoClaw-only.
+  It makes one terminal recovery POST attempt and never adds the recovered user
+  to spool or cache.
+- The recovery receipt provides an at-most-once attempt boundary, not
+  crash-atomic delivery; server-side idempotency would be required to close
+  the remaining crash window.
+- No MCP tools, bins, configuration formats, dependencies, or credential
+  locations changed. Breaking changes: None.
+
 ## 0.4.9
 
 Full notes: [docs/releases/v0.4.9.md](docs/releases/v0.4.9.md)
