@@ -471,17 +471,80 @@ describe("Claude capture-assistant hook wrapper", () => {
     return home;
   }
 
-  function preload(logPath) {
+  function preload(logPath, { firstStatus = 201 } = {}) {
     const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-preload-"));
     const file = path.join(dir, "fetch-preload.mjs");
     fsSync.writeFileSync(file, `
       import fs from "node:fs";
+      let calls = 0;
       globalThis.fetch = async (_url, opts = {}) => {
         if (opts.body) fs.appendFileSync(${JSON.stringify(logPath)}, opts.body + "\\n");
-        return { ok: true, status: 201 };
+        calls += 1;
+        const status = calls === 1 ? ${JSON.stringify(firstStatus)} : 201;
+        return { ok: status >= 200 && status < 300, status, text: async () => "" };
       };
     `);
     return { dir, file };
+  }
+
+  function coldTranscript(home) {
+    const transcriptDir = path.join(home, ".claude", "projects", "-workspace-agent");
+    fsSync.mkdirSync(transcriptDir, { recursive: true });
+    const transcript = path.join(transcriptDir, "11111111-1111-4111-8111-111111111111.jsonl");
+    const rows = [
+      {
+        type: "user",
+        uuid: "22222222-2222-4222-8222-222222222222",
+        sessionId: "cold-session",
+        cwd: "/workspace/agent",
+        message: { role: "user", content: "first cold opener" },
+      },
+      {
+        type: "attachment",
+        uuid: "33333333-3333-4333-8333-333333333333",
+        parentUuid: "22222222-2222-4222-8222-222222222222",
+        sessionId: "cold-session",
+        cwd: "/workspace/agent",
+        attachment: {
+          type: "hook_non_blocking_error",
+          hookName: "UserPromptSubmit",
+          hookEvent: "UserPromptSubmit",
+          exitCode: 127,
+          command: `${path.join(home, ".midbrain", "bin", shimFilename("claude"))} user`,
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "44444444-4444-4444-8444-444444444444",
+        parentUuid: "33333333-3333-4333-8333-333333333333",
+        sessionId: "cold-session",
+        cwd: "/workspace/agent",
+        message: { role: "assistant", content: [{ type: "text", text: "first cold reply" }] },
+      },
+    ];
+    fsSync.writeFileSync(transcript, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    return transcript;
+  }
+
+  function runAssistant(home, loaded, transcript, extraEnv = {}) {
+    const env = { ...process.env, HOME: home, USERPROFILE: home, ...extraEnv };
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete env[key];
+    }
+    return spawnSync(process.execPath, [
+      "--import", pathToFileURL(loaded.file).href,
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
+    ], {
+      input: JSON.stringify({
+        last_assistant_message: "first cold reply",
+        transcript_path: transcript,
+        cwd: "/workspace/agent",
+        session_id: "cold-session",
+        hook_event_name: "Stop",
+      }),
+      encoding: "utf8",
+      env,
+    });
   }
 
   it("scrubs echoed injected PK blocks before storing assistant memory", () => {
@@ -510,13 +573,142 @@ describe("Claude capture-assistant hook wrapper", () => {
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });
   });
 
+  it("recovers an untouched v0.4.8 cold opener before the assistant", () => {
+    const home = tempHomeWithKey();
+    const claudeDir = path.join(home, ".claude");
+    fsSync.mkdirSync(claudeDir, { recursive: true });
+    fsSync.writeFileSync(
+      path.join(claudeDir, ".midbrain-capture-client"),
+      "nanoclaw\n",
+      { mode: 0o600 },
+    );
+    const logDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-"));
+    const logPath = path.join(logDir, "fetch.jsonl");
+    const loaded = preload(logPath);
+    const transcript = coldTranscript(home);
+    const result = runAssistant(home, loaded, transcript);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    const bodies = fsSync.readFileSync(logPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(bodies.map(({ text, role, memory_metadata }) => ({ text, role, memory_metadata }))).toEqual([
+      {
+        text: "first cold opener",
+        role: "user",
+        memory_metadata: {
+          client: "nanoclaw",
+          cwd: "/workspace/agent",
+          session_id: "cold-session",
+        },
+      },
+      {
+        text: "first cold reply",
+        role: "assistant",
+        memory_metadata: {
+          client: "nanoclaw",
+          cwd: "/workspace/agent",
+          session_id: "cold-session",
+        },
+      },
+    ]);
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(logDir, { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
+
+  it("never retries the recovered opener on a repeated Stop", () => {
+    const home = tempHomeWithKey();
+    fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-capture-client"), "nanoclaw\n", { mode: 0o600 });
+    const logDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-"));
+    const logPath = path.join(logDir, "fetch.jsonl");
+    const loaded = preload(logPath);
+    const transcript = coldTranscript(home);
+
+    expect(runAssistant(home, loaded, transcript).status).toBe(0);
+    expect(runAssistant(home, loaded, transcript).status).toBe(0);
+    const bodies = fsSync.readFileSync(logPath, "utf8").trim().split("\n").map(JSON.parse);
+    expect(bodies.map(({ role }) => role)).toEqual(["user", "assistant", "assistant"]);
+    expect(bodies.filter(({ role }) => role === "user")).toHaveLength(1);
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(logDir, { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
+
+  it("preserves assistant capture when the recovered-user POST is rejected", () => {
+    const home = tempHomeWithKey();
+    fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-capture-client"), "nanoclaw\n", { mode: 0o600 });
+    const logDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-"));
+    const logPath = path.join(logDir, "fetch.jsonl");
+    const loaded = preload(logPath, { firstStatus: 500 });
+
+    const result = runAssistant(home, loaded, coldTranscript(home));
+    expect(result.status).toBe(0);
+    const bodies = fsSync.readFileSync(logPath, "utf8").trim().split("\n").map(JSON.parse);
+    expect(bodies.map(({ role }) => role)).toEqual(["user", "assistant"]);
+    expect(fsSync.existsSync(path.join(home, ".cache", "midbrain"))).toBe(false);
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(logDir, { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
+
+  it("spools only the assistant when no key resolves after the terminal claim", () => {
+    const home = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-no-key-"));
+    fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-capture-client"), "nanoclaw\n", { mode: 0o600 });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-spool-binding"), `${"a".repeat(64)}\n`, { mode: 0o600 });
+    const logDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-"));
+    const loaded = preload(path.join(logDir, "fetch.jsonl"));
+
+    const result = runAssistant(home, loaded, coldTranscript(home), {
+      MIDBRAIN_KEY_WAIT_MS: "0",
+      MIDBRAIN_API_KEY: undefined,
+      MIDBRAIN_API_URL: undefined,
+      MIDBRAIN_PROJECT_DIR: undefined,
+      MIDBRAIN_STATE_DIR: undefined,
+      CLAUDE_CONFIG_DIR: undefined,
+    });
+    expect(result.status).toBe(0);
+    const spool = fsSync.readFileSync(path.join(home, ".claude", ".midbrain-spool.ndjson"), "utf8")
+      .trim().split("\n").map(JSON.parse);
+    expect(spool.map(({ text, role }) => ({ text, role }))).toEqual([
+      { text: "first cold reply", role: "assistant" },
+    ]);
+    expect(fsSync.statSync(path.join(home, ".claude", ".midbrain-legacy-opener", "recovered")).size).toBe(0);
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(logDir, { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
+
+  it("does not recover from an untrusted transcript but still captures the assistant", () => {
+    const home = tempHomeWithKey();
+    fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-capture-client"), "nanoclaw\n", { mode: 0o600 });
+    const logDir = fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-"));
+    const logPath = path.join(logDir, "fetch.jsonl");
+    const loaded = preload(logPath);
+    const outside = path.join(home, "outside.jsonl");
+    fsSync.writeFileSync(outside, "{}\n");
+
+    expect(runAssistant(home, loaded, outside).status).toBe(0);
+    const bodies = fsSync.readFileSync(logPath, "utf8").trim().split("\n").map(JSON.parse);
+    expect(bodies.map(({ role }) => role)).toEqual(["assistant"]);
+    expect(fsSync.existsSync(path.join(home, ".claude", ".midbrain-legacy-opener"))).toBe(false);
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(logDir, { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
+
   it("captures the NanoClaw message delivered before a later internal-only Stop response", () => {
     const home = tempHomeWithKey();
     fsSync.mkdirSync(path.join(home, ".claude"), { recursive: true });
     fsSync.writeFileSync(path.join(home, ".claude", ".midbrain-capture-client"), "nanoclaw\n", { mode: 0o600 });
     const logPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-")), "fetch.jsonl");
     const loaded = preload(logPath);
-    const transcript = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-transcript-")), "session.jsonl");
+    const transcriptDir = path.join(home, ".claude", "projects", "-repo");
+    fsSync.mkdirSync(transcriptDir, { recursive: true });
+    const transcript = path.join(transcriptDir, "session.jsonl");
     const rows = [
       { type: "user", message: { role: "user", content: "older prompt" } },
       { type: "assistant", message: { role: "assistant", content: [
@@ -570,7 +762,6 @@ describe("Claude capture-assistant hook wrapper", () => {
     });
     fsSync.rmSync(home, { recursive: true, force: true });
     fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
-    fsSync.rmSync(path.dirname(transcript), { recursive: true, force: true });
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });
   });
 });
