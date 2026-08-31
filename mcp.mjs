@@ -51,6 +51,20 @@ function formatAgentLine(a) {
   return `- ${label} (${a.agent_id})${provider}`;
 }
 
+/** Format one lexical-search row without dropping mixed API result shapes. */
+function formatGrepResult(result) {
+  const text = typeof result?.text === "string" ? result.text : String(result?.text ?? "");
+  const source = typeof result?.source === "string" && result.source.trim()
+    ? result.source
+    : "";
+  if (source) {
+    const line = result.line_number ?? result.line_start ?? "?";
+    return `${source}:${line}: ${text}`;
+  }
+  const label = result?.memory_type === "episodic" ? "episodic" : "memory";
+  return `[${label}]: ${text}`;
+}
+
 /**
  * Creates and returns a fully configured McpServer with all tools registered.
  * Does NOT connect a transport — the caller is responsible for that.
@@ -186,29 +200,34 @@ use get_episodic_memories_by_date with today's date to retrieve recent context.`
 
   server.tool(
     "grep",
-    `Regex search over semantic memory text, like ripgrep.
+    `Regex search over semantic and episodic memory text, like ripgrep.
 
 Uses POSIX regular expressions (case-insensitive).
-Output format: path:lineno: matching line.
+Semantic results use path:lineno: matching line; source-less results use an intentional type label.
+Defaults to all memory types and supports semantic or episodic filtering.
 Use for exact or pattern-based matches (names, IDs, code, URLs).`,
     {
       pattern: z.string().describe("POSIX regex pattern (case-insensitive)."),
-      source: z.string().optional().describe("Restrict search to a specific source file path."),
+      source: z.string().optional()
+        .describe("Restrict semantic results to a source file path; episodic results may still appear with memory_type=all."),
       limit: z
         .number().int().min(1).max(500).optional().default(50)
         .describe("Max matching lines to return (default: 50)."),
+      memory_type: z
+        .enum(["all", "semantic", "episodic"]).optional().default("all")
+        .describe('Filter by memory type: "all" (default), "semantic", or "episodic".'),
     },
-    async ({ pattern, source, limit }) => {
+    async ({ pattern, source, limit, memory_type }) => {
       try {
         const a = await createApi();
-        const results = await a.fetch(a.SEARCH_LEXICAL, { pattern, source, limit });
+        const results = await a.fetch(a.SEARCH_LEXICAL, { pattern, source, limit, memory_type });
 
         if (!Array.isArray(results) || results.length === 0) {
           const hint = await peekRecency();
           return { content: [{ type: "text", text: `No matches for pattern '${pattern}'.` + (hint || "") }] };
         }
 
-        const lines = results.map((m) => `${m.source}:${m.line_number}: ${m.text}`);
+        const lines = results.map(formatGrepResult);
         const hint = await peekRecency();
         return { content: [{ type: "text", text: lines.join("\n") + (hint || "") }] };
       } catch (err) {

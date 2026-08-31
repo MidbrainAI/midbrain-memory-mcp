@@ -63,6 +63,13 @@ const MOCK_DATA = {
     { source: "docs/setup.md", line_number: 12, text: "npm install midbrain-memory-mcp" },
     { source: "docs/setup.md", line_number: 45, text: "npm run setup" },
   ],
+  searchLexicalMixed: [
+    { source: "docs/setup.md", line_number: 12, text: "semantic line number", memory_type: "semantic" },
+    { source: "", text: "episodic result", memory_type: "episodic" },
+    { source: "docs/api.md", line_start: 7, text: "semantic line start", memory_type: "semantic" },
+    { text: "untyped result" },
+    { source: "docs/no-line.md", text: "semantic unknown line", memory_type: "semantic" },
+  ],
   episodicList: {
     items: [
       { role: "user", text: "What did we discuss?", occurred_at: "2025-06-01T14:00:00Z" },
@@ -120,6 +127,7 @@ function mockFetch(url, opts) {
       return Promise.resolve(jsonResponse({ detail: "Invalid regex pattern" }, 400));
     }
     if (pattern === "__empty__") return Promise.resolve(jsonResponse([]));
+    if (pattern === "__mixed__") return Promise.resolve(jsonResponse(MOCK_DATA.searchLexicalMixed));
     if (pattern === "__server_error__") {
       return Promise.resolve(jsonResponse({ detail: "Internal server error" }, 500));
     }
@@ -434,6 +442,9 @@ describe("grep tool", () => {
     expect(tool.inputSchema.properties).toHaveProperty("pattern");
     expect(tool.inputSchema.properties).toHaveProperty("source");
     expect(tool.inputSchema.properties).toHaveProperty("limit");
+    expect(tool.inputSchema.properties).toHaveProperty("memory_type");
+    expect(tool.description).toContain("semantic and episodic");
+    expect(tool.inputSchema.properties.source.description).toContain("semantic");
   });
 
   it("returns ripgrep-style formatted results", async () => {
@@ -441,6 +452,54 @@ describe("grep tool", () => {
     const text = result.content[0].text;
     expect(text).toContain("docs/setup.md:12: npm install midbrain-memory-mcp");
     expect(text).toContain("docs/setup.md:45: npm run setup");
+  });
+
+  it.each([
+    ["default", undefined],
+    ["explicit all", "all"],
+  ])("retains mixed results in API order for %s", async (_label, memoryType) => {
+    const callOffset = fetchSpy.mock.calls.length;
+    const arguments_ = { pattern: "__mixed__" };
+    if (memoryType) arguments_.memory_type = memoryType;
+
+    const result = await client.callTool({ name: "grep", arguments: arguments_ });
+
+    expect(result.content[0].text).toBe([
+      "docs/setup.md:12: semantic line number",
+      "[episodic]: episodic result",
+      "docs/api.md:7: semantic line start",
+      "[memory]: untyped result",
+      "docs/no-line.md:?: semantic unknown line",
+    ].join("\n"));
+    expect(result.content[0].text).not.toContain("undefined");
+
+    const requestUrl = new URL(fetchSpy.mock.calls[callOffset][0]);
+    expect(requestUrl.searchParams.get("memory_type")).toBe("all");
+  });
+
+  it.each(["semantic", "episodic"])("forwards memory_type=%s exactly", async (memoryType) => {
+    const callOffset = fetchSpy.mock.calls.length;
+    await client.callTool({
+      name: "grep",
+      arguments: { pattern: "npm", source: "docs/setup.md", limit: 7, memory_type: memoryType },
+    });
+
+    const requestUrl = new URL(fetchSpy.mock.calls[callOffset][0]);
+    expect(requestUrl.searchParams.get("pattern")).toBe("npm");
+    expect(requestUrl.searchParams.get("source")).toBe("docs/setup.md");
+    expect(requestUrl.searchParams.get("limit")).toBe("7");
+    expect(requestUrl.searchParams.get("memory_type")).toBe(memoryType);
+  });
+
+  it("rejects an invalid memory_type before calling the API", async () => {
+    const callOffset = fetchSpy.mock.calls.length;
+    const result = await client.callTool({
+      name: "grep",
+      arguments: { pattern: "npm", memory_type: "procedural" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(fetchSpy.mock.calls).toHaveLength(callOffset);
   });
 
   it("returns regex error for invalid pattern", async () => {
