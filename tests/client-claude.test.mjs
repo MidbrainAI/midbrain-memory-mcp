@@ -510,7 +510,7 @@ describe("Claude capture-assistant hook wrapper", () => {
           hookName: "UserPromptSubmit",
           hookEvent: "UserPromptSubmit",
           exitCode: 127,
-          command: `${path.join(home, ".midbrain", "bin", "claude-hook")} user`,
+          command: `${path.join(home, ".midbrain", "bin", shimFilename("claude"))} user`,
         },
       },
       {
