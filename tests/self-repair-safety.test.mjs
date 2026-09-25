@@ -110,7 +110,7 @@ let env;
 let errSpy;
 
 beforeEach(async () => {
-  env = await makeTestEnv({ clients: ["claude", "codex", "hermes", "opencode", "nanoclaw"] });
+  env = await makeTestEnv({ clients: ["claude", "codex", "cursor", "hermes", "opencode", "nanoclaw"] });
   errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -365,6 +365,20 @@ describe("B11 — codex/hermes missing shim reinstalled without config churn", (
     expect((await fs.stat(env.paths.codexHooks)).mtimeMs).toBe(hooksStat.mtimeMs);
   });
 
+  it("cursor: shim reinstalled, hooks.json mtime unchanged", async () => {
+    const { Cursor } = await import("../shared/clients/cursor.mjs");
+    await new Cursor().installGlobal();
+    await runSelfRepair(DURABLE); // converge
+    await fs.rm(env.paths.cursorShim);
+
+    await new Promise((r) => setTimeout(r, 10));
+    const hooksStat = await fs.stat(env.paths.cursorHooks);
+    await runSelfRepair(DURABLE);
+
+    expect(await fs.readFile(env.paths.cursorShim, "utf8")).toBe(buildShimBody("cursor"));
+    expect((await fs.stat(env.paths.cursorHooks)).mtimeMs).toBe(hooksStat.mtimeMs);
+  });
+
   it("hermes: shim reinstalled, config.yaml mtime unchanged", async () => {
     await seedStaleEverything(env);
     await runSelfRepair(DURABLE); // converge
@@ -540,8 +554,9 @@ describe("B8/AC-6 — explicit install repairs all four detected clients", () =>
     expect((await fs.readFile(env.paths.codexConfig, "utf8"))).toContain("midbrain-memory");
     expect(JSON.parse(await fs.readFile(env.paths.opencodeConfig, "utf8")).mcp["midbrain-memory"]).toBeDefined();
     expect((await fs.readFile(env.paths.hermesConfig, "utf8"))).toContain("midbrain-memory");
+    expect(JSON.parse(await fs.readFile(env.paths.cursorMcp, "utf8")).mcpServers["midbrain-memory"]).toBeDefined();
     // hooks/shims written for the hook-based clients
-    for (const shim of [env.paths.claudeShim, env.paths.codexShim, env.paths.hermesShim]) {
+    for (const shim of [env.paths.claudeShim, env.paths.codexShim, env.paths.hermesShim, env.paths.cursorShim]) {
       await expect(fs.access(shim)).resolves.toBeUndefined();
     }
   });

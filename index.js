@@ -60,8 +60,14 @@ if (isMain) {
       await import("./plugins/hermes/capture-user.mjs");
     } else if (client === "hermes" && event === "assistant") {
       await import("./plugins/hermes/capture-assistant.mjs");
+    } else if (client === "cursor" && event === "user") {
+      await import("./plugins/cursor/capture-user.mjs");
+    } else if (client === "cursor" && event === "assistant") {
+      await import("./plugins/cursor/capture-assistant.mjs");
+    } else if (client === "cursor" && event === "tool") {
+      await import("./plugins/cursor/capture-tool.mjs");
     } else {
-      console.error("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool OR hook hermes user|assistant");
+      console.error("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool OR hook hermes user|assistant OR hook cursor user|assistant|tool");
       process.exit(2);
     }
   } else if (process.argv[2] === "install") {

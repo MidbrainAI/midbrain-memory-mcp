@@ -58,7 +58,8 @@ const UPDATE_CACHE_FILENAME = '.midbrain-update-check.json';
  *
  * @param {object} [opts]
  * @param {string[]} [opts.clients] - Client fixtures to seed so detectClients()
- *   finds them: any of 'claude', 'codex', 'hermes', 'opencode', 'nanoclaw'.
+ *   finds them: any of 'claude', 'codex', 'cursor', 'hermes', 'opencode',
+ *   'nanoclaw'.
  * @param {object} [opts.env] - Extra env overrides applied after the managed
  *   set (e.g. { CI: '1' }).
  * @param {boolean} [opts.freshUpdateCache=true] - Pre-seed a fresh update-check
@@ -190,6 +191,8 @@ export function sandboxPaths(home) {
     claudeSettings: path.join(home, '.claude', 'settings.json'),
     codexConfig: path.join(home, '.codex', 'config.toml'),
     codexHooks: path.join(home, '.codex', 'hooks.json'),
+    cursorMcp: path.join(home, '.cursor', 'mcp.json'),
+    cursorHooks: path.join(home, '.cursor', 'hooks.json'),
     hermesConfig: path.join(home, '.hermes', 'config.yaml'),
     opencodeConfig: path.join(home, '.config', 'opencode', 'opencode.json'),
     opencodeConfigJsonc: path.join(home, '.config', 'opencode', 'opencode.jsonc'),
@@ -202,6 +205,7 @@ export function sandboxPaths(home) {
     claudeShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'claude-hook.cmd' : 'claude-hook'),
     codexShim: path.join(home, '.midbrain', 'bin', 'codex-hook'),
     hermesShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'hermes-hook.cmd' : 'hermes-hook'),
+    cursorShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'cursor-hook.cmd' : 'cursor-hook'),
     globalKey: path.join(home, '.config', 'midbrain', '.midbrain-key'),
   };
 }
@@ -217,6 +221,9 @@ async function seedClient(paths, client) {
       break;
     case 'hermes':
       await writeSeed(paths.hermesConfig, '');
+      break;
+    case 'cursor':
+      await writeSeed(paths.cursorMcp, '{}\n');
       break;
     case 'opencode':
       await writeSeed(paths.opencodeConfig, '{}\n');

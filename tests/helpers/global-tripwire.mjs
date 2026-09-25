@@ -36,6 +36,8 @@ export function tripwireSurfaces(home = os.homedir()) {
     path.join(home, '.claude', 'settings.json'),
     path.join(home, '.codex', 'config.toml'),
     path.join(home, '.codex', 'hooks.json'),
+    path.join(home, '.cursor', 'mcp.json'),
+    path.join(home, '.cursor', 'hooks.json'),
     path.join(hermesHome, 'config.yaml'),
     path.join(opencodeDir, 'opencode.json'),
     path.join(opencodeDir, 'opencode.jsonc'),
@@ -53,6 +55,8 @@ export function tripwireSurfaces(home = os.homedir()) {
     path.join(home, '.midbrain', 'bin', 'codex-hook'),
     path.join(home, '.midbrain', 'bin', 'hermes-hook'),
     path.join(home, '.midbrain', 'bin', 'hermes-hook.cmd'),
+    path.join(home, '.midbrain', 'bin', 'cursor-hook'),
+    path.join(home, '.midbrain', 'bin', 'cursor-hook.cmd'),
     // NanoClaw installed-skill destinations (AC-15): every root the adapter
     // could resolve.
     ...nanoclawRoots.map((root) => path.join(root, NANOCLAW_SKILL_REL)),
@@ -62,6 +66,7 @@ export function tripwireSurfaces(home = os.homedir()) {
     path.join(home, '.config', 'opencode', '.midbrain-key'),
     path.join(home, '.config', 'hermes', '.midbrain-key'),
     path.join(home, '.config', 'nanoclaw', '.midbrain-key'),
+    path.join(home, '.config', 'cursor', '.midbrain-key'),
   ];
 }
 

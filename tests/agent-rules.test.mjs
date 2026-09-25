@@ -323,7 +323,7 @@ describe("writeGlobalRules", () => {
     ]);
 
     const results = await writeGlobalRules({
-      clients: ["codex", "opencode", "claude", "hermes", "nanoclaw"],
+      clients: ["codex", "opencode", "claude", "hermes", "nanoclaw", "cursor"],
       homeDir: "/home/tester",
       hermesHome: "/profiles/hermes",
       nanoclawRoot: "/srv/nanoclaw",
@@ -428,6 +428,7 @@ describe("writeProjectRules", () => {
   it.each([
     ["codex", "AGENTS.md", "Codex/OpenCode"],
     ["opencode", "AGENTS.md", "Codex/OpenCode"],
+    ["cursor", "AGENTS.md", "Codex/OpenCode"],
     ["claude", "CLAUDE.md", "ToolSearch"],
     ["nanoclaw", "CLAUDE.md", "ToolSearch"],
     ["hermes", "AGENTS.md", "Hermes"],
@@ -437,6 +438,12 @@ describe("writeProjectRules", () => {
     expect(results[0].path).toBe(path.join(PROJECT_DIR, filename));
     const written = mocks.writeFile.mock.calls[0]?.[1];
     expect(written).toContain(marker);
+  });
+
+  it("T-19d: Cursor has no file-based global rules surface", async () => {
+    await expect(writeGlobalRules({ clients: ["cursor"], homeDir: "/home/tester" }))
+      .resolves.toEqual([]);
+    expect(mocks.writeFile).not.toHaveBeenCalled();
   });
 
   it("T-17: Hermes does not create a shadowing context file", async () => {

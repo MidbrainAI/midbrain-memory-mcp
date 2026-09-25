@@ -150,6 +150,8 @@ async function runSelfUpdate() {
 }
 
 async function postEpisodic(text, role, input, deps, api) {
+  // deps.client lets the Cursor runtime reuse this capture path with its own label.
+  const client = deps.client || "codex";
   try {
     if (role === "assistant") text = scrubInjectedPkContext(text);
     if (!text) return true;
@@ -157,11 +159,11 @@ async function postEpisodic(text, role, input, deps, api) {
     if (!api) {
       api = await deps.createApi(cwd);
     }
-    const metadata = buildCaptureMetadata({ client: "codex", cwd, sessionId: input?.session_id });
+    const metadata = buildCaptureMetadata({ client, cwd, sessionId: input?.session_id });
     const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.logger, metadata));
     return stored !== false;
   } catch (err) {
-    safeLog(deps.logger, `CODEX CAPTURE ERROR (${role}): ${errorMessage(err)}`);
+    safeLog(deps.logger, `${client.toUpperCase()} CAPTURE ERROR (${role}): ${errorMessage(err)}`);
     return false;
   }
 }
