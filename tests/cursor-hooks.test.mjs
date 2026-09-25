@@ -425,7 +425,13 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
 
   it("beforeSubmitPrompt exits fast against an API that never replies; the entry is cached", async () => {
     const sockets = new Set();
-    const server = net.createServer((socket) => { sockets.add(socket); });
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      // The child's connection is reset when it exits; on Windows that is an
+      // ECONNRESET 'error' event, which must not surface as an uncaught error.
+      socket.on("error", () => {});
+    });
+    server.on("error", () => {});
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const limitMs = 1500;
     try {
