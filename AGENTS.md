@@ -305,6 +305,14 @@ Cursor:
   no legacy forms.
 - `beforeSubmitPrompt` must always write `{"continue": true}`; the other
   wrappers write `{}`. Every path exits 0 (Cursor fails open by default).
+- Cursor holds the prompt until the `beforeSubmitPrompt` process exits, so the
+  user hook does no network work: it writes the mapped fields to a private
+  0600 job file and starts a detached `plugins/cursor/store-user.mjs` child
+  (`process.execPath`, no shell) that deletes the file, stores under a hard
+  20-second limit (`MIDBRAIN_CURSOR_STORE_TIMEOUT_MS` overrides it), caches
+  the entry under the API cache scope on expiry, and runs the throttled
+  self-update. If the child cannot start, the hook stores inline under the
+  same limit. Assistant and tool hooks are unchanged.
 - `plugins/cursor/common.mjs` maps the Cursor payload onto Codex fields
   (`conversation_id` -> `session_id`, `generation_id` -> `turn_id`,
   `workspace_roots[0]` -> `cwd`, JSON-string `tool_output` -> `tool_response`)

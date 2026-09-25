@@ -154,6 +154,30 @@ describe("Cursor.installGlobal", () => {
     expect(diffSnapshots(before, await env.snapshot())).toEqual([]);
   });
 
+  it("reports each file as changed on first install and unchanged on a second install", async () => {
+    const first = await cursor.installGlobal();
+    expect(first).toEqual([
+      "~/.cursor/mcp.json: midbrain-memory entry added",
+      "~/.cursor/hooks.json: MidBrain hooks written",
+      "~/.midbrain/bin/cursor-hook: stable Cursor hook shim written",
+      "Restart Cursor (or reload the window) so it picks up the MCP server and hooks.",
+    ]);
+
+    const second = await cursor.installGlobal();
+    expect(second).toEqual([
+      "~/.cursor/mcp.json: midbrain-memory entry unchanged",
+      "~/.cursor/hooks.json: MidBrain hooks unchanged",
+      "~/.midbrain/bin/cursor-hook: stable Cursor hook shim unchanged",
+    ]);
+  });
+
+  it("installProject reports an unchanged project mcp.json on a second run", async () => {
+    const project = path.join(env.root, "project");
+    const configFile = path.join(project, ".cursor", "mcp.json");
+    expect(await cursor.installProject(project)).toEqual([`${configFile}: midbrain-memory entry added`]);
+    expect(await cursor.installProject(project)).toEqual([`${configFile}: midbrain-memory entry unchanged`]);
+  });
+
   it("preserves custom env vars and drops reserved ones from the MidBrain entry", async () => {
     await writeJsonFile(env.paths.cursorMcp, {
       mcpServers: {

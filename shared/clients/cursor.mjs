@@ -86,8 +86,14 @@ async function patchMcpEntry(config, opts) {
 async function writeMcpConfig(filePath, opts) {
   const config = await readConfigObject(filePath);
   const result = await patchMcpEntry(config, { ...opts, source: filePath });
-  await writeJsonIfChanged(filePath, config, { backupFirst: true });
-  return result;
+  const written = await writeJsonIfChanged(filePath, config, { backupFirst: true });
+  return { ...result, written };
+}
+
+/** Summary line for one MCP config file that reports whether it changed. */
+function mcpLine(label, { exists, pinned, written }) {
+  if (pinned || written) return formatMigrationLine(label, exists, pinned);
+  return `${label}: midbrain-memory entry unchanged`;
 }
 
 function buildHookCommand(role) {
@@ -156,26 +162,29 @@ export class Cursor extends BaseClient {
     // Validate both files before writing either, so a malformed hooks.json
     // never leaves a half-applied install behind.
     const hooks = patchHooks(await readConfigObject(hp), hp);
-    const { exists, pinned, hostLines } = await writeMcpConfig(mcpPath(), opts);
+    const mcp = await writeMcpConfig(mcpPath(), opts);
 
-    await installShim(CLIENT_ID, { mode: 'install', isDev: opts.isDev });
-    await writeJsonIfChanged(hp, hooks, { backupFirst: true });
-    return [
-      formatMigrationLine('~/.cursor/mcp.json', exists, pinned),
-      ...hostLines,
-      '~/.cursor/hooks.json: MidBrain hooks written',
-      '~/.midbrain/bin/cursor-hook: stable Cursor hook shim written',
-      'Restart Cursor (or reload the window) so it picks up the MCP server and hooks.',
+    const shim = await installShim(CLIENT_ID, { mode: 'install', isDev: opts.isDev });
+    const hooksWritten = await writeJsonIfChanged(hp, hooks, { backupFirst: true });
+    const lines = [
+      mcpLine('~/.cursor/mcp.json', mcp),
+      ...mcp.hostLines,
+      `~/.cursor/hooks.json: MidBrain hooks ${hooksWritten ? 'written' : 'unchanged'}`,
+      `~/.midbrain/bin/cursor-hook: stable Cursor hook shim ${shim.written ? 'written' : 'unchanged'}`,
     ];
+    if (mcp.written || hooksWritten || shim.written) {
+      lines.push('Restart Cursor (or reload the window) so it picks up the MCP server and hooks.');
+    }
+    return lines;
   }
 
   async installProject(projectDir, _opts = {}) {
     const configFile = path.join(projectDir, '.cursor', 'mcp.json');
-    const { exists, pinned, hostLines } = await writeMcpConfig(configFile, {
+    const mcp = await writeMcpConfig(configFile, {
       isDev: _opts.isDev === true,
       projectDir,
     });
-    return [formatMigrationLine(configFile, exists, pinned), ...hostLines];
+    return [mcpLine(configFile, mcp), ...mcp.hostLines];
   }
 
   projectConfigFiles(_projectDir) {

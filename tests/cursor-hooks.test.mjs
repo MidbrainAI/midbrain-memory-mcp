@@ -7,25 +7,58 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "fs";
+import net from "node:net";
 import os from "os";
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   CONTINUE,
+  STORE_TIME_LIMIT_MS,
   captureAssistant,
   captureToolUse,
   captureUser,
   finishHook,
+  runBackgroundStore,
+  storeUserJob,
   toCodexInput,
 } from "../plugins/cursor/common.mjs";
+import { _setCachePath, readAndClearCache } from "../shared/episodic-cache.mjs";
 import { makeTestEnv } from "./helpers/test-env.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
 const EMAIL = "someone@example.com";
+const IS_WIN = process.platform === "win32";
+const STORE_ENTRY = path.join(REPO_ROOT, "plugins", "cursor", "store-user.mjs");
+const NEVER = () => new Promise(() => {});
+
+/** Fake ChildProcess: emits "spawn" (or "error") on the next tick. */
+function fakeSpawn({ error } = {}) {
+  const calls = [];
+  const fn = vi.fn((command, args, options) => {
+    const child = new EventEmitter();
+    child.unref = vi.fn();
+    calls.push({ command, args, options, child });
+    process.nextTick(() => (error ? child.emit("error", error) : child.emit("spawn")));
+    return child;
+  });
+  fn.calls = calls;
+  return fn;
+}
+
+async function waitFor(check, { timeoutMs = 10_000, intervalMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = check();
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
 
 // Common fields Cursor sends on every hook (docs: cursor.com/docs/agent/hooks).
 function common(event, extra = {}) {
@@ -51,6 +84,7 @@ function makeDeps() {
     logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
     assistantBufferDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-assistant-")),
     toolBufferDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-tools-")),
+    storeJobDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-jobs-")),
   };
 }
 
@@ -87,42 +121,128 @@ describe("Cursor hook capture", () => {
   afterEach(() => {
     fs.rmSync(deps.assistantBufferDir, { recursive: true, force: true });
     fs.rmSync(deps.toolBufferDir, { recursive: true, force: true });
+    fs.rmSync(deps.storeJobDir, { recursive: true, force: true });
   });
 
-  it("captureUser stores the prompt with cursor metadata and always continues", async () => {
+  it("captureUser hands the store to a detached child and never awaits it", async () => {
+    deps.spawn = fakeSpawn();
+    deps.api.storeEpisodic.mockImplementation(NEVER);
+
     const out = await captureUser(common("beforeSubmitPrompt", {
       prompt: "  remember this  ",
       attachments: [{ type: "file", file_path: "/repo/a.js" }],
     }), deps);
 
-    expect(out).toEqual({ continue: true });
+    expect(out).toEqual(CONTINUE);
+    expect(deps.createApi).not.toHaveBeenCalled();
+    expect(deps.spawn).toHaveBeenCalledOnce();
+    const [{ command, args, options, child }] = deps.spawn.calls;
+    expect(command).toBe(process.execPath);
+    expect(args.at(-2)).toBe(STORE_ENTRY);
+    expect(options).toMatchObject({ detached: true, stdio: "ignore", windowsHide: true });
+    expect(options.shell).toBeUndefined();
+    expect(child.unref).toHaveBeenCalledOnce();
+
+    const jobFile = args.at(-1);
+    expect(path.dirname(jobFile)).toBe(deps.storeJobDir);
+    const raw = fs.readFileSync(jobFile, "utf8");
+    expect(JSON.parse(raw)).toEqual({ prompt: "remember this", cwd: "/repo", session_id: "conv-1" });
+    expect(raw).not.toContain(EMAIL);
+    if (!IS_WIN) expect(fs.statSync(jobFile).mode & 0o777).toBe(0o600);
+  });
+
+  it("captureUser continues without spawning or an API call on an empty prompt", async () => {
+    deps.spawn = fakeSpawn();
+    await expect(captureUser(common("beforeSubmitPrompt", { prompt: "  " }), deps))
+      .resolves.toEqual(CONTINUE);
+    expect(deps.spawn).not.toHaveBeenCalled();
+    expect(deps.createApi).not.toHaveBeenCalled();
+  });
+
+  it("the background child stores the prompt with cursor metadata and deletes the job file", async () => {
+    deps.spawn = fakeSpawn();
+    await captureUser(common("beforeSubmitPrompt", { prompt: "ship it" }), deps);
+    const jobFile = deps.spawn.calls[0].args.at(-1);
+
+    await runBackgroundStore(jobFile, deps);
+
     expect(deps.createApi).toHaveBeenCalledWith("/repo");
     expect(deps.api.storeEpisodic.mock.calls).toEqual([[
-      "remember this",
+      "ship it",
       "user",
       deps.logger,
       { client: "cursor", cwd: "/repo", session_id: "conv-1" },
     ]]);
     expect(JSON.stringify(deps.api.storeEpisodic.mock.calls)).not.toContain(EMAIL);
+    expect(fs.existsSync(jobFile)).toBe(false);
   });
 
-  it("captureUser continues without an API call on an empty prompt", async () => {
-    await expect(captureUser(common("beforeSubmitPrompt", { prompt: "  " }), deps))
-      .resolves.toEqual(CONTINUE);
-    expect(deps.createApi).not.toHaveBeenCalled();
-  });
-
-  it("captureUser continues when key resolution fails (fail-open)", async () => {
+  it("the background child is fail-open when key resolution fails", async () => {
     deps.createApi.mockRejectedValueOnce(new Error("no key"));
-    await expect(captureUser(common("beforeSubmitPrompt", { prompt: "hi" }), deps))
-      .resolves.toEqual(CONTINUE);
+    await expect(storeUserJob({ prompt: "hi", cwd: "/repo" }, deps)).resolves.toBe("failed");
     expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("CURSOR CAPTURE ERROR (user)"));
   });
 
-  it("captureUser continues when the API store throws", async () => {
-    deps.api.storeEpisodic.mockRejectedValueOnce(new Error("503"));
-    await expect(captureUser(common("beforeSubmitPrompt", { prompt: "hi" }), deps))
+  it("the background child's hard time limit caches the entry under the API cache scope", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-cache-"));
+    const scope = "ab".repeat(32);
+    _setCachePath(cacheDir);
+    try {
+      deps.api.cacheScope = scope;
+      deps.api.storeEpisodic.mockImplementation(NEVER);
+      deps.storeTimeLimitMs = 30;
+
+      await expect(storeUserJob({ prompt: "slow", cwd: "/repo", session_id: "conv-1" }, deps))
+        .resolves.toBe("timeout");
+
+      expect(readAndClearCache(scope)).toEqual([expect.objectContaining({
+        text: "slow",
+        role: "user",
+        memory_metadata: { client: "cursor", cwd: "/repo", session_id: "conv-1" },
+      })]);
+      expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("CURSOR CAPTURE TIMEOUT (user)"));
+    } finally {
+      _setCachePath(null);
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("the default hard time limit is 20 seconds", () => {
+    expect(STORE_TIME_LIMIT_MS).toBe(20_000);
+  });
+
+  it.each([
+    ["emits an error event", () => fakeSpawn({ error: new Error("ENOENT") })],
+    ["throws synchronously", () => vi.fn(() => { throw new Error("EAGAIN"); })],
+  ])("spawn failure (%s) falls back to an inline store and still continues", async (_label, makeSpawn) => {
+    deps.spawn = makeSpawn();
+
+    await expect(captureUser(common("beforeSubmitPrompt", { prompt: "inline" }), deps))
       .resolves.toEqual(CONTINUE);
+
+    expect(deps.api.storeEpisodic).toHaveBeenCalledWith(
+      "inline", "user", deps.logger, { client: "cursor", cwd: "/repo", session_id: "conv-1" },
+    );
+    expect(fs.readdirSync(deps.storeJobDir)).toEqual([]);
+    expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("storing inline"));
+  });
+
+  it("the inline fallback keeps the hard time limit and caches on expiry", async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-cache-"));
+    const scope = "cd".repeat(32);
+    _setCachePath(cacheDir);
+    try {
+      deps.spawn = vi.fn(() => { throw new Error("EAGAIN"); });
+      deps.api.cacheScope = scope;
+      deps.api.storeEpisodic.mockImplementation(NEVER);
+      deps.storeTimeLimitMs = 30;
+      await expect(captureUser(common("beforeSubmitPrompt", { prompt: "hi" }), deps))
+        .resolves.toEqual(CONTINUE);
+      expect(readAndClearCache(scope).map((entry) => entry.text)).toEqual(["hi"]);
+    } finally {
+      _setCachePath(null);
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
   });
 
   it("captureAssistant stores the response text with cursor metadata", async () => {
@@ -258,7 +378,19 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
     return fs.readFileSync(fetchLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
   }
 
-  it("beforeSubmitPrompt posts the prompt with metadata and answers continue", () => {
+  function cachedText() {
+    const cacheDir = path.join(env.home, ".cache", "midbrain");
+    if (!fs.existsSync(cacheDir)) return "";
+    return fs.readdirSync(cacheDir).filter((name) => name.endsWith(".ndjson"))
+      .map((name) => fs.readFileSync(path.join(cacheDir, name), "utf8")).join("");
+  }
+
+  function jobFiles() {
+    const dir = path.join(env.tmp, "midbrain-cursor-store-jobs");
+    return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+  }
+
+  it("beforeSubmitPrompt answers continue and the background child posts the prompt", async () => {
     const project = path.join(env.home, "work", "repo");
     const result = run("user", common("beforeSubmitPrompt", {
       prompt: "ship it",
@@ -267,7 +399,10 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
 
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({ continue: true });
-    const posts = requests().filter((r) => r.url.includes("/memories/episodic"));
+    const posts = await waitFor(() => {
+      const found = requests().filter((r) => r.url.includes("/memories/episodic"));
+      return found.length > 0 && jobFiles().length === 0 ? found : null;
+    });
     expect(posts).toHaveLength(1);
     expect(posts[0].body).toMatchObject({
       text: "ship it",
@@ -277,18 +412,55 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
     expect(JSON.stringify(requests())).not.toContain(EMAIL);
   });
 
-  it("beforeSubmitPrompt still answers continue when the API is unreachable", () => {
+  it("beforeSubmitPrompt still answers continue when the API is unreachable", async () => {
     const result = run("user", common("beforeSubmitPrompt", { prompt: "offline" }), "throw");
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({ continue: true });
 
     // the failed POST lands in the offline cache for the boot-time drain
-    const cacheDir = path.join(env.home, ".cache", "midbrain");
-    const cached = fs.readdirSync(cacheDir).filter((name) => name.endsWith(".ndjson"))
-      .map((name) => fs.readFileSync(path.join(cacheDir, name), "utf8")).join("");
-    expect(cached).toContain('"text":"offline"');
+    const cached = await waitFor(() => (cachedText().includes('"text":"offline"') ? cachedText() : null));
     expect(cached).toContain('"client":"cursor"');
     expect(cached).not.toContain(EMAIL);
+  });
+
+  it("beforeSubmitPrompt exits fast against an API that never replies; the entry is cached", async () => {
+    const sockets = new Set();
+    const server = net.createServer((socket) => { sockets.add(socket); });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const limitMs = 1500;
+    try {
+      const started = Date.now();
+      const hook = spawn(process.execPath, [path.join(REPO_ROOT, "plugins", "cursor", "capture-user.mjs")], {
+        env: env.childEnv({
+          MIDBRAIN_API_URL: `http://127.0.0.1:${server.address().port}`,
+          MIDBRAIN_CURSOR_STORE_TIMEOUT_MS: String(limitMs),
+        }),
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      hook.stdout.on("data", (chunk) => { stdout += chunk; });
+      hook.stdin.end(JSON.stringify(common("beforeSubmitPrompt", { prompt: "stalled" })));
+      const code = await new Promise((resolve) => hook.on("close", resolve));
+      const elapsed = Date.now() - started;
+
+      expect(code).toBe(0);
+      expect(JSON.parse(stdout)).toEqual({ continue: true });
+      expect(elapsed).toBeLessThan(2000);
+
+      // the detached child reached the hanging server, then hit its time limit
+      await waitFor(() => sockets.size > 0, { timeoutMs: 5000 });
+      const cached = await waitFor(
+        () => (cachedText().includes('"text":"stalled"') ? cachedText() : null),
+        { timeoutMs: limitMs + 5000 },
+      );
+      expect(Date.now() - started).toBeLessThan(limitMs + 5000);
+      expect(cached).toContain('"client":"cursor"');
+      expect(cached).not.toContain(EMAIL);
+      await waitFor(() => jobFiles().length === 0);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("beforeSubmitPrompt answers continue on malformed stdin", () => {

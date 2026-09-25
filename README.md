@@ -732,11 +732,19 @@ The installer detects Cursor by `~/.cursor/` and then:
   installer is idempotent. If either file is not valid JSON, or has an
   unexpected shape, the installer changes neither file and reports an error.
 
+Supported Cursor surfaces:
+
+| Surface | Memory search (MCP) | Capture (hooks) |
+|---|---|---|
+| Cursor desktop app | Yes | Yes |
+| Cursor CLI, interactive (`agent`) | Yes | Yes (validated 2026-09-25) |
+| Cursor CLI, headless (`agent -p`) | Yes, with `--approve-mcps --trust --force` so MCP tools run without a prompt | No: hooks do not run in headless mode |
+
 What is captured:
 
 | Cursor hook | Shim role | Captured |
 |---|---|---|
-| `beforeSubmitPrompt` | `user` | The prompt text. Always answers `{"continue": true}`, so capture never blocks a prompt. |
+| `beforeSubmitPrompt` | `user` | The prompt text. Always answers `{"continue": true}` at once and stores the prompt in a background process, so capture never blocks a prompt. |
 | `postToolUse` | `tool` | One redacted tool event, buffered for the current generation (no API call). |
 | `afterAgentResponse` | `assistant` | The final response text, plus one bounded tool activity summary when tools ran. |
 
@@ -763,9 +771,13 @@ Limitations:
   summarized; stale buffers are removed after 24 hours.
 - Procedural-knowledge injection is not available: `beforeSubmitPrompt` cannot
   add context. `MIDBRAIN_ENABLE_PK_INJECTION` has no effect for Cursor.
-- `beforeSubmitPrompt` waits for the capture to finish (up to the 10-second
-  timeout). The first run after a cold npm cache can be slower while `npx`
-  downloads the package.
+- Latency: Cursor holds the prompt until the `beforeSubmitPrompt` hook process
+  exits. MidBrain code in that hook returns at once and hands the store to a
+  detached background process, which stops after 20 seconds and moves an
+  unfinished store to the offline cache. Published installs still pay the
+  `npx` package start before MidBrain code runs, on every hook call (about
+  4-5 seconds measured); the first run after a cold npm cache is slower while
+  `npx` downloads the package. Dev installs (`--dev`) run `node` directly.
 
 Troubleshooting:
 

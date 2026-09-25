@@ -351,6 +351,9 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(section).toMatch(/Limitations:/);
     expect(section).toMatch(/Global rules are not auto-installed/);
     expect(section).toMatch(/\{"continue": true\}/);
+    expect(section).toContain("`agent -p`");
+    expect(section).toContain("--approve-mcps --trust --force");
+    expect(section).toMatch(/background process/);
     expect(agents).toContain("tests/client-cursor.test.mjs");
     expect(agents).toContain("tests/cursor-hooks.test.mjs");
   });
