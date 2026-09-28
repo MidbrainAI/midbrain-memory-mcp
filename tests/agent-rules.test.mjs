@@ -72,6 +72,14 @@ describe("buildRulesBlock", () => {
     expect(block.endsWith("<!-- midbrain-memory-rules:end -->")).toBe(true);
   });
 
+  it("T-10d: describes grep as searching semantic and episodic memory", () => {
+    // #66: grep searches episodic and semantic memory by default; the rules
+    // must not steer agents away from episodic lexical matches.
+    const block = buildRulesBlock();
+    expect(block).toContain("`grep` for exact anchors across semantic and episodic memory");
+    expect(block).not.toContain("semantic anchors only");
+  });
+
   it("T-10: contains the shared proactive-memory contract", () => {
     const block = buildRulesBlock();
     expect(block).toContain("check_session_status");

@@ -909,9 +909,9 @@ works for Cursor):
 - Tools: `memory_search(all)` for broad context; episodic search for prior
   conversations/decisions; `get_episodic_memories_by_date` for known periods
   or continuity; semantic search plus `list_files`/`read_file` for stored
-  documents; `grep` for exact semantic anchors only. MidBrain
-  `list_files`/`read_file` read remote memory, so local-filesystem bans do
-  not prohibit them.
+  documents; `grep` for exact anchors across semantic and episodic memory.
+  MidBrain `list_files`/`read_file` read remote memory, so local-filesystem
+  bans do not prohibit them.
 - Reliability outranks cost. Start near 10 results; if the target is absent or
   noisy, repeat at the supported maximum (currently 50). Then refine anchors or
   surfaces, paginate, or traverse dates while useful. Ranked misses are not
