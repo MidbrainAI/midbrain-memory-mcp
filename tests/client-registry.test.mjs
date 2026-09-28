@@ -58,7 +58,7 @@ describe("detectClients", () => {
   });
 
   it("registers Codex in allClients", () => {
-    expect(allClients().map((c) => c.id)).toEqual(["opencode", "claude", "codex", "nanoclaw", "hermes"]);
+    expect(allClients().map((c) => c.id)).toEqual(["opencode", "claude", "codex", "nanoclaw", "hermes", "cursor"]);
   });
 
   it("returns Codex by id", () => {
@@ -71,6 +71,31 @@ describe("detectClients", () => {
 
   it("returns Hermes by id", () => {
     expect(getClient("hermes").id).toBe("hermes");
+  });
+
+  it("returns Cursor by id", () => {
+    expect(getClient("cursor").id).toBe("cursor");
+  });
+
+  it("infers Cursor from a legacy MIDBRAIN_CONFIG_DIR", () => {
+    const saved = process.env.MIDBRAIN_CONFIG_DIR;
+    process.env.MIDBRAIN_CONFIG_DIR = path.join(HOME, ".config", "cursor");
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(getClient().id).toBe("cursor");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('inferred "cursor"'));
+    } finally {
+      warn.mockRestore();
+      if (saved === undefined) delete process.env.MIDBRAIN_CONFIG_DIR;
+      else process.env.MIDBRAIN_CONFIG_DIR = saved;
+    }
+  });
+
+  it("detects only Cursor when only ~/.cursor exists", () => {
+    existsFor(path.join(HOME, ".cursor"));
+    const clients = detectClients();
+    expect(clients).toHaveLength(1);
+    expect(clients[0].id).toBe("cursor");
   });
 
   it("detects only OpenCode when only OpenCode installed", () => {

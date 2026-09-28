@@ -185,6 +185,7 @@ fi
 set +e
 ./node_modules/.bin/vitest run \
   tests/client-codex.test.mjs \
+  tests/client-cursor.test.mjs \
   tests/client-hermes.test.mjs \
   tests/client-nanoclaw.test.mjs \
   tests/install.test.mjs \

@@ -11,6 +11,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { Codex } from "../shared/clients/codex.mjs";
+import { Cursor } from "../shared/clients/cursor.mjs";
 import { Claude } from "../shared/clients/claude.mjs";
 import { Generic } from "../shared/clients/generic.mjs";
 import { Hermes } from "../shared/clients/hermes.mjs";
@@ -65,6 +66,13 @@ describe("credential writers stay inside the test sandbox without filesystem int
     await expectIsolatedWrite({
       target: (env) => path.join(env.home, ".config", "codex", ".midbrain-key"),
       write: () => new Codex().writeKey(DUMMY_CREDENTIAL),
+    });
+  });
+
+  it("isolates the Cursor adapter writer", async () => {
+    await expectIsolatedWrite({
+      target: (env) => path.join(env.home, ".config", "cursor", ".midbrain-key"),
+      write: () => new Cursor().writeKey(DUMMY_CREDENTIAL),
     });
   });
 

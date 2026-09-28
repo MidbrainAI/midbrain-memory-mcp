@@ -148,6 +148,8 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       expect(names).toContain("plugins/codex/capture-user.mjs");
       expect(names).toContain("plugins/hermes/common.mjs");
       expect(names).toContain("plugins/hermes/capture-user.mjs");
+      expect(names).toContain("plugins/cursor/common.mjs");
+      expect(names).toContain("plugins/cursor/capture-user.mjs");
       expect(names).toContain("skills/nanoclaw/SKILL.md");
       expect(names).toContain("shared/diagnostics.mjs");
       expect(names).not.toContain("tests/codex-hooks.test.mjs");
@@ -213,6 +215,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       "shared/clients/opencode.mjs",
       "shared/clients/nanoclaw.mjs",
       "shared/clients/hermes.mjs",
+      "shared/clients/cursor.mjs",
     ];
 
     for (const sourcePath of configSources) {
@@ -330,6 +333,29 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     expect(readme).toContain("pre_llm_call");
     expect(readme).toContain("post_llm_call");
     expect(readme).toContain("~/.midbrain/bin/hermes-hook");
+  });
+
+  it("D-31: docs describe Cursor support, capture events, and limitations (issue #72)", async () => {
+    const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
+    const agents = await fs.readFile(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+    for (const text of [readme, agents]) {
+      expect(text).toContain("~/.cursor/mcp.json");
+      expect(text).toContain("~/.cursor/hooks.json");
+      expect(text).toContain("~/.midbrain/bin/cursor-hook");
+      for (const event of ["beforeSubmitPrompt", "postToolUse", "afterAgentResponse"]) {
+        expect(text).toContain(event);
+      }
+      expect(text).toContain("user_email");
+    }
+    const section = readme.split("### Cursor\n")[1].split("\n### ")[0];
+    expect(section).toMatch(/Limitations:/);
+    expect(section).toMatch(/Global rules are not auto-installed/);
+    expect(section).toMatch(/\{"continue": true\}/);
+    expect(section).toContain("`agent -p`");
+    expect(section).toContain("--approve-mcps --trust --force");
+    expect(section).toMatch(/background process/);
+    expect(agents).toContain("tests/client-cursor.test.mjs");
+    expect(agents).toContain("tests/cursor-hooks.test.mjs");
   });
 
   it("D-23: shipped instruction files exactly match generated client rules", async () => {

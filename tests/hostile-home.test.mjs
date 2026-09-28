@@ -15,6 +15,7 @@ import { makeTestEnv, diffSnapshots } from "./helpers/test-env.mjs";
 import { runSelfRepair } from "../install.mjs";
 import { Claude } from "../shared/clients/claude.mjs";
 import { Codex } from "../shared/clients/codex.mjs";
+import { Cursor } from "../shared/clients/cursor.mjs";
 import { Hermes } from "../shared/clients/hermes.mjs";
 import { buildShimBody, stableShimPath } from "../shared/clients/shim.mjs";
 
@@ -36,6 +37,13 @@ const CLIENTS = [
     make: () => new Codex(),
     file: (paths) => paths.codexHooks,
     commands: jsonHookCommands,
+  },
+  {
+    id: "cursor",
+    make: () => new Cursor(),
+    file: (paths) => paths.cursorHooks,
+    commands: (text) => Object.values(JSON.parse(text).hooks || {})
+      .flat().map((h) => h.command),
   },
   {
     id: "hermes",

@@ -3,8 +3,8 @@
 ## Purpose
 
 `midbrain-memory-mcp` is an MCP server plus capture hooks for persistent AI
-memory. It supports OpenCode, Claude Code, OpenAI Codex, Hermes Agent, and
-NanoClaw.
+memory. It supports OpenCode, Claude Code, OpenAI Codex, Cursor, Hermes Agent,
+and NanoClaw.
 
 Public package:
 
@@ -35,6 +35,7 @@ shared/
     opencode.mjs                 OpenCode JSONC config and plugin copy
     claude.mjs                   Claude hooks, .mcp.json, .claude.json
     codex.mjs                    Codex TOML config and hooks.json
+    cursor.mjs                   Cursor mcp.json and hooks.json
     nanoclaw.mjs                 NanoClaw skill copy
     hermes.mjs                   Hermes YAML config (mcp_servers + shell hooks)
     generic.mjs                  Fallback client
@@ -43,6 +44,7 @@ plugins/
   opencode/                      Bun/TypeScript plugin and dev shim
   claude-code/                   Claude Code hook scripts
   codex/                         Codex hook scripts
+  cursor/                        Cursor hook scripts (reuse the Codex runtime)
   hermes/                        Hermes shell-hook capture scripts
 skills/
   nanoclaw/                      /add-midbrain skill
@@ -228,7 +230,7 @@ Claude Code:
   `.midbrain/bin/<client>-hook` tail so `commandReferencesShim` ownership
   matching and self-repair rewrite are unchanged. It is strictly OPT-IN: unset
   means every path resolves to its historical location, so non-NanoClaw host
-  installs (OpenCode, host Claude, Codex, Hermes) are byte-identical. Per-client
+  installs (OpenCode, host Claude, Codex, Cursor, Hermes) are byte-identical. Per-client
   native dirs (`~/.config/<client>`) are NEVER relocated — only MidBrain's own
   shared state moves. The credential-writer's `expectedTarget`/
   `expectedKeystorePath` validators resolve through the same resolver as the
@@ -291,6 +293,40 @@ Codex:
 - `Stop` and `PostToolUse` wrappers must write `{}` to stdout on success.
 - Assistant capture stores a clean answer separately from bounded reasoning and
   tool summaries.
+
+Cursor:
+
+- `plugins/cursor/*.mjs` run in Node 20.
+- Global hooks in `~/.cursor/hooks.json` (`{ version: 1, hooks }`, flat
+  `{ command, timeout }` entries) capture `beforeSubmitPrompt` (user),
+  `postToolUse` (tool), and `afterAgentResponse` (assistant). They call the
+  stable `~/.midbrain/bin/cursor-hook` shim with a 10-second timeout.
+  Ownership is the shim path or a `hook cursor` package invocation; there are
+  no legacy forms.
+- `beforeSubmitPrompt` must always write `{"continue": true}`; the other
+  wrappers write `{}`. Every path exits 0 (Cursor fails open by default).
+- Cursor holds the prompt until the `beforeSubmitPrompt` process exits, so the
+  user hook does no network work: it writes the mapped fields to a private
+  0600 job file and starts a detached `plugins/cursor/store-user.mjs` child
+  (`process.execPath`, no shell) that deletes the file, stores under a hard
+  20-second limit (`MIDBRAIN_CURSOR_STORE_TIMEOUT_MS` overrides it), caches
+  the entry under the API cache scope on expiry, and runs the throttled
+  self-update. If the child cannot start, the hook stores inline under the
+  same limit. Assistant and tool hooks are unchanged.
+- `plugins/cursor/common.mjs` maps the Cursor payload onto Codex fields
+  (`conversation_id` -> `session_id`, `generation_id` -> `turn_id`,
+  `workspace_roots[0]` -> `cwd`, JSON-string `tool_output` -> `tool_response`)
+  and reuses the Codex tool buffer and assistant capture with
+  `deps.client = "cursor"`. Unmapped fields, including `user_email`, never
+  reach the API.
+- MCP config is `~/.cursor/mcp.json` / `<project>/.cursor/mcp.json`
+  (`mcpServers`). Installs merge, back up to `.bak` before a change, and fail
+  closed on unparseable or unexpectedly shaped JSON. Project setup writes no
+  hooks.
+- Cursor has no file-based global rules location: project rules use
+  `AGENTS.md`; global rules are not written.
+- Per-client key file: `~/.config/cursor/.midbrain-key`. Detection keys on
+  `~/.cursor/`.
 
 NanoClaw:
 
@@ -379,7 +415,7 @@ or hand-roll log files in plugins or hooks.
   - macOS: `~/Library/Logs/midbrain`
   - Windows: `%LOCALAPPDATA%/midbrain/logs` or `%APPDATA%/midbrain/logs`
 - Per-client log files: `midbrain-opencode.log`, `midbrain-claude.log`,
-  `midbrain-codex.log`.
+  `midbrain-codex.log`, `midbrain-hermes.log`, `midbrain-cursor.log`.
 - `MidbrainApi.storeEpisodic(text, role, logger, metadata)` takes a logger
   object (not a bare function). Pass the client's `log`/`logger` instance.
 
@@ -433,7 +469,8 @@ Public-safe agent instructions should say:
 
 Global install synchronizes each detected client's user-wide rules. CLI and MCP
 project setup also write the sentinel-bounded rules only to detected project
-surfaces. Codex/OpenCode use `AGENTS.md`; Claude uses `CLAUDE.md`; Hermes uses
+surfaces. Codex/OpenCode/Cursor use `AGENTS.md` (Cursor: project only, no
+global file); Claude uses `CLAUDE.md`; Hermes uses
 global `SOUL.md` and prefers an existing project `.hermes.md`, then `HERMES.md`,
 otherwise `AGENTS.md`. NanoClaw updates shared `container/CLAUDE.md` and every
 existing group's writable `CLAUDE.local.md`; composed `CLAUDE.md` files are
@@ -480,8 +517,8 @@ never edited. `--no-rules` remains the explicit opt-out.
 - `--no-rules` skips instruction-file rule writes.
 - Use `process.execPath` when writing direct Node commands into configs.
 - JSONC config writes must preserve comments where supported.
-- OpenCode configs use `mcp`; Claude configs use `mcpServers`; Codex configs
-  use TOML `[mcp_servers.<id>]` tables.
+- OpenCode configs use `mcp`; Claude and Cursor configs use `mcpServers`;
+  Codex configs use TOML `[mcp_servers.<id>]` tables.
 
 ## Development Practices
 
@@ -518,6 +555,8 @@ Vitest tests live in `tests/`.
 | `tests/logger.test.mjs` | `shared/logger.mjs` |
 | `tests/client-opencode.test.mjs` | `shared/clients/opencode.mjs` |
 | `tests/client-claude.test.mjs` | `shared/clients/claude.mjs` |
+| `tests/client-cursor.test.mjs` | `shared/clients/cursor.mjs` |
+| `tests/cursor-hooks.test.mjs` | `plugins/cursor/*.mjs` |
 | `tests/client-registry.test.mjs` | `shared/clients/registry.mjs` |
 | `tests/install.test.mjs` | `install.mjs` |
 | `tests/mcp.test.mjs` | `mcp.mjs` / `index.js` |

@@ -338,11 +338,13 @@ async function writeGlobalRules(opts = {}) {
  */
 async function writeProjectRules(projectDir, opts = {}) {
   const clients = new Set(opts.clients || [
-    'codex', 'opencode', 'claude', 'nanoclaw', 'hermes',
+    'codex', 'opencode', 'claude', 'nanoclaw', 'hermes', 'cursor',
   ]);
   const targets = [];
 
-  const codeClients = clients.has('codex') || clients.has('opencode');
+  // Cursor reads project AGENTS.md; it has no file-based global rules surface.
+  const codeClients = clients.has('codex') || clients.has('opencode') ||
+    clients.has('cursor');
   let needsAgents = codeClients;
   const needsClaude = clients.has('claude') || clients.has('nanoclaw');
   let agentsClient = 'agents';

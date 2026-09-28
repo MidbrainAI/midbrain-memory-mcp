@@ -120,11 +120,11 @@ describe("makeTestEnv isolation", () => {
   });
 
   it("seeds client fixtures the real registry detects — and only those", async () => {
-    const env = await makeTestEnv({ clients: ["claude", "codex", "hermes", "opencode"] });
+    const env = await makeTestEnv({ clients: ["claude", "codex", "cursor", "hermes", "opencode"] });
     try {
       const { detectClients } = await import("../shared/clients/registry.mjs");
       const ids = detectClients().map((c) => c.id).sort();
-      expect(ids).toEqual(["claude", "codex", "hermes", "opencode"]);
+      expect(ids).toEqual(["claude", "codex", "cursor", "hermes", "opencode"]);
     } finally {
       await env.restore();
     }
@@ -200,11 +200,15 @@ describe("tripwire internals (sandbox only)", () => {
       "~/.claude/settings.json",
       "~/.codex/config.toml",
       "~/.codex/hooks.json",
+      "~/.cursor/mcp.json",
+      "~/.cursor/hooks.json",
       "~/.config/opencode/opencode.json",
       "~/.config/opencode/opencode.jsonc",
       "~/.midbrain/bin/claude-hook",
       "~/.midbrain/bin/codex-hook",
       "~/.midbrain/bin/hermes-hook",
+      "~/.midbrain/bin/cursor-hook",
+      "~/.config/cursor/.midbrain-key",
       "~/.config/midbrain/.midbrain-key",
     ]) {
       expect(rel).toContain(required);

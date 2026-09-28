@@ -58,6 +58,17 @@ exit 0
 const HERMES_WIN_E0ABF99 =
   `@echo off\r\ncall npx.cmd -y midbrain-memory-mcp@latest hook hermes "%~1"\r\nexit /b 0\r\n`;
 
+describe("buildShimBody — cursor", () => {
+  it("uses the generic fail-open body (exit 0, no stdout on failure)", () => {
+    expect(buildShimBody("cursor", { platform: "darwin" })).toBe(
+      HERMES_POSIX_E0ABF99.replace("hook hermes", "hook cursor"),
+    );
+    expect(buildShimBody("cursor", { platform: "win32" })).toBe(
+      HERMES_WIN_E0ABF99.replace("hook hermes", "hook cursor"),
+    );
+  });
+});
+
 describe("buildShimBody — canonical byte parity with e0abf99", () => {
   it("codex canonical body is byte-identical to the shipped shim", () => {
     expect(buildShimBody("codex", { platform: "darwin" })).toBe(CODEX_BODY_E0ABF99);
@@ -128,7 +139,7 @@ describe("buildShimBody — dev variants (S3)", () => {
   });
 
   it("canonical bodies are not dev-marked", () => {
-    for (const client of ["claude", "codex", "hermes"]) {
+    for (const client of ["claude", "codex", "hermes", "cursor"]) {
       expect(isDevShimContent(buildShimBody(client, { platform: "darwin" }))).toBe(false);
     }
   });

@@ -6,7 +6,8 @@ that consolidates into procedural knowledge over time.
 
 Works with [OpenCode](https://opencode.ai),
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
-[OpenAI Codex](https://developers.openai.com/codex), and
+[OpenAI Codex](https://developers.openai.com/codex),
+[Cursor](https://cursor.com), and
 [Hermes Agent](https://github.com/NousResearch/hermes-agent), plus
 [NanoClaw](https://nanoclaw.dev) via the bundled `/add-midbrain` skill.
 
@@ -27,8 +28,8 @@ Sign up or sign in at [memory.midbrain.ai](https://memory.midbrain.ai).
 npx midbrain-memory-mcp install
 ```
 
-The installer detects OpenCode, Claude Code, Codex, Hermes Agent, and/or
-NanoClaw on your
+The installer detects OpenCode, Claude Code, Codex, Cursor, Hermes Agent,
+and/or NanoClaw on your
 machine, opens browser-based authentication, creates or selects a memory agent,
 writes key files (chmod 600), patches MCP configs, copies hook/plugin/skill
 files, and synchronizes the managed MidBrain rules block across every detected
@@ -44,7 +45,7 @@ npx midbrain-memory-mcp install --no-login
 
 ### 3. Restart and verify
 
-Restart OpenCode, Claude Code, or Codex. The `memory_search` tool should be
+Restart OpenCode, Claude Code, Codex, or Cursor. The `memory_search` tool should be
 available. Send a few messages, then search; your messages should appear.
 
 ```sh
@@ -57,7 +58,7 @@ npx -y midbrain-memory-mcp@latest --version
 ## How It Works
 
 ```
-OpenCode / Claude Code / Codex session
+OpenCode / Claude Code / Codex / Cursor session
   |
   |-- MCP stdio -----> index.js -------> memory.midbrain.ai
   |                    (search, browse)    /api/v1/memories/search
@@ -79,7 +80,9 @@ to their hook systems. Codex captures prompts, assistant messages, plaintext
 reasoning summaries when available, and bounded per-turn tool summaries.
 Codex assistant capture stores the clean assistant answer separately from one
 bounded reasoning/commentary summary, so interim commentary does not create
-many standalone memories.
+many standalone memories. Cursor hooks reuse the Codex capture runtime: they
+capture prompts, final assistant responses, and bounded per-turn tool
+summaries (see [Cursor](#cursor)).
 
 **Procedural knowledge**: Automatic procedural-knowledge injection is disabled by default
 in v0.4.3 while the experience layer is redesigned. Hooks do not
@@ -181,6 +184,9 @@ MidBrain rules current:
 - Hermes: active `$HERMES_HOME/SOUL.md` (normally `~/.hermes/SOUL.md`)
 - NanoClaw: `container/CLAUDE.md` and every existing
   `groups/<group>/CLAUDE.local.md`
+- Cursor: none. Cursor has no file-based global rules location, so global
+  rules are not auto-installed; project setup writes the portable `AGENTS.md`
+  block, and you can paste it into Cursor Settings -> Rules yourself.
 
 NanoClaw's composed `groups/<group>/CLAUDE.md` files are generated at spawn
 and are never edited directly.
@@ -253,7 +259,7 @@ npx midbrain-memory-mcp install --project /absolute/path/to/project --no-rules
 Set up midbrain memory for this project
 ```
 
-**Claude Code / Codex** (name the tool if your client lazy-loads tools):
+**Claude Code / Codex / Cursor** (name the tool if your client lazy-loads tools):
 ```
 Use the memory_setup_project tool to configure this project
 ```
@@ -331,6 +337,8 @@ automatically repaired. No manual `install` needed. This covers:
 - **Codex:** Installs a stable `~/.midbrain/bin/codex-hook` shim and
   rewrites MidBrain hook entries in `~/.codex/hooks.json` to call that shim
 - **Hermes:** Same pattern via `~/.midbrain/bin/hermes-hook`
+- **Cursor:** Same pattern via `~/.midbrain/bin/cursor-hook` in
+  `~/.cursor/hooks.json`
 - **OpenCode:** Re-copies the plugin bundle to `~/.config/opencode/plugins/`
 
 Repair only ever writes canonical, location-independent values (the stable
@@ -383,7 +391,7 @@ version. The MCP server logs the resolved package version to stderr on startup.
 
 | Variable | Purpose | Set by |
 |---|---|---|
-| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, `codex`, or `nanoclaw`) | MCP config `environment`/`env` block |
+| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, `codex`, `cursor`, `hermes`, or `nanoclaw`) | MCP config `environment`/`env` block |
 | `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution | Project-level MCP config |
 | `MIDBRAIN_API_KEY` | API key for CI/debug environments | User environment |
 | `MIDBRAIN_API_URL` | Highest-priority API-host override for development and compatibility | User process environment |
@@ -654,9 +662,29 @@ The YAML config is edited through the `yaml` document API, mirroring how the
 Codex adapter uses `smol-toml`. The parser is lazily imported and marked
 `--external` in the OpenCode plugin bundle so it never bloats the runtime.
 
+**Cursor**: `~/.cursor/mcp.json` (global) or `<project>/.cursor/mcp.json`
+(per-project). Other servers already in the file are kept as-is:
+
+```json
+{
+  "mcpServers": {
+    "midbrain-memory": {
+      "command": "npx",
+      "args": ["-y", "midbrain-memory-mcp@latest"],
+      "env": {
+        "MIDBRAIN_CLIENT": "cursor"
+      }
+    }
+  }
+}
+```
+
+Cursor global install also merges capture hooks into `~/.cursor/hooks.json`;
+see [Cursor](#cursor) for the events and their limitations.
+
 **Important:**
 - All paths must be absolute. JSON does not expand `~`.
-- OpenCode uses `mcp`. Claude Code uses `mcpServers`. Codex uses
+- OpenCode uses `mcp`. Claude Code and Cursor use `mcpServers`. Codex uses
   `[mcp_servers.<id>]` TOML tables. Wrong key = silent failure.
 - MCP servers in `~/.claude/settings.json` are silently ignored. Use `~/.claude.json`.
 
@@ -672,7 +700,7 @@ directory (not your home directory):
 | Windows | `%LOCALAPPDATA%\midbrain\logs` |
 
 Per-client files: `midbrain-opencode.log`, `midbrain-claude.log`,
-`midbrain-codex.log`.
+`midbrain-codex.log`, `midbrain-hermes.log`, `midbrain-cursor.log`.
 
 - Logs default to the `info` level. Per-request detail (individual REST
   calls, payload sizes) is logged at `debug` and suppressed by default.
@@ -682,6 +710,86 @@ Per-client files: `midbrain-opencode.log`, `midbrain-claude.log`,
 - Logs rotate to `<file>.1` once they exceed 5 MiB (override with
   `MIDBRAIN_LOG_MAX_SIZE`, in bytes). Only one rotated generation is kept.
 - Override the log directory entirely with `MIDBRAIN_LOG_DIR`.
+
+### Cursor
+
+Cursor support covers memory search through MCP and episodic capture through
+Cursor's agent hooks. Setup:
+
+```sh
+npx midbrain-memory-mcp install                                  # global
+npx midbrain-memory-mcp install --project /absolute/path/to/repo # per-project
+```
+
+The installer detects Cursor by `~/.cursor/` and then:
+
+- merges a `midbrain-memory` entry into `~/.cursor/mcp.json` `mcpServers`
+  (project setup: `<project>/.cursor/mcp.json` with `MIDBRAIN_PROJECT_DIR`);
+- merges three hooks into `~/.cursor/hooks.json` that call the stable
+  `~/.midbrain/bin/cursor-hook` shim (10-second timeout each);
+- backs up each file to `<file>.bak` before it changes it. Your other MCP
+  servers, hooks, and settings are kept in place and in order. Re-running the
+  installer is idempotent. If either file is not valid JSON, or has an
+  unexpected shape, the installer changes neither file and reports an error.
+
+Supported Cursor surfaces:
+
+| Surface | Memory search (MCP) | Capture (hooks) |
+|---|---|---|
+| Cursor desktop app | Yes | Yes |
+| Cursor CLI, interactive (`agent`) | Yes | Yes (validated 2026-09-25) |
+| Cursor CLI, headless (`agent -p`) | Yes, with `--approve-mcps --trust --force` so MCP tools run without a prompt | No: hooks do not run in headless mode |
+
+What is captured:
+
+| Cursor hook | Shim role | Captured |
+|---|---|---|
+| `beforeSubmitPrompt` | `user` | The prompt text. Always answers `{"continue": true}` at once and stores the prompt in a background process, so capture never blocks a prompt. |
+| `postToolUse` | `tool` | One redacted tool event, buffered for the current generation (no API call). |
+| `afterAgentResponse` | `assistant` | The final response text, plus one bounded tool activity summary when tools ran. |
+
+Each capture sends `client: "cursor"`, `session_id` from Cursor's
+`conversation_id`, and `cwd` from the first `workspace_roots` entry. Cursor's
+`user_email` and every other unmapped field are never sent to the API.
+Capture is fail-open: a missing key, an API error, a timeout, or a crash never
+blocks Cursor, and a failed store goes to the offline cache that drains at the
+next server start. Tool capture uses `postToolUse`, the direct equivalent of
+Codex `PostToolUse`, because it covers every agent tool (shell, MCP, file
+edits) with one event and one summary format.
+
+Limitations:
+
+- Global rules are not auto-installed. Cursor reads project `AGENTS.md`, which
+  project setup writes. For all projects, paste the portable block from
+  [Memory-First Agent Rules](#memory-first-agent-rules) into Cursor Settings ->
+  Rules.
+- Capture hooks are global only; project setup does not write
+  `<project>/.cursor/hooks.json`, which would capture every turn twice.
+- Assistant capture stores the final response text only. MidBrain does not
+  capture Cursor reasoning, so there is no reasoning/commentary summary.
+- Tool events run after the last `afterAgentResponse` of a generation are not
+  summarized; stale buffers are removed after 24 hours.
+- Procedural-knowledge injection is not available: `beforeSubmitPrompt` cannot
+  add context. `MIDBRAIN_ENABLE_PK_INJECTION` has no effect for Cursor.
+- Latency: Cursor holds the prompt until the `beforeSubmitPrompt` hook process
+  exits. MidBrain code in that hook returns at once and hands the store to a
+  detached background process, which stops after 20 seconds and moves an
+  unfinished store to the offline cache. Published installs still pay the
+  `npx` package start before MidBrain code runs, on every hook call (about
+  4-5 seconds measured); the first run after a cold npm cache is slower while
+  `npx` downloads the package. Dev installs (`--dev`) run `node` directly.
+
+Troubleshooting:
+
+- Tools missing: restart Cursor or reload the window, then check that
+  `midbrain-memory` is enabled in Cursor's MCP settings.
+- Nothing captured: confirm `~/.cursor/hooks.json` lists
+  `~/.midbrain/bin/cursor-hook` for the three events, and read
+  `midbrain-cursor.log` (see [Logging](#logging)).
+- Stale shim after an update: start any MidBrain MCP server; automatic repair
+  reinstalls the shim and rewrites only MidBrain-owned hook entries.
+- To remove MidBrain from Cursor, delete the `midbrain-memory` entry from
+  `mcp.json` and the three `cursor-hook` entries from `hooks.json`.
 
 ### NanoClaw
 
@@ -759,6 +867,9 @@ Global install and project setup write rules only to surfaces used by detected
 clients, unless `--no-rules` is used:
 
 - Codex and OpenCode use `AGENTS.md`.
+- Cursor uses project `AGENTS.md` only; it has no file-based global rules
+  location, so paste the portable block below into Cursor Settings -> Rules
+  if you want it in every project.
 - Claude Code uses `CLAUDE.md`.
 - Hermes global and gateway behavior uses the active `SOUL.md`. For project
   rules, Hermes updates an existing `.hermes.md`, then an existing `HERMES.md`;
@@ -772,7 +883,8 @@ differs only where a client may defer MCP tools. Exact known MidBrain blocks
 are upgraded; uncertain custom hardening and malformed blocks are preserved for
 manual review.
 
-If you manage rules manually, use this portable Codex/OpenCode variant:
+If you manage rules manually, use this portable Codex/OpenCode variant (it also
+works for Cursor):
 
 ```markdown
 <!-- midbrain-memory-rules:start -->
@@ -886,7 +998,7 @@ curl https://memory.midbrain.ai/health         # Is the API reachable?
 
 **Common causes:**
 - Stale npx cache (see version check above)
-- `MIDBRAIN_CLIENT` not set or set to wrong value (`opencode`, `claude`, or `codex`)
+- `MIDBRAIN_CLIENT` not set or set to wrong value (`opencode`, `claude`, `codex`, `cursor`, `hermes`, or `nanoclaw`)
 - Key file missing or wrong permissions (`chmod 600`)
 - Claude Code: MCP entry in `~/.claude/settings.json` instead of `~/.claude.json`
 
@@ -932,7 +1044,7 @@ Auth: send an `Authorization` header with your local API key, except for
 
 `memory_metadata` on POST is optional. Values must be strings. Capture hooks
 always tag each memory with the originating client (`opencode`, `claude`,
-`nanoclaw`, `codex`, or `hermes`). When the harness provides them, hooks
+`nanoclaw`, `codex`, `hermes`, or `cursor`). When the harness provides them, hooks
 also add scoping fields: `cwd` (own-home paths use `~/`, other-user home
 names are redacted, and non-user system paths remain absolute) and
 `session_id` (the harness's own session/conversation id, forwarded verbatim).
@@ -1007,6 +1119,7 @@ shared/
     opencode.mjs               OpenCode adapter (JSONC config, plugin copy)
     claude.mjs                 Claude Code adapter (hooks, .mcp.json)
     codex.mjs                  Codex adapter (TOML config, hooks.json)
+    cursor.mjs                 Cursor adapter (mcp.json, hooks.json)
     generic.mjs                Fallback adapter
     registry.mjs               getClient(id), detectClients()
 plugins/
@@ -1015,6 +1128,7 @@ plugins/
     midbrain-shared.mjs        Dev shim (re-exports from ../../shared/)
   claude-code/                 Claude Code hook scripts (Node 20, episodic capture)
   codex/                       Codex hook scripts (Node 20, episodic capture)
+  cursor/                      Cursor hook scripts (Node 20, reuse the Codex runtime)
 dist/
   midbrain-shared.mjs          Built bundle (all of shared/ in one file)
 scripts/                       CI guards (pinned-spec regression)
@@ -1090,7 +1204,7 @@ Not shipped to users.
 ## Prerequisites
 
 - Node >= 20
-- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), [Hermes Agent](https://github.com/NousResearch/hermes-agent), and/or [NanoClaw](https://nanoclaw.dev)
+- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), [Cursor](https://cursor.com), [Hermes Agent](https://github.com/NousResearch/hermes-agent), and/or [NanoClaw](https://nanoclaw.dev)
 - A MidBrain account ([memory.midbrain.ai](https://memory.midbrain.ai))
 
 ## License

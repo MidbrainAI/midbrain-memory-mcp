@@ -1682,6 +1682,17 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
     expect(result.stderr).not.toMatch(/MCP server running/);
   });
 
+  it.each([
+    ["user", '{"continue":true}'],
+    ["assistant", "{}"],
+    ["tool", "{}"],
+  ])("Cursor hook dispatch: %s exits 0 with its fail-open JSON when stdin is empty", (role, stdout) => {
+    const result = spawnServer(["hook", "cursor", role]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(stdout);
+    expect(result.stderr).not.toMatch(/MCP server running/);
+  });
+
   it("NanoClaw hook dispatch: unknown hook exits 2 with usage", () => {
     const result = spawnServer(["hook", "claude", "bogus"]);
     expect(result.status).toBe(2);

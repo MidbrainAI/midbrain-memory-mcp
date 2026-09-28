@@ -411,6 +411,7 @@ describe('credential writer delegation regression', () => {
       'codex.mjs',
       'nanoclaw.mjs',
       'hermes.mjs',
+      'cursor.mjs',
     ];
     const sources = await Promise.all(adapterFiles.map(async (fileName) => ({
       fileName,
