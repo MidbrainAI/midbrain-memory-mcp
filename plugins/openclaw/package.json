@@ -1,0 +1,8 @@
+{
+  "name": "midbrain-memory-openclaw",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}
