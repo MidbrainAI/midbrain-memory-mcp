@@ -399,7 +399,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
 
   it("D-27: README publishes every client-specific tool-loading adapter", async () => {
     const readme = await fs.readFile(path.join(REPO_ROOT, "README.md"), "utf8");
-    for (const client of ["agents", "claude", "hermes", "nanoclaw"]) {
+    for (const client of ["agents", "claude", "hermes", "nanoclaw", "openclaw"]) {
       expect(readme).toContain(clientLoadingAdapter(buildRulesBlock(client)));
     }
     expect(readme).toMatch(/replace only its `### Tool loading` section/i);

@@ -1,6 +1,9 @@
 import fs from 'fs/promises';
+import { existsSync } from 'fs';
 import path from 'path';
 import { createHash } from 'node:crypto';
+
+import { openclawWorkspaceDir } from './clients/openclaw.mjs';
 
 const RULES_START = '<!-- midbrain-memory-rules:start -->';
 const RULES_END   = '<!-- midbrain-memory-rules:end -->';
@@ -30,6 +33,13 @@ const CLIENT_ADAPTERS = {
 - Hermes: call visible \`mcp__midbrain_memory__*\` tools. If deferred,
   \`tool_search\` the needed function, then \`tool_describe\` and \`tool_call\`
   it. Discovery is the only allowed pre-recall action.`,
+  openclaw: `\
+### Tool loading
+
+- OpenClaw: MidBrain tools are \`midbrain-memory__*\`, not the built-in
+  \`memory_search\`. If deferred, \`tool_search\` the needed function, then
+  \`tool_describe\` and \`tool_call\` it. Discovery is the only allowed
+  pre-recall action.`,
 };
 
 CLIENT_ADAPTERS['agents-hermes'] =
@@ -318,6 +328,15 @@ async function writeGlobalRules(opts = {}) {
   }
   if (clients.has('nanoclaw')) {
     targets.push(...await nanoClawTargets(opts.nanoclawRoot));
+  }
+  if (clients.has('openclaw')) {
+    // Only an AGENTS.md OpenClaw already seeded: creating it first would stop
+    // OpenClaw from writing its own workspace template on first run.
+    const agentsPath = path.join(
+      opts.openclawWorkspace || await openclawWorkspaceDir(),
+      'AGENTS.md',
+    );
+    if (existsSync(agentsPath)) targets.push({ path: agentsPath, client: 'openclaw' });
   }
 
   return Promise.all(targets.map((target) => {

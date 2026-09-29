@@ -7,8 +7,9 @@ that consolidates into procedural knowledge over time.
 Works with [OpenCode](https://opencode.ai),
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
 [OpenAI Codex](https://developers.openai.com/codex),
-[Cursor](https://cursor.com), and
-[Hermes Agent](https://github.com/NousResearch/hermes-agent), plus
+[Cursor](https://cursor.com),
+[Hermes Agent](https://github.com/NousResearch/hermes-agent), and
+[OpenClaw](https://github.com/openclaw/openclaw), plus
 [NanoClaw](https://nanoclaw.dev) via the bundled `/add-midbrain` skill.
 
 [![npm version](https://img.shields.io/npm/v/midbrain-memory-mcp.svg?style=flat-square)](https://www.npmjs.com/package/midbrain-memory-mcp)
@@ -29,7 +30,7 @@ npx midbrain-memory-mcp install
 ```
 
 The installer detects OpenCode, Claude Code, Codex, Cursor, Hermes Agent,
-and/or NanoClaw on your
+OpenClaw, and/or NanoClaw on your
 machine, opens browser-based authentication, creates or selects a memory agent,
 writes key files (chmod 600), patches MCP configs, copies hook/plugin/skill
 files, and synchronizes the managed MidBrain rules block across every detected
@@ -45,8 +46,10 @@ npx midbrain-memory-mcp install --no-login
 
 ### 3. Restart and verify
 
-Restart OpenCode, Claude Code, Codex, or Cursor. The `memory_search` tool should be
-available. Send a few messages, then search; your messages should appear.
+Restart OpenCode, Claude Code, Codex, or Cursor, or restart the OpenClaw
+gateway. The `memory_search` tool should be available (OpenClaw names it
+`midbrain-memory__memory_search`). Send a few messages, then search; your
+messages should appear.
 
 ```sh
 # Quick version check (optional)
@@ -58,7 +61,7 @@ npx -y midbrain-memory-mcp@latest --version
 ## How It Works
 
 ```
-OpenCode / Claude Code / Codex / Cursor session
+OpenCode / Claude Code / Codex / Cursor / OpenClaw session
   |
   |-- MCP stdio -----> index.js -------> memory.midbrain.ai
   |                    (search, browse)    /api/v1/memories/search
@@ -82,7 +85,9 @@ Codex assistant capture stores the clean assistant answer separately from one
 bounded reasoning/commentary summary, so interim commentary does not create
 many standalone memories. Cursor hooks reuse the Codex capture runtime: they
 capture prompts, final assistant responses, and bounded per-turn tool
-summaries (see [Cursor](#cursor)).
+summaries (see [Cursor](#cursor)). OpenClaw uses an in-process gateway
+plugin on the `agent_end` hook that stores the prompt and the final reply of
+each turn (see [OpenClaw](#openclaw)).
 
 **Procedural knowledge**: Automatic procedural-knowledge injection is disabled by default
 in v0.4.3 while the experience layer is redesigned. Hooks do not
@@ -187,6 +192,8 @@ MidBrain rules current:
 - Cursor: none. Cursor has no file-based global rules location, so global
   rules are not auto-installed; project setup writes the portable `AGENTS.md`
   block, and you can paste it into Cursor Settings -> Rules yourself.
+- OpenClaw: the default agent workspace `AGENTS.md` (normally
+  `~/.openclaw/workspace/AGENTS.md`), only once OpenClaw has created it.
 
 NanoClaw's composed `groups/<group>/CLAUDE.md` files are generated at spawn
 and are never edited directly.
@@ -340,6 +347,9 @@ automatically repaired. No manual `install` needed. This covers:
 - **Cursor:** Same pattern via `~/.midbrain/bin/cursor-hook` in
   `~/.cursor/hooks.json`
 - **OpenCode:** Re-copies the plugin bundle to `~/.config/opencode/plugins/`
+- **OpenClaw:** Re-copies stale capture plugin files to
+  `~/.config/openclaw/midbrain-plugin/` (never touches `openclaw.json`); restart
+  the gateway to load them
 
 Repair only ever writes canonical, location-independent values (the stable
 shims and `npx -y midbrain-memory-mcp@latest`) — never the running
@@ -365,7 +375,7 @@ permanent client configs. npx-cache launches are the canonical install mode
 and still self-repair — deliberately, the `_npx` classification outranks the
 tmp and CI rules, because a relocated npm cache or a CI job running the
 published package is still a canonical launch. Entries, shims, and OpenCode
-plugin copies written by `install --dev` carry dev markers and are never
+and OpenClaw plugin copies written by `install --dev` carry dev markers and are never
 reverted by automatic repair; run a plain `install` to restore canonical.
 
 The narrowly gated legacy NanoClaw capture-label migration completes before MCP
@@ -391,7 +401,7 @@ version. The MCP server logs the resolved package version to stderr on startup.
 
 | Variable | Purpose | Set by |
 |---|---|---|
-| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, `codex`, `cursor`, `hermes`, or `nanoclaw`) | MCP config `environment`/`env` block |
+| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, `codex`, `cursor`, `hermes`, `openclaw`, or `nanoclaw`) | MCP config `environment`/`env` block |
 | `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution | Project-level MCP config |
 | `MIDBRAIN_API_KEY` | API key for CI/debug environments | User environment |
 | `MIDBRAIN_API_URL` | Highest-priority API-host override for development and compatibility | User process environment |
@@ -682,10 +692,44 @@ Codex adapter uses `smol-toml`. The parser is lazily imported and marked
 Cursor global install also merges capture hooks into `~/.cursor/hooks.json`;
 see [Cursor](#cursor) for the events and their limitations.
 
+**OpenClaw**: `~/.openclaw/openclaw.json` (global only; OpenClaw has no
+per-project MCP config). The installer adds the MCP server and links and
+enables the capture plugin; other keys are kept as-is:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "midbrain-memory": {
+        "command": "npx",
+        "args": ["-y", "midbrain-memory-mcp@latest"],
+        "env": {
+          "MIDBRAIN_CLIENT": "openclaw"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "load": {
+      "paths": ["/Users/you/.config/openclaw/midbrain-plugin"]
+    },
+    "entries": {
+      "midbrain-memory": {
+        "enabled": true,
+        "hooks": { "allowConversationAccess": true }
+      }
+    }
+  }
+}
+```
+
+See [OpenClaw](#openclaw) for how JSON5 configs are written.
+
 **Important:**
 - All paths must be absolute. JSON does not expand `~`.
-- OpenCode uses `mcp`. Claude Code and Cursor use `mcpServers`. Codex uses
-  `[mcp_servers.<id>]` TOML tables. Wrong key = silent failure.
+- OpenCode uses `mcp`. Claude Code and Cursor use `mcpServers`. OpenClaw uses
+  `mcp.servers`. Codex uses `[mcp_servers.<id>]` TOML tables. Wrong key =
+  silent failure.
 - MCP servers in `~/.claude/settings.json` are silently ignored. Use `~/.claude.json`.
 
 ### Logging
@@ -700,7 +744,8 @@ directory (not your home directory):
 | Windows | `%LOCALAPPDATA%\midbrain\logs` |
 
 Per-client files: `midbrain-opencode.log`, `midbrain-claude.log`,
-`midbrain-codex.log`, `midbrain-hermes.log`, `midbrain-cursor.log`.
+`midbrain-codex.log`, `midbrain-hermes.log`, `midbrain-cursor.log`,
+`midbrain-openclaw.log`.
 
 - Logs default to the `info` level. Per-request detail (individual REST
   calls, payload sizes) is logged at `debug` and suppressed by default.
@@ -791,6 +836,99 @@ Troubleshooting:
 - To remove MidBrain from Cursor, delete the `midbrain-memory` entry from
   `mcp.json` and the three `cursor-hook` entries from `hooks.json`.
 
+### OpenClaw
+
+OpenClaw support covers memory search through MCP and episodic capture through
+a plugin that runs inside the OpenClaw gateway. Setup:
+
+```sh
+npx midbrain-memory-mcp install   # global only
+```
+
+The installer detects OpenClaw by `~/.openclaw/` (or `OPENCLAW_STATE_DIR`,
+`OPENCLAW_HOME`, and `OPENCLAW_PROFILE`, which selects `~/.openclaw-<profile>`;
+`OPENCLAW_CONFIG_PATH` points at the config file) and then:
+
+- copies the capture plugin (`index.js`, `openclaw.plugin.json`,
+  `package.json`, the bundled `midbrain-shared.mjs`, and a
+  `.midbrain-repo-root` version marker) to
+  `~/.config/openclaw/midbrain-plugin/`;
+- adds `mcp.servers["midbrain-memory"]` to `openclaw.json`;
+- adds the plugin directory to `plugins.load.paths` and sets
+  `plugins.entries["midbrain-memory"]` to
+  `{ enabled: true, hooks: { allowConversationAccess: true } }`. OpenClaw
+  requires `allowConversationAccess` before a non-bundled plugin receives
+  `agent_end`.
+
+`openclaw.json` is JSON5. The installer writes it in one of three ways:
+
+- Plain JSON or JSONC: a surgical edit that keeps comments, after a backup to
+  `openclaw.json.bak`.
+- JSON5-only syntax (unquoted keys and so on) with `openclaw` on `PATH`:
+  `openclaw config patch --stdin`. OpenClaw validates the change, strips JSON5
+  comments, and keeps its own `.bak`.
+- JSON5-only syntax without the CLI: parse as JSON5 and rewrite as JSON after a
+  backup. Comments are lost.
+
+Re-running the installer with nothing to change reports "unchanged" and writes
+nothing. Restart the OpenClaw gateway after the first install so it loads the
+plugin; MCP changes reload without a restart.
+
+Supported OpenClaw surfaces:
+
+| Surface | Memory search (MCP) | Capture (plugin) |
+|---|---|---|
+| Embedded/local agent runs (`openclaw agent --local`) | Yes | Yes (validated 2026-09-29, OpenClaw 2026.9.6) |
+| Gateway-served runs (Control UI, chat channels) | Same MCP server | Same plugin hook; not separately validated live |
+
+What is captured: the plugin listens on OpenClaw's typed `agent_end` hook.
+`agent_end` carries the whole session history, so the plugin stores only the
+newest user message and the final assistant text after it, once per session
+turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
+triggers; it captures runs with trigger `user` or no trigger.
+
+Each capture sends `client: "openclaw"`, `session_id` from OpenClaw's
+`sessionId`, and `cwd` from the agent workspace directory. Capture is
+fail-open: each store has a 10-second limit, an unfinished store goes to the
+offline cache that drains at the next server start, and the handler never
+throws, so it never breaks a turn.
+
+Limitations:
+
+- `install --project` does nothing for OpenClaw; there is no project-level
+  config. Rules go only into the default agent workspace `AGENTS.md`
+  (`~/.openclaw/workspace/AGENTS.md`, `agents.defaults.workspace`, or
+  `OPENCLAW_WORKSPACE_DIR`), and only if OpenClaw already created that file:
+  creating it first would stop OpenClaw from writing its own template on first
+  run.
+- Multi-agent setups with per-agent workspaces get rules only in the default
+  workspace.
+- Windows with OpenClaw state inside WSL is not handled; run the installer
+  inside the distro.
+- OpenClaw reports that MidBrain tools have no safety annotations, so in
+  postures that prompt for approval each call may need approval.
+- OpenClaw marks its plugin SDK as experimental and changes it often. The
+  plugin is validated against OpenClaw 2026.9.6.
+- Only the prompt and the final reply are captured, not tool calls or
+  reasoning.
+- Procedural-knowledge injection is not available.
+  `MIDBRAIN_ENABLE_PK_INJECTION` has no effect for OpenClaw.
+
+Troubleshooting:
+
+- Tools missing: run `openclaw mcp probe midbrain-memory`. Tools appear as
+  `midbrain-memory__memory_search` and so on, behind `tool_search`.
+- Nothing captured: run
+  `openclaw plugins inspect midbrain-memory --runtime --json`, restart the
+  gateway, and read `midbrain-openclaw.log` (see [Logging](#logging)).
+- "Conversation hook is blocked": check that
+  `plugins.entries.midbrain-memory.hooks.allowConversationAccess` is `true`.
+- Stale plugin after an update: start any MidBrain MCP server; automatic repair
+  re-copies the plugin files. Restart the gateway to load them.
+- To remove MidBrain from OpenClaw, delete the `mcp.servers` entry, the
+  `plugins.load.paths` item, and `plugins.entries.midbrain-memory` from
+  `openclaw.json`, then delete `~/.config/openclaw/midbrain-plugin/`.
+
 ### NanoClaw
 
 NanoClaw runs Claude Code inside Docker containers. MidBrain integrates via
@@ -870,6 +1008,8 @@ clients, unless `--no-rules` is used:
 - Cursor uses project `AGENTS.md` only; it has no file-based global rules
   location, so paste the portable block below into Cursor Settings -> Rules
   if you want it in every project.
+- OpenClaw uses the default agent workspace `AGENTS.md`, global only, and only
+  after OpenClaw has created that file. Project setup writes no OpenClaw rules.
 - Claude Code uses `CLAUDE.md`.
 - Hermes global and gateway behavior uses the active `SOUL.md`. For project
   rules, Hermes updates an existing `.hermes.md`, then an existing `HERMES.md`;
@@ -933,7 +1073,7 @@ works for Cursor):
 The behavioral body above is shared by every client. For manual configuration,
 replace only its `### Tool loading` section with the matching adapter below.
 This matters because Claude Code and NanoClaw may lazy-load MCP functions, while
-Hermes uses its own deferred-tool sequence.
+Hermes and OpenClaw use their own deferred-tool sequence.
 
 **Claude Code**
 
@@ -963,6 +1103,17 @@ Hermes uses its own deferred-tool sequence.
 - NanoClaw: if MidBrain is deferred, `ToolSearch` for `memory_search` or the
   needed function—not only the server name—then call it. Discovery is the only
   allowed pre-recall action. Continue externalized results only with `Read`.
+```
+
+**OpenClaw**
+
+```markdown
+### Tool loading
+
+- OpenClaw: MidBrain tools are `midbrain-memory__*`, not the built-in
+  `memory_search`. If deferred, `tool_search` the needed function, then
+  `tool_describe` and `tool_call` it. Discovery is the only allowed
+  pre-recall action.
 ```
 
 Normal installation selects and writes the correct adapter automatically; these
@@ -998,7 +1149,7 @@ curl https://memory.midbrain.ai/health         # Is the API reachable?
 
 **Common causes:**
 - Stale npx cache (see version check above)
-- `MIDBRAIN_CLIENT` not set or set to wrong value (`opencode`, `claude`, `codex`, `cursor`, `hermes`, or `nanoclaw`)
+- `MIDBRAIN_CLIENT` not set or set to wrong value (`opencode`, `claude`, `codex`, `cursor`, `hermes`, `openclaw`, or `nanoclaw`)
 - Key file missing or wrong permissions (`chmod 600`)
 - Claude Code: MCP entry in `~/.claude/settings.json` instead of `~/.claude.json`
 
@@ -1044,7 +1195,7 @@ Auth: send an `Authorization` header with your local API key, except for
 
 `memory_metadata` on POST is optional. Values must be strings. Capture hooks
 always tag each memory with the originating client (`opencode`, `claude`,
-`nanoclaw`, `codex`, `hermes`, or `cursor`). When the harness provides them, hooks
+`nanoclaw`, `codex`, `hermes`, `cursor`, or `openclaw`). When the harness provides them, hooks
 also add scoping fields: `cwd` (own-home paths use `~/`, other-user home
 names are redacted, and non-user system paths remain absolute) and
 `session_id` (the harness's own session/conversation id, forwarded verbatim).
@@ -1074,8 +1225,8 @@ node install.mjs --project /abs/path/to/project --dev  # per-project
 
 This writes absolute paths into configs instead of `npx @latest`, marks each
 MCP entry with `MIDBRAIN_DEV: "1"`, writes dev-marked hook shim bodies, and
-dev-flags the OpenCode plugin marker (your checkout's plugin bytes stay
-pinned). Automatic self-repair recognizes the markers and never reverts a
+dev-flags the OpenCode and OpenClaw plugin markers (your checkout's plugin
+bytes stay pinned). Automatic self-repair recognizes the markers and never reverts a
 dev install;
 starting a server from a temp clone, worktree, or CI never overwrites them
 either (self-repair is skipped there entirely). To return to the canonical
@@ -1120,6 +1271,7 @@ shared/
     claude.mjs                 Claude Code adapter (hooks, .mcp.json)
     codex.mjs                  Codex adapter (TOML config, hooks.json)
     cursor.mjs                 Cursor adapter (mcp.json, hooks.json)
+    openclaw.mjs               OpenClaw adapter (JSON5 openclaw.json, plugin copy)
     generic.mjs                Fallback adapter
     registry.mjs               getClient(id), detectClients()
 plugins/
@@ -1129,6 +1281,7 @@ plugins/
   claude-code/                 Claude Code hook scripts (Node 20, episodic capture)
   codex/                       Codex hook scripts (Node 20, episodic capture)
   cursor/                      Cursor hook scripts (Node 20, reuse the Codex runtime)
+  openclaw/                    OpenClaw gateway plugin (agent_end capture)
 dist/
   midbrain-shared.mjs          Built bundle (all of shared/ in one file)
 scripts/                       CI guards (pinned-spec regression)
@@ -1145,7 +1298,8 @@ calls for key files or manual env var checks are forbidden.
 In development, this resolves to a 5-line re-export shim. At install time,
 the esbuild bundle (`dist/midbrain-shared.mjs`) is copied in its place.
 Only 2 files are ever copied to `~/.config/opencode/plugins/` regardless of
-how many modules exist in `shared/`.
+how many modules exist in `shared/`. The OpenClaw plugin uses the same bundle,
+copied next to it in `~/.config/openclaw/midbrain-plugin/`.
 
 ### Adding a Client
 
@@ -1169,7 +1323,7 @@ branching inside MCP tools or hook scripts.
    project-scoped config files needed for `MIDBRAIN_PROJECT_DIR`, preserving
    comments and existing settings when that client's format supports it.
 5. **Choose a capture surface.** Use a plugin when the client exposes a runtime
-   message hook (OpenCode). Use hook scripts when the client exposes lifecycle
+   message hook (OpenCode, OpenClaw). Use hook scripts when the client exposes lifecycle
    hooks (Claude Code, Codex). OpenCode submits capture without awaiting the
    API response. Claude Code and Codex hooks complete capture and any required
    stdout before the throttled self-update check, which may delay hook exit by
@@ -1192,6 +1346,7 @@ branching inside MCP tools or hook scripts.
 |---|---|
 | `@modelcontextprotocol/sdk` | MCP protocol |
 | `jsonc-parser` | JSONC parsing with comment preservation |
+| `json5` | Reading OpenClaw `openclaw.json` (JSON5) |
 | `smol-toml` | Codex `config.toml` parsing and serialization |
 | `yaml` | Hermes `config.yaml` parsing and serialization (comment-preserving) |
 | `zod` | Schema validation |
@@ -1204,7 +1359,7 @@ Not shipped to users.
 ## Prerequisites
 
 - Node >= 20
-- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), [Cursor](https://cursor.com), [Hermes Agent](https://github.com/NousResearch/hermes-agent), and/or [NanoClaw](https://nanoclaw.dev)
+- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), [Cursor](https://cursor.com), [Hermes Agent](https://github.com/NousResearch/hermes-agent), [OpenClaw](https://github.com/openclaw/openclaw), and/or [NanoClaw](https://nanoclaw.dev)
 - A MidBrain account ([memory.midbrain.ai](https://memory.midbrain.ai))
 
 ## License
