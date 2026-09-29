@@ -917,8 +917,10 @@ Limitations:
   workspace.
 - Windows with OpenClaw state inside WSL is not handled; run the installer
   inside the distro.
-- OpenClaw reports that MidBrain tools have no safety annotations, so in
-  postures that prompt for approval each call may need approval.
+- The read-only MidBrain tools carry the MCP `readOnlyHint` annotation. The
+  tools that write keys, configs or agents (`memory_setup_project`,
+  `create_agent`, `set_agent`, `set_user_api_key`) do not, so OpenClaw may ask
+  for approval before running them.
 - OpenClaw marks its plugin SDK as experimental and changes it often. The
   plugin is validated against OpenClaw 2026.9.6.
 - Only the prompt and the final reply are captured, not tool calls or
