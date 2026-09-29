@@ -281,6 +281,25 @@ describe("MCP server tool listing", () => {
     ]);
   });
 
+  it("marks exactly the read-only tools with readOnlyHint", async () => {
+    const { tools } = await client.listTools();
+    const readOnly = tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name).sort();
+    expect(readOnly).toEqual([
+      "check_session_status",
+      "get_episodic_memories_by_date",
+      "grep",
+      "list_agents",
+      "list_files",
+      "memory_diagnostics",
+      "memory_search",
+      "read_file",
+    ]);
+    // Tools that write keys, configs or agents carry no read-only claim.
+    for (const t of tools.filter((tool) => !readOnly.includes(tool.name))) {
+      expect(t.annotations?.readOnlyHint).not.toBe(true);
+    }
+  });
+
   it("exposes optional probe control for memory_diagnostics", async () => {
     const { tools } = await client.listTools();
     const diagnostics = tools.find((tool) => tool.name === "memory_diagnostics");
