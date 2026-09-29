@@ -130,6 +130,9 @@ done < <(git ls-files -c -o --exclude-standard -z)
 
 ln -s "$REPO_ROOT/node_modules" "$COPY_ROOT/node_modules"
 cd "$COPY_ROOT"
+# dist/ is gitignored, so the copy has no plugin bundle; adapters that copy it
+# (OpenClaw) need it built here.
+node scripts/build-plugin.mjs
 
 snapshot_surfaces() {
   local output_file="$1"
@@ -186,6 +189,7 @@ set +e
   tests/client-cursor.test.mjs \
   tests/client-hermes.test.mjs \
   tests/client-nanoclaw.test.mjs \
+  tests/client-openclaw.test.mjs \
   tests/install.test.mjs \
   tests/credential-isolation.test.mjs
 test_status=$?
