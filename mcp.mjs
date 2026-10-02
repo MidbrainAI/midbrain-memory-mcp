@@ -29,13 +29,13 @@ import { CredentialReplaceNotApprovedError } from "./shared/clients/credential-w
 const EPISODIC_PAGE_LIMIT = 1000;
 const PEEK_TTL_MS = 60_000; // 1 minute cache
 
-/** Creates a MidbrainApi instance for the current environment. */
 // MCP tool annotation for tools that only read memory or local state, so
 // clients that gate tool calls on safety hints (e.g. OpenClaw) need no
 // per-call approval for them. Tools that write keys, configs or agents stay
 // unannotated (the spec defaults them to non-read-only).
 const READ_ONLY_TOOL = { readOnlyHint: true };
 
+/** Creates a MidbrainApi instance for the current environment. */
 export async function createApi() {
   return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT), configuredProjectDir());
 }

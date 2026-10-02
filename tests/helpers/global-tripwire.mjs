@@ -28,10 +28,15 @@ export function tripwireSurfaces(home = os.homedir()) {
     ? path.resolve(process.env.HERMES_HOME.trim())
     : path.join(home, '.hermes');
   const opencodeDir = path.join(home, '.config', 'opencode');
-  // Mirrors openclaw.mjs state/config resolution from the ambient env.
+  // Mirrors openclaw.mjs state/config resolution from the ambient env,
+  // including the profile-suffixed state dir.
+  const openclawProfile = process.env.OPENCLAW_PROFILE?.trim();
+  const openclawStateName = openclawProfile && openclawProfile !== 'default'
+    ? `.openclaw-${openclawProfile}`
+    : '.openclaw';
   const openclawState = process.env.OPENCLAW_STATE_DIR?.trim()
     ? path.resolve(process.env.OPENCLAW_STATE_DIR.trim())
-    : path.join(process.env.OPENCLAW_HOME?.trim() || home, '.openclaw');
+    : path.join(process.env.OPENCLAW_HOME?.trim() || home, openclawStateName);
   const openclawConfig = process.env.OPENCLAW_CONFIG_PATH?.trim()
     ? path.resolve(process.env.OPENCLAW_CONFIG_PATH.trim())
     : path.join(openclawState, 'openclaw.json');

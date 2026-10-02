@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
+import { existsSync } from "fs";
 import path from "path";
 import JSON5 from "json5";
 
@@ -229,6 +230,32 @@ describe("OpenClaw.installGlobal", () => {
     await writeConfigText(original);
     await expect(openclaw.installGlobal()).rejects.toThrow(/plugins\.load\.paths/);
     expect(await fs.readFile(configFile(), "utf8")).toBe(original);
+    // validated before anything was written: no half-applied plugin copy
+    expect(existsSync(openclawPluginDir())).toBe(false);
+  });
+
+  it("fails closed when plugins.load itself is not an object", async () => {
+    const original = JSON.stringify({ plugins: { load: "oops" } });
+    await writeConfigText(original);
+    await expect(openclaw.installGlobal()).rejects.toThrow(/Expected "plugins\.load" to be an object/);
+    expect(await fs.readFile(configFile(), "utf8")).toBe(original);
+  });
+
+  it("treats an equal entry in a different key order as unchanged", async () => {
+    await writeConfigText(JSON.stringify({
+      plugins: {
+        entries: { [PLUGIN_ID]: { hooks: { allowConversationAccess: true }, enabled: true } },
+        load: { paths: [openclawPluginDir()] },
+      },
+      mcp: { servers: { "midbrain-memory": { env: { MIDBRAIN_CLIENT: "openclaw" }, args: ["-y", "midbrain-memory-mcp@latest"], command: "npx" } } },
+    }));
+    const before = await fs.stat(configFile());
+
+    const lines = await openclaw.installGlobal();
+
+    expect(lines).toContain("  = MCP server unchanged in openclaw.json");
+    expect(lines).toContain("  = Plugin entry unchanged in openclaw.json");
+    expect((await fs.stat(configFile())).mtimeMs).toBe(before.mtimeMs);
   });
 
   describe("JSON5-only syntax (unquoted keys)", () => {
@@ -255,6 +282,29 @@ describe("OpenClaw.installGlobal", () => {
       // OpenClaw owns the write in this mode; the adapter leaves the file alone.
       expect(await fs.readFile(configFile(), "utf8")).toBe(JSON5_CONFIG);
       expect(lines.some((l) => l.includes("openclaw config patch"))).toBe(true);
+    });
+
+    it("rewrites instead of patching when a key has to go (a dev entry back to canonical)", async () => {
+      await writeConfigText("{\n  mcp: { servers: { 'midbrain-memory': { command: 'node', args: ['/checkout/index.js'], env: { MIDBRAIN_CLIENT: 'openclaw', MIDBRAIN_DEV: '1' } } } },\n}\n");
+      const run = vi.fn(() => ({ status: 0, stdout: "Applied", stderr: "" }));
+      _setOpenclawCli({ find: () => "/usr/local/bin/openclaw", run });
+
+      const lines = await openclaw.installGlobal();
+
+      // a merge patch cannot remove MIDBRAIN_DEV, so the CLI is not used
+      expect(run).not.toHaveBeenCalled();
+      const config = JSON.parse(await fs.readFile(configFile(), "utf8"));
+      expect(config.mcp.servers["midbrain-memory"]).toEqual({
+        command: "npx", args: ["-y", "midbrain-memory-mcp@latest"], env: { MIDBRAIN_CLIENT: "openclaw" },
+      });
+      expect(lines.some((l) => l.includes("comments not preserved"))).toBe(true);
+    });
+
+    it("removes a plugin copy it just made when the CLI patch fails", async () => {
+      await writeConfigText(JSON5_CONFIG);
+      _setOpenclawCli({ find: () => "/usr/local/bin/openclaw", run: () => ({ status: 1, stdout: "", stderr: "nope" }) });
+      await expect(openclaw.installGlobal()).rejects.toThrow("openclaw config patch failed: nope");
+      expect(existsSync(openclawPluginDir())).toBe(false);
     });
 
     it("reports a failed CLI patch", async () => {
