@@ -20,6 +20,7 @@ import path from "path";
 
 import { createServer } from "../index.js";
 import { PKG_VERSION } from "../shared/clients/utils.mjs";
+import { sandboxedChildEnv } from "./helpers/sandboxed-child-env.mjs";
 
 // Windows cannot represent POSIX 0o600 file modes; skip exact-mode assertions
 // there (the key file is still written; only the permission bits differ).
@@ -189,14 +190,24 @@ const REAL_TEMP_ENV = {
   TMP: process.env.TMP,
 };
 
-/** Build a child-process env that restores the real OS temp dirs. */
+/**
+ * Child env for a CLI spawn. Restores the real OS temp dirs (a sandbox TEMP
+ * aborts Windows children) and drops inherited MidBrain credentials and path
+ * overrides. HOME is the suite sandbox, not the developer home.
+ */
 function withRealTemp(extraEnv = {}) {
-  const env = { ...process.env };
-  for (const [k, v] of Object.entries(REAL_TEMP_ENV)) {
-    if (v === undefined) delete env[k];
-    else env[k] = v;
-  }
-  return { ...env, ...extraEnv };
+  const home = path.join(mcpTestSandbox, "child-home");
+  fs.mkdirSync(home, { recursive: true });
+  return sandboxedChildEnv(process.env, {
+    HOME: home,
+    USERPROFILE: home,
+    MIDBRAIN_LOG_DIR: path.join(home, "logs"),
+    MIDBRAIN_STATE_DIR: path.join(home, "state"),
+    TMPDIR: REAL_TEMP_ENV.TMPDIR,
+    TEMP: REAL_TEMP_ENV.TEMP,
+    TMP: REAL_TEMP_ENV.TMP,
+    ...extraEnv,
+  });
 }
 
 beforeAll(async () => {
@@ -1706,7 +1717,7 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
       // Starting the real entry point also starts self-repair. Force the
       // documented CI gate so this process can never inspect or mutate the
       // developer's real client installations.
-      env: { ...process.env, CI: "1" },
+      env: withRealTemp({ CI: "1" }),
       encoding: "utf8",
       timeout: 1500,
       // SIGTERM after the timeout since normal start waits on stdin.
@@ -1749,14 +1760,14 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
         process.execPath,
         [SERVER_PATH, "install", "--project", projectTmpdir],
         {
-          env: {
-            ...process.env,
+          env: sandboxedChildEnv(process.env, {
             HOME: homeTmpdir,
             // The child's os.homedir() reads USERPROFILE on Windows; without
             // this it would detect and patch the REAL ~/.claude.json.
             USERPROFILE: homeTmpdir,
+            MIDBRAIN_LOG_DIR: path.join(homeTmpdir, "logs"),
             MIDBRAIN_CONFIG_DIR: configTmpdir,
-          },
+          }),
           encoding: "utf8",
           timeout: 30000,
         }
@@ -1789,7 +1800,7 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
   it("G-5: no-arg startup produces MCP server running line (regression)", () => {
     const child = spawnSync(process.execPath, [SERVER_PATH], {
       // See G-6: exercise startup without authorizing real-home self-repair.
-      env: { ...process.env, CI: "1" },
+      env: withRealTemp({ CI: "1" }),
       encoding: "utf8",
       timeout: 1500,
     });

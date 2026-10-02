@@ -12,6 +12,8 @@
  */
 
 import { describe, it, expect } from "vitest";
+
+import { sandboxedChildEnv } from "./helpers/sandboxed-child-env.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fsSync from "node:fs";
@@ -136,7 +138,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       const result = spawnSync("npm", ["pack", "--dry-run", "--json"], {
         cwd: REPO_ROOT,
         encoding: "utf8",
-        env: { ...process.env, npm_config_cache: cacheDir },
+        env: sandboxedChildEnv(process.env, { npm_config_cache: cacheDir }),
         timeout: 60000,
         // npm is npm.cmd on Windows; shell resolution lets spawnSync find it.
         shell: process.platform === "win32",
