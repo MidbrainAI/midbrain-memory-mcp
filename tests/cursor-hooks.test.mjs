@@ -6,7 +6,7 @@
  * preload that records every request — no network, no real key.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "fs";
@@ -336,7 +336,37 @@ describe("Cursor finishHook", () => {
 describe("Cursor hook wrappers (spawned, sandboxed)", () => {
   let env;
   let preloadFile;
+  let storePidDir;
   let fetchLog;
+  let trackerDir;
+  let trackerFile;
+
+  // The prompt hook starts a detached store-user.mjs child and exits at once.
+  // The child inherits the hook's execArgv, so this preload reaches it: it
+  // records the child's pid under MIDBRAIN_TEST_STORE_PID_DIR and marks the
+  // record done when the child exits. afterEach waits for that before it
+  // removes the sandbox the child is still writing to (logs, self-update
+  // state). One static file for the whole block; the directory comes from env.
+  beforeAll(() => {
+    trackerDir = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-store-tracker-"));
+    trackerFile = path.join(trackerDir, "track-store-child.mjs");
+    fs.writeFileSync(trackerFile, `
+      import fs from "node:fs";
+      import path from "node:path";
+      const dir = process.env.MIDBRAIN_TEST_STORE_PID_DIR;
+      if (dir && path.resolve(process.argv[1] || "") === ${JSON.stringify(STORE_ENTRY)}) {
+        const record = path.join(dir, String(process.pid));
+        fs.writeFileSync(record, "");
+        process.on("exit", () => {
+          try { fs.renameSync(record, record + ".done"); } catch { /* sandbox already gone */ }
+        });
+      }
+    `);
+  });
+
+  afterAll(() => {
+    fs.rmSync(trackerDir, { recursive: true, force: true });
+  });
 
   beforeEach(async () => {
     env = await makeTestEnv({ clients: ["cursor"] });
@@ -355,21 +385,62 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
         return { ok: true, status: 201, text: async () => "", json: async () => ({}) };
       };
     `);
+    storePidDir = path.join(env.root, "store-pids");
+    fs.mkdirSync(storePidDir);
   });
 
   afterEach(async () => {
-    await env.restore();
+    try {
+      await waitFor(storeChildrenDone);
+    } finally {
+      await env.restore();
+    }
   });
+
+  /** Store children the tracker has seen: pids still running, pids that exited. */
+  function storeChildren() {
+    const names = fs.existsSync(storePidDir) ? fs.readdirSync(storePidDir) : [];
+    return {
+      running: names.filter((name) => !name.endsWith(".done")).map(Number),
+      exited: names.filter((name) => name.endsWith(".done")).map((name) => Number(name.slice(0, -5))),
+    };
+  }
+
+  /**
+   * Re-evaluated on every tick. A child that has only just been started has
+   * no record yet, but its job file exists from before the spawn until the
+   * child has read it (after the tracker ran), so "no job file" means every
+   * child has a record. A record is done when the child's exit handler marked
+   * it; a bare record whose pid is gone is a child that died without one.
+   */
+  function storeChildrenDone() {
+    return jobFiles().length === 0 && storeChildren().running.every((pid) => !isAlive(pid));
+  }
+
+  function isAlive(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      // ESRCH: gone. EPERM: the pid belongs to another user now, so not our child.
+      return false;
+    }
+  }
 
   function run(role, input, mode = "ok") {
     return spawnSync(process.execPath, [
       "--import", pathToFileURL(preloadFile).href,
+      "--import", pathToFileURL(trackerFile).href,
       path.join(REPO_ROOT, "plugins", "cursor", `capture-${role}.mjs`),
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
       timeout: 15000,
-      env: env.childEnv({ MIDBRAIN_TEST_FETCH_LOG: fetchLog, MIDBRAIN_TEST_FETCH_MODE: mode }),
+      env: env.childEnv({
+        MIDBRAIN_TEST_FETCH_LOG: fetchLog,
+        MIDBRAIN_TEST_FETCH_MODE: mode,
+        MIDBRAIN_TEST_STORE_PID_DIR: storePidDir,
+      }),
     });
   }
 
@@ -410,6 +481,14 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
       memory_metadata: { client: "cursor", cwd: "~/work/repo", session_id: "conv-1" },
     });
     expect(JSON.stringify(requests())).not.toContain(EMAIL);
+
+    // the tracker saw exactly one store child, and that child has exited; a
+    // moved store entry or a broken preload would leave this list empty
+    const children = await waitFor(() => {
+      const seen = storeChildren();
+      return seen.running.length === 0 && seen.exited.length === 1 ? seen : null;
+    });
+    expect(children.exited[0]).toBeGreaterThan(0);
   });
 
   it("beforeSubmitPrompt still answers continue when the API is unreachable", async () => {
@@ -436,10 +515,14 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
     const limitMs = 1500;
     try {
       const started = Date.now();
-      const hook = spawn(process.execPath, [path.join(REPO_ROOT, "plugins", "cursor", "capture-user.mjs")], {
+      const hook = spawn(process.execPath, [
+        "--import", pathToFileURL(trackerFile).href,
+        path.join(REPO_ROOT, "plugins", "cursor", "capture-user.mjs"),
+      ], {
         env: env.childEnv({
           MIDBRAIN_API_URL: `http://127.0.0.1:${server.address().port}`,
           MIDBRAIN_CURSOR_STORE_TIMEOUT_MS: String(limitMs),
+          MIDBRAIN_TEST_STORE_PID_DIR: storePidDir,
         }),
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -471,8 +554,14 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
 
   it("beforeSubmitPrompt answers continue on malformed stdin", () => {
     const result = spawnSync(process.execPath, [
+      "--import", pathToFileURL(trackerFile).href,
       path.join(REPO_ROOT, "plugins", "cursor", "capture-user.mjs"),
-    ], { input: "not json", encoding: "utf8", timeout: 15000, env: env.childEnv() });
+    ], {
+      input: "not json",
+      encoding: "utf8",
+      timeout: 15000,
+      env: env.childEnv({ MIDBRAIN_TEST_STORE_PID_DIR: storePidDir }),
+    });
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({ continue: true });
   });

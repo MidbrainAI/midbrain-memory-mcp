@@ -148,7 +148,9 @@ export async function makeTestEnv(opts = {}) {
         if (saved[key] === undefined) delete process.env[key];
         else process.env[key] = saved[key];
       }
-      await fs.rm(root, { recursive: true, force: true });
+      // A spawned child may still be writing into the sandbox for a moment
+      // after its test finished; retry the removal rather than fail on ENOTEMPTY.
+      await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     },
   };
 }
