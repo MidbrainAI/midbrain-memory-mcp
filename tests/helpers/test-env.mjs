@@ -17,7 +17,7 @@ import { createRequire } from 'module';
 import os from 'os';
 import path from 'path';
 
-import { sandboxedChildEnv } from './sandboxed-child-env.mjs';
+import { sandboxedChildEnv, seedUpdateCache } from './sandboxed-child-env.mjs';
 
 // Load the real builtin through CJS so Vitest ESM mocks in adapter tests cannot
 // replace the sandbox fixture's own filesystem operations.
@@ -53,8 +53,6 @@ const MANAGED_ENV_KEYS = [
   'MIDBRAIN_DEV',
   'CI',
 ];
-
-const UPDATE_CACHE_FILENAME = '.midbrain-update-check.json';
 
 /**
  * Create an isolated sandbox environment.
@@ -118,13 +116,7 @@ export async function makeTestEnv(opts = {}) {
 
   const paths = sandboxPaths(home);
 
-  if (freshUpdateCache) {
-    await fs.writeFile(
-      path.join(tmp, UPDATE_CACHE_FILENAME),
-      JSON.stringify({ lastCheck: Date.now() }),
-      'utf8',
-    );
-  }
+  if (freshUpdateCache) seedUpdateCache(tmp);
 
   for (const client of clients) await seedClient(paths, client);
 

@@ -1557,10 +1557,15 @@ describe("memory_setup_project — stale config migration (PRD-010)", () => {
 // ---------------------------------------------------------------------------
 
 describe("index.js CLI — --version flag (PRD-010)", () => {
+  // These runs exit before touching HOME or the temp dir; one sandbox home
+  // for the block is enough.
+  let home;
+  beforeAll(() => { home = fs.mkdtempSync(path.join(mcpTestSandbox, "version-home-")); });
+
   /** Spawn `node index.js <args>` and return {status, stdout, stderr}. */
   function spawnServer(args, extraEnv = {}) {
     return spawnSync(process.execPath, [SERVER_PATH, ...args], {
-      env: cliChildEnv(extraEnv),
+      env: sandboxHomeEnv(home, extraEnv),
       encoding: "utf8",
       timeout: 5000,
     });

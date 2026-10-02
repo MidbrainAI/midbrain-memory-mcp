@@ -1,5 +1,7 @@
 import js from "@eslint/js";
 
+import sandboxedChildEnv from "./scripts/eslint-rules/sandboxed-child-env.mjs";
+
 export default [
   js.configs.recommended,
   {
@@ -34,6 +36,13 @@ export default [
       "no-var": "error",
       "prefer-const": "error",
     },
+  },
+  {
+    // Suite-wide rule for issue #94: a spawned child never inherits the
+    // worker's process.env. Verified by tests/spawn-env-audit.test.mjs.
+    files: ["tests/**/*.mjs"],
+    plugins: { midbrain: { rules: { "sandboxed-child-env": sandboxedChildEnv } } },
+    rules: { "midbrain/sandboxed-child-env": "error" },
   },
   {
     // Exclude generated bundle output, plugin TS source, and dependencies.
