@@ -126,7 +126,6 @@ describe("API-host MCP/capture parity", () => {
       MIDBRAIN_PROJECT_DIR: projectDir,
       MIDBRAIN_API_URL: undefined,
     });
-    delete childEnv.MIDBRAIN_API_URL;
 
     const [mcp, plugin] = await Promise.all([
       runChild(mcpScript(), childEnv),
@@ -174,19 +173,17 @@ describe("API-host MCP/capture parity", () => {
         "utf8",
       );
 
-      const baseEnv = env.childEnv({
+      // an undefined override leaves the key out of the child env
+      const serverEnv = env.childEnv({
         MIDBRAIN_CLIENT: "opencode",
         MIDBRAIN_API_URL: undefined,
+        MIDBRAIN_PROJECT_DIR: serverProjectDir,
       });
-      delete baseEnv.MIDBRAIN_API_URL;
-      const serverEnv = { ...baseEnv };
-      if (serverProjectDir === undefined) {
-        delete serverEnv.MIDBRAIN_PROJECT_DIR;
-      } else {
-        serverEnv.MIDBRAIN_PROJECT_DIR = serverProjectDir;
-      }
-      const pluginEnv = { ...baseEnv };
-      delete pluginEnv.MIDBRAIN_PROJECT_DIR;
+      const pluginEnv = env.childEnv({
+        MIDBRAIN_CLIENT: "opencode",
+        MIDBRAIN_API_URL: undefined,
+        MIDBRAIN_PROJECT_DIR: undefined,
+      });
 
       const [mcp, plugin] = await Promise.all([
         runChild(mcpScript(), serverEnv),

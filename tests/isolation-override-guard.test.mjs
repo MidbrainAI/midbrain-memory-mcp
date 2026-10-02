@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import { sandboxedChildEnv } from "./helpers/sandboxed-child-env.mjs";
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT_PATH = path.join(REPO_ROOT, "scripts", "check-test-isolation.sh");
 const IS_WIN = process.platform === "win32";
@@ -13,11 +15,11 @@ function runIsolationCheck({ home, override }) {
   return spawnSync("bash", [SCRIPT_PATH], {
     cwd: REPO_ROOT,
     encoding: "utf8",
-    env: {
-      ...process.env,
+    env: sandboxedChildEnv(process.env, {
       HOME: home,
+      USERPROFILE: home,
       MIDBRAIN_ISOLATION_HOME: override,
-    },
+    }),
     timeout: 30000,
   });
 }
