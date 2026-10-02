@@ -422,8 +422,10 @@ OpenClaw:
   triggers (captures trigger `user` or no trigger). Metadata: `client
   "openclaw"`, `session_id` from `ctx.sessionId`, `cwd` from the agent
   workspace dir.
-- Each store has a 10-second limit; on expiry the entry goes to the offline
-  cache for the boot-time drain. The handler never throws.
+- The handler waits at most 10 seconds per store, then moves on while the
+  store runs. A failed POST is cached by `MidbrainApi.storeEpisodic`; a POST
+  still in flight when the gateway exits is cached by the plugin's exit flush.
+  Nothing is cached twice. The handler never throws.
 - Config is `<state>/openclaw.json` (JSON5). State dir is `~/.openclaw`, or
   `OPENCLAW_STATE_DIR`, `OPENCLAW_HOME`, `OPENCLAW_PROFILE`
   (`~/.openclaw-<profile>`); `OPENCLAW_CONFIG_PATH` overrides the file.
