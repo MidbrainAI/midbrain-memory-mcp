@@ -24,7 +24,10 @@
 import { BaseClient, readKeyFile } from './base.mjs';
 import { writeCredential } from './credential-writer.mjs';
 import {
-  KEY_FILENAME, MCP_KEY, REPO_ROOT, PKG_NAME, PKG_VERSION,
+  KEY_FILENAME, MCP_KEY, REPO_ROOT,
+  PLUGIN_MARKER_FILE as MARKER_FILE, PLUGIN_MARKER_VALUE as MARKER_VALUE,
+  PLUGIN_MARKER_VALUE_DEV as MARKER_VALUE_DEV, isDevMarkerValue, isDevInstance,
+  isObjectRecord as isRecord,
   home, backup, writeFileIfChanged, classifyEntry,
   migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
@@ -39,11 +42,6 @@ export const PLUGIN_ID = 'midbrain-memory';
 const PLUGIN_SOURCE_DIR = path.join(REPO_ROOT, 'plugins', 'openclaw');
 const PLUGIN_FILES = ['index.js', 'openclaw.plugin.json', 'package.json'];
 const BUNDLE_FILE = 'midbrain-shared.mjs';
-const MARKER_FILE = '.midbrain-repo-root';
-// Version-only marker, dev-flagged for --dev installs: same freshness contract
-// as the OpenCode plugin copy (PRD-034 S2/M6, AC-14).
-const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}`;
-const MARKER_VALUE_DEV = `${MARKER_VALUE}-dev`;
 const JSONC_FORMAT = { tabSize: 2, insertSpaces: true, eol: '\n' };
 
 // Lazy-loaded: only config writing needs the parsers, and the plugin bundle
@@ -105,10 +103,6 @@ export async function openclawWorkspaceDir() {
 
 // --- Config read/write ---
 
-function isRecord(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 /**
  * Read openclaw.json. Returns { text, data, jsoncCompatible }; a missing file
  * is an empty object. Anything that is not a JSON5 object fails closed.
@@ -147,8 +141,35 @@ function buildEntry({ isDev = false, extraEnv = {} } = {}) {
   return { command: 'npx', args: ['-y', 'midbrain-memory-mcp@latest'], env };
 }
 
-function sameJson(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
+/** Deep equality that ignores object key order: a hand-written entry is not a change. */
+function sameValue(a, b) {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+      && a.every((value, i) => sameValue(value, b[i]));
+  }
+  if (!isRecord(a) || !isRecord(b)) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => key in b && sameValue(a[key], b[key]));
+}
+
+/**
+ * True when replacing `before` with `after` drops a key somewhere inside. A
+ * merge patch (`openclaw config patch`) cannot express a removal, so such a
+ * change has to go through the rewrite path.
+ */
+function mergeDropsKeys(before, after) {
+  if (!isRecord(before) || !isRecord(after)) return false;
+  return Object.keys(before).some((key) => !(key in after) || mergeDropsKeys(before[key], after[key]));
+}
+
+function valueAt(obj, jsonPath) {
+  let node = obj;
+  for (const key of jsonPath) {
+    if (!isRecord(node)) return undefined;
+    node = node[key];
+  }
+  return node;
 }
 
 function samePath(a, b) {
@@ -168,6 +189,9 @@ async function planConfigChanges(data, { isDev, source }) {
   if (data.mcp?.servers !== undefined && !isRecord(data.mcp.servers)) {
     throw new Error(`Expected "mcp.servers" to be an object in ${source}; not modifying it`);
   }
+  if (data.plugins?.load !== undefined && !isRecord(data.plugins.load)) {
+    throw new Error(`Expected "plugins.load" to be an object in ${source}; not modifying it`);
+  }
   const loadPaths = data.plugins?.load?.paths;
   if (loadPaths !== undefined && !Array.isArray(loadPaths)) {
     throw new Error(`Expected "plugins.load.paths" to be an array in ${source}; not modifying it`);
@@ -185,7 +209,7 @@ async function planConfigChanges(data, { isDev, source }) {
     : await migrateReservedHostEnv(existing?.env, { clientId: CLIENT_ID, source });
   if (!pinned) {
     const entry = buildEntry({ isDev, extraEnv });
-    if (!sameJson(existing, entry)) changes.push([['mcp', 'servers', MCP_KEY], entry]);
+    if (!sameValue(existing, entry)) changes.push([['mcp', 'servers', MCP_KEY], entry]);
   }
 
   const pluginDir = openclawPluginDir();
@@ -195,7 +219,7 @@ async function planConfigChanges(data, { isDev, source }) {
   const current = isRecord(entries?.[PLUGIN_ID]) ? entries[PLUGIN_ID] : {};
   const hooks = isRecord(current.hooks) ? current.hooks : {};
   const wanted = { ...current, enabled: true, hooks: { ...hooks, allowConversationAccess: true } };
-  if (!sameJson(current, wanted)) changes.push([['plugins', 'entries', PLUGIN_ID], wanted]);
+  if (!sameValue(current, wanted)) changes.push([['plugins', 'entries', PLUGIN_ID], wanted]);
 
   return { changes, exists, pinned, hostLines };
 }
@@ -234,13 +258,15 @@ function findOpenclawCli() {
 }
 
 function defaultCliRunner(cli, args, input) {
-  return spawnSync(cli, args, {
+  const shell = process.platform === 'win32';
+  // .cmd shims need a shell on Windows; args are fixed literals and the patch
+  // travels on stdin, so nothing user-controlled is shell-parsed. The shell
+  // splits on spaces, so the executable path itself is quoted.
+  return spawnSync(shell ? `"${cli}"` : cli, args, {
     input,
     encoding: 'utf8',
     timeout: 60_000,
-    // .cmd shims need a shell on Windows; args are fixed literals and the
-    // patch travels on stdin, so nothing user-controlled is shell-parsed.
-    shell: process.platform === 'win32',
+    shell,
     windowsHide: true,
   });
 }
@@ -256,7 +282,9 @@ export function _setOpenclawCli({ find, run } = {}) {
 
 /**
  * Apply the planned changes. Returns the strategy used: 'unchanged',
- * 'created', 'jsonc', 'cli' or 'rewrite'.
+ * 'created', 'jsonc', 'cli' or 'rewrite'. The CLI path is a merge patch, so a
+ * change that removes a key (a dev entry going back to canonical, a migrated
+ * host override) takes the rewrite path even when the CLI is available.
  */
 async function applyConfigChanges(filePath, { text, data, jsoncCompatible }, changes) {
   if (changes.length === 0) return 'unchanged';
@@ -278,7 +306,8 @@ async function applyConfigChanges(filePath, { text, data, jsoncCompatible }, cha
     await fs.writeFile(filePath, next, 'utf8');
     return 'jsonc';
   }
-  const cli = cliFinder();
+  const mergeable = changes.every(([jsonPath, value]) => !mergeDropsKeys(valueAt(data, jsonPath), value));
+  const cli = mergeable ? cliFinder() : null;
   if (cli) {
     const result = cliRunner(cli, ['config', 'patch', '--stdin'], JSON.stringify(toPatchObject(changes)));
     if (result?.status === 0) return 'cli';
@@ -312,16 +341,6 @@ async function copyPlugin(markerValue) {
   }
   if (await writeFileIfChanged(path.join(dir, MARKER_FILE), markerValue + '\n')) changed = true;
   return changed;
-}
-
-function isDevMarkerValue(raw) {
-  if (typeof raw !== 'string') return false;
-  const value = raw.trim();
-  return value.startsWith(`${PKG_NAME}@`) && value.endsWith('-dev');
-}
-
-function isDevInstance() {
-  return Boolean(process.env.MIDBRAIN_DEV);
 }
 
 const STRATEGY_NOTES = {
@@ -358,16 +377,29 @@ export class OpenClaw extends BaseClient {
     const { isDev = false } = opts;
     const summary = [];
 
+    // Read and validate the config before writing anything: a config the
+    // adapter refuses to touch must not leave a half-applied plugin copy.
+    const configPath = openclawConfigPath();
+    const config = await readConfig(configPath);
+    const { changes, exists, pinned, hostLines } = await planConfigChanges(config.data, { isDev, source: configPath });
+
+    const pluginDir = openclawPluginDir();
+    const pluginExisted = existsSync(pluginDir);
     const pluginChanged = await copyPlugin(isDev ? MARKER_VALUE_DEV : MARKER_VALUE);
     summary.push(pluginChanged
       ? `  + Capture plugin installed: ~/.config/${CLIENT_ID}/midbrain-plugin/`
       : `  = Capture plugin unchanged: ~/.config/${CLIENT_ID}/midbrain-plugin/`);
 
-    const configPath = openclawConfigPath();
-    const config = await readConfig(configPath);
-    const { changes, exists, pinned, hostLines } = await planConfigChanges(config.data, { isDev, source: configPath });
     const mcpChanged = changes.some(([p]) => p[0] === 'mcp');
-    const strategy = await applyConfigChanges(configPath, config, changes);
+    let strategy;
+    try {
+      strategy = await applyConfigChanges(configPath, config, changes);
+    } catch (err) {
+      // A plugin copy this install created, that openclaw.json never linked,
+      // would only be noise for the next repair pass.
+      if (!pluginExisted) await fs.rm(pluginDir, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
 
     const label = path.basename(configPath);
     if (pinned) summary.push(`  ~ MCP server: pinned version preserved in ${label}`);
