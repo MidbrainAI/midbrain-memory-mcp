@@ -143,12 +143,10 @@ delete process.env.HERMES_HOME;
 delete process.env.NANOCLAW_HOME;
 const [outputFile, surfaceHome] = process.argv.slice(2);
 const helperUrl = pathToFileURL(path.resolve("tests/helpers/global-tripwire.mjs"));
-const { collectHashes, tripwireSurfaces } = await import(helperUrl.href);
-fs.writeFileSync(
-  outputFile,
-  JSON.stringify(collectHashes(tripwireSurfaces(surfaceHome))),
-  "utf8",
-);
+// Same record the vitest globalSetup tripwire uses: config surface hashes
+// plus offline cache entry counts, so a cache leak fails this gate too (#88).
+const { snapshotWatched } = await import(helperUrl.href);
+fs.writeFileSync(outputFile, JSON.stringify(snapshotWatched(surfaceHome)), "utf8");
 NODE
 }
 
@@ -162,12 +160,12 @@ import { pathToFileURL } from 'node:url';
 
 const [beforeFile, afterFile] = process.argv.slice(2);
 const helperUrl = pathToFileURL(path.resolve("tests/helpers/global-tripwire.mjs"));
-const { diffHashes } = await import(helperUrl.href);
+const { diffWatched } = await import(helperUrl.href);
 const before = JSON.parse(fs.readFileSync(beforeFile, "utf8"));
 const after = JSON.parse(fs.readFileSync(afterFile, "utf8"));
-const drifted = diffHashes(before, after);
+const drifted = diffWatched(before, after);
 if (drifted.length > 0) {
-  console.error("ERROR: client configuration drift detected:");
+  console.error("ERROR: client configuration or MidBrain cache drift detected:");
   for (const filePath of drifted) console.error(`  - ${filePath}`);
   process.exit(1);
 }
@@ -205,4 +203,4 @@ if [[ "$drift_status" -ne 0 ]]; then
   exit "$drift_status"
 fi
 
-echo "OK: copied-topology credential suites passed with no client configuration drift."
+echo "OK: copied-topology credential suites passed with no client configuration or cache drift."
