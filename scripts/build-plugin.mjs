@@ -12,7 +12,7 @@ await build({
   bundle: true,
   format: "esm",
   platform: "node",
-  external: ["jsonc-parser", "smol-toml", "yaml"],
+  external: ["json5", "jsonc-parser", "smol-toml", "yaml"],
   outfile: path.join(repoRoot, "dist", "midbrain-shared.mjs"),
   define: {
     __MIDBRAIN_PACKAGE_NAME__: JSON.stringify(packageJson.name),

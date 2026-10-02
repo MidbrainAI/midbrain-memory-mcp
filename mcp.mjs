@@ -29,6 +29,12 @@ const EPISODIC_PAGE_LIMIT = 1000;
 const PEEK_TTL_MS = 60_000; // 1 minute cache
 const TERMINAL_CWD_PLACEHOLDER = "${TERMINAL_CWD}";
 
+// MCP tool annotation for tools that only read memory or local state, so
+// clients that gate tool calls on safety hints (e.g. OpenClaw) need no
+// per-call approval for them. Tools that write keys, configs or agents stay
+// unannotated (the spec defaults them to non-read-only).
+const READ_ONLY_TOOL = { readOnlyHint: true };
+
 /** Creates a MidbrainApi instance for the current environment. */
 export async function createApi() {
   return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT), currentProjectDir());
@@ -154,6 +160,7 @@ use get_episodic_memories_by_date with today's date to retrieve recent context.`
         .enum(["all", "semantic", "episodic"]).optional().default("all")
         .describe('Filter by memory type: "all" (default), "semantic", or "episodic".'),
     },
+    READ_ONLY_TOOL,
     async ({ query, limit, memory_type }) => {
       try {
         const a = await createApi();
@@ -217,6 +224,7 @@ Use for exact or pattern-based matches (names, IDs, code, URLs).`,
         .enum(["all", "semantic", "episodic"]).optional().default("all")
         .describe('Filter by memory type: "all" (default), "semantic", or "episodic".'),
     },
+    READ_ONLY_TOOL,
     async ({ pattern, source, limit, memory_type }) => {
       try {
         const a = await createApi();
@@ -256,6 +264,7 @@ when continuing previous work.`,
         .number().int().min(1).optional().default(1)
         .describe("Number of days to include from the start date (default: 1)."),
     },
+    READ_ONLY_TOOL,
     async ({ date, offset_days }) => {
       try {
         const start = new Date(date);
@@ -309,6 +318,7 @@ when continuing previous work.`,
 Returns filenames with chunk counts.
 Use this to discover what knowledge files are available.`,
     {},
+    READ_ONLY_TOOL,
     async () => {
       try {
         const a = await createApi();
@@ -346,6 +356,7 @@ after memory_search to read context around a search hit.`,
         .number().int().min(1).max(5000).optional().default(200)
         .describe("Number of lines to read (default: 200)."),
     },
+    READ_ONLY_TOOL,
     async ({ file_path, start_line, num_lines }) => {
       try {
         const a = await createApi();
@@ -378,6 +389,7 @@ previous work. Returns a summary of recent episodic activity without
 fetching full memories. Use get_episodic_memories_by_date to retrieve
 full context if needed.`,
     {},
+    READ_ONLY_TOOL,
     async () => {
       try {
         const a = await createApi();
@@ -427,6 +439,7 @@ probe, pending capture cache counts, safe locations, and actionable next steps.`
       probe: z.boolean().optional().default(true)
         .describe("Run a live authenticated probe (default: true)."),
     },
+    READ_ONLY_TOOL,
     async ({ probe }) => {
       try {
         const text = await runMemoryDiagnostics({
@@ -480,6 +493,7 @@ probe, pending capture cache counts, safe locations, and actionable next steps.`
     `List the MidBrain agents owned by the user's account. Requires a configured
 user API key. Read-only; safe to call whenever the user asks which agents exist.`,
     {},
+    READ_ONLY_TOOL,
     async () => {
       try {
         const account = await createAccountApi();

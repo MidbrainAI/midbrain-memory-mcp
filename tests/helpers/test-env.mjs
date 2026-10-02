@@ -36,6 +36,11 @@ const MANAGED_ENV_KEYS = [
   'TMP',
   'HERMES_HOME',
   'NANOCLAW_HOME',
+  'OPENCLAW_HOME',
+  'OPENCLAW_STATE_DIR',
+  'OPENCLAW_CONFIG_PATH',
+  'OPENCLAW_PROFILE',
+  'OPENCLAW_WORKSPACE_DIR',
   'npm_config_cache',
   'MIDBRAIN_LOG_DIR',
   'MIDBRAIN_PROJECT_DIR',
@@ -93,6 +98,11 @@ export async function makeTestEnv(opts = {}) {
     TMP: tmp,
     HERMES_HOME: path.join(home, '.hermes'),
     NANOCLAW_HOME: undefined,
+    OPENCLAW_HOME: undefined,
+    OPENCLAW_STATE_DIR: undefined,
+    OPENCLAW_CONFIG_PATH: undefined,
+    OPENCLAW_PROFILE: undefined,
+    OPENCLAW_WORKSPACE_DIR: undefined,
     npm_config_cache: path.join(home, '.npm'),
     MIDBRAIN_LOG_DIR: path.join(home, 'logs'),
     MIDBRAIN_PROJECT_DIR: undefined,
@@ -197,6 +207,9 @@ export function sandboxPaths(home) {
     codexHooks: path.join(home, '.codex', 'hooks.json'),
     cursorMcp: path.join(home, '.cursor', 'mcp.json'),
     cursorHooks: path.join(home, '.cursor', 'hooks.json'),
+    openclawConfig: path.join(home, '.openclaw', 'openclaw.json'),
+    openclawAgents: path.join(home, '.openclaw', 'workspace', 'AGENTS.md'),
+    openclawPlugin: path.join(home, '.config', 'openclaw', 'midbrain-plugin'),
     hermesConfig: path.join(home, '.hermes', 'config.yaml'),
     opencodeConfig: path.join(home, '.config', 'opencode', 'opencode.json'),
     opencodeConfigJsonc: path.join(home, '.config', 'opencode', 'opencode.jsonc'),
@@ -231,6 +244,9 @@ async function seedClient(paths, client) {
       break;
     case 'opencode':
       await writeSeed(paths.opencodeConfig, '{}\n');
+      break;
+    case 'openclaw':
+      await writeSeed(paths.openclawConfig, '{}\n');
       break;
     case 'nanoclaw':
       await writeSeed(path.join(paths.nanoclawRoot, 'container', 'Dockerfile'), '# fixture\n');
