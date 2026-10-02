@@ -1388,6 +1388,50 @@ describe("projectSetup", () => {
     expect(keyWrites).toHaveLength(0);
   });
 
+  it("seeds a new project key from the global chain even under MIDBRAIN_STRICT_PROJECT=1 (#92)", async () => {
+    setupProjectMocks();
+    const saved = process.env.MIDBRAIN_STRICT_PROJECT;
+    process.env.MIDBRAIN_STRICT_PROJECT = "1";
+    try {
+      const result = await setupProject(PROJECT_DIR, { skipRules: true });
+      expect(result.keyCreated).toBe(true);
+      expect(result.lines.join("\n")).toContain("Key resolved from:");
+    } finally {
+      if (saved === undefined) delete process.env.MIDBRAIN_STRICT_PROJECT;
+      else process.env.MIDBRAIN_STRICT_PROJECT = saved;
+    }
+  });
+
+  it("seeds a new project key from the global chain, not from MIDBRAIN_PROJECT_DIR (#92)", async () => {
+    setupProjectMocks();
+    const other = path.resolve("/work/other-project");
+    readFileReturns({
+      [PATHS.globalKey]: "global-key\n",
+      [path.join(other, ".midbrain", ".midbrain-key")]: "other-project-key\n",
+    });
+    const saved = process.env.MIDBRAIN_PROJECT_DIR;
+    process.env.MIDBRAIN_PROJECT_DIR = other;
+    try {
+      const result = await setupProject(PROJECT_DIR, { skipRules: true });
+      expect(result.keyCreated).toBe(true);
+      expect(result.lines.join("\n")).toContain(`Key resolved from: ${PATHS.globalKey}`);
+      const keyPath = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");
+      const written = fs.writeFile.mock.calls.find(([p]) => p === keyPath);
+      expect(String(written[1])).toContain("global-key");
+    } finally {
+      if (saved === undefined) delete process.env.MIDBRAIN_PROJECT_DIR;
+      else process.env.MIDBRAIN_PROJECT_DIR = saved;
+    }
+  });
+
+  it("says so when a supplied api_key differs from an existing project key it keeps", async () => {
+    setupProjectMocks({ existingProjectKey: true, apiKey: "old-project-key" });
+    const result = await setupProject(PROJECT_DIR, { apiKey: "new-agent-key", skipRules: true });
+    expect(result.keyCreated).toBe(false);
+    expect(result.lines.join("\n")).toContain("Existing project key preserved.");
+    expect(result.lines.join("\n")).toContain("supplied api_key differs from the existing project key");
+  });
+
   it("resolves an existing target project key without requiring a global key", async () => {
     setupProjectMocks({ existingProjectKey: true });
     const keyPath = path.join(PROJECT_DIR, ".midbrain", ".midbrain-key");

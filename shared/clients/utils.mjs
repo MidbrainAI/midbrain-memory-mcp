@@ -10,7 +10,7 @@ import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { readKeyFile } from './base.mjs';
+import { readProjectKeyIn } from './base.mjs';
 import { globalConfigDir } from '../state-dir.mjs';
 
 // --- Constants ---
@@ -229,13 +229,5 @@ export async function migrateReservedHostEnv(extraEnv, { clientId, projectDir, s
  * @returns {Promise<{key: string, source: string} | null>}
  */
 export async function resolveProjectKey(projDir) {
-  const subPath = path.join(projDir, MIDBRAIN_DIR, KEY_FILENAME);
-  const subKey = await readKeyFile(subPath);
-  if (subKey) return { key: subKey, source: subPath };
-
-  const flatPath = path.join(projDir, KEY_FILENAME);
-  const flatKey = await readKeyFile(flatPath);
-  if (flatKey) return { key: flatKey, source: flatPath };
-
-  return null;
+  return readProjectKeyIn(projDir);
 }

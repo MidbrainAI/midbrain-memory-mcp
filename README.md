@@ -392,7 +392,8 @@ version. The MCP server logs the resolved package version to stderr on startup.
 | Variable | Purpose | Set by |
 |---|---|---|
 | `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, `codex`, `cursor`, `hermes`, or `nanoclaw`) | MCP config `environment`/`env` block |
-| `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution | Project-level MCP config |
+| `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution, used when the client reports no directory | Project-level MCP config |
+| `MIDBRAIN_STRICT_PROJECT` | `1` withholds a capture that would fall back from a project directory to a client or global key | User environment (opt-in) |
 | `MIDBRAIN_API_KEY` | API key for CI/debug environments | User environment |
 | `MIDBRAIN_API_URL` | Highest-priority API-host override for development and compatibility | User process environment |
 
@@ -465,17 +466,28 @@ Resolution order:
 
 | # | Location | Notes |
 |---|---|---|
-| 1a | `<projectDir>/.midbrain/.midbrain-key` | Per-project (recommended) |
-| 1b | `<projectDir>/.midbrain-key` | Per-project (flat override) |
-| 2a | `$MIDBRAIN_PROJECT_DIR/.midbrain/.midbrain-key` | Per-project via env |
-| 2b | `$MIDBRAIN_PROJECT_DIR/.midbrain-key` | Per-project via env (flat) |
-| 3 | Client key file (e.g. `~/.config/opencode/.midbrain-key`) | Per-client adapter |
-| 4 | `~/.config/midbrain/.midbrain-key` | Global default |
-| 5 | `$MIDBRAIN_API_KEY` | Environment variable (CI only) |
+| 1a | `<dir>/.midbrain/.midbrain-key` | Per-project (recommended) |
+| 1b | `<dir>/.midbrain-key` | Per-project (flat override) |
+| 2 | Client key file (e.g. `~/.config/opencode/.midbrain-key`) | Per-client adapter |
+| 3 | `~/.config/midbrain/.midbrain-key` | Global default |
+| 4 | `$MIDBRAIN_API_KEY` | Environment variable (CI only) |
+
+`<dir>` is the project directory: the one the client reports, otherwise
+`MIDBRAIN_PROJECT_DIR`. Steps 1a and 1b are tried for that
+directory and then for each parent directory up to, but not including, your
+home directory or the filesystem root, so a hook fired from a subfolder, a
+scratch directory under the project, or a git worktree of the project finds
+the project key. A linked git worktree also resolves to the main worktree's
+root. The home directory is read only when it is the reported directory
+itself (a home-as-project setup); the walk never climbs into or above it.
 
 - `EACCES` on any key file is a hard error (not silent fallthrough)
 - Empty key files are a hard error naming the file path
-- Fallthrough from project to global key emits a warning to stderr
+- Falling through from the project to a client or global key emits a warning
+  to stderr and a `SCOPE:` line in the client's capture log, and
+  `memory_diagnostics` reports it under `project_root` and `next_steps`
+- `MIDBRAIN_STRICT_PROJECT=1` turns that fallback into an error, so a capture
+  that would land in another agent is withheld instead
 
 Agent selection is **`.midbrain-key`-only**: the keystore is never consulted
 for the active agent key. A project `.midbrain-key` overrides the global one; a
@@ -1004,10 +1016,22 @@ curl https://memory.midbrain.ai/health         # Is the API reachable?
 
 ### Memory going to wrong agent
 
-**Cause:** Session started before the project key was created. The key is
+**Cause 1:** Session started before the project key was created. The key is
 resolved at init time and cached.
 
 **Fix:** Restart the client after running project setup.
+
+**Cause 2:** The client ran from outside the project root (a scratch
+directory, a worktree elsewhere, `~`), so no project key covers that
+directory and the capture used the client or global key. Captures from a
+subfolder or a git worktree of the project now resolve to the project key;
+anything else still falls back.
+
+**Fix:** Run `memory_diagnostics`: `project_root` shows which directory's key
+answered, and a `note:` says when a fallback lands in the main agent. Start the
+client inside the project, or set `MIDBRAIN_STRICT_PROJECT=1` to withhold such
+captures instead of falling back. The hook's capture log has a `SCOPE:` line
+for each affected capture.
 
 ### Claude Code ignores the setup tool
 

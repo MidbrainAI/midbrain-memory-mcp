@@ -177,6 +177,13 @@ describe("Cursor hook capture", () => {
     expect(fs.existsSync(jobFile)).toBe(false);
   });
 
+  it("the background child logs when a non-project key answers for the prompt's cwd (#92)", async () => {
+    deps.api.projectFallbackNote = "no project key covers the project directory; captures from it use the global key";
+    deps.api.requestedProjectDir = "/repo";
+    await expect(storeUserJob({ prompt: "hi", cwd: "/repo" }, deps)).resolves.toBe("stored");
+    expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^SCOPE: no project key covers/));
+  });
+
   it("the background child is fail-open when key resolution fails", async () => {
     deps.createApi.mockRejectedValueOnce(new Error("no key"));
     await expect(storeUserJob({ prompt: "hi", cwd: "/repo" }, deps)).resolves.toBe("failed");

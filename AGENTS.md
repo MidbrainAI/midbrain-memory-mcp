@@ -81,13 +81,22 @@ directly or implement fallback chains manually.
 
 Resolution priority:
 
-1. `<projectDir>/.midbrain/.midbrain-key`
-2. `<projectDir>/.midbrain-key`
-3. `$MIDBRAIN_PROJECT_DIR/.midbrain/.midbrain-key`
-4. `$MIDBRAIN_PROJECT_DIR/.midbrain-key`
-5. per-client key file from `resolveClientKey()`
-6. `~/.config/midbrain/.midbrain-key`
-7. `$MIDBRAIN_API_KEY` for CI/debug fallback
+1. `<dir>/.midbrain/.midbrain-key`
+2. `<dir>/.midbrain-key`
+3. per-client key file from `resolveClientKey()`
+4. `~/.config/midbrain/.midbrain-key`
+5. `$MIDBRAIN_API_KEY` for CI/debug fallback
+
+`<dir>` is the explicit project directory (for a hook, the client-reported
+cwd), else `$MIDBRAIN_PROJECT_DIR`; `effectiveProjectDir()` in
+`shared/project-dir.mjs` is the one implementation of that rule, used by
+`resolveKey()`, `resolveApiHost()` and the hooks.
+Steps 1 and 2 run for `<dir>` and every parent up to, not including, the home
+directory or the filesystem root, plus a linked git worktree's main root
+(`walkProjectRoots()`). The home directory is read only when it is `<dir>`
+itself (a home-as-project setup); the walk never climbs into or above it. A
+broken key file in `<dir>` is a hard error; one in a parent is skipped with a
+warning and reported by `memory_diagnostics`.
 
 Agent selection is `.midbrain-key`-only. The keystore is NEVER consulted for
 the active agent key — `resolveKey()` reads only `.midbrain-key` files (project
@@ -99,7 +108,12 @@ Rules:
 - `EACCES` on a key file is a hard error.
 - Empty key files are hard errors naming the path.
 - A corrupt `.midbrain-keystore.json` is a hard error (fail-closed) — never silently reset.
-- Falling through from project key to global key emits a warning to stderr.
+- Falling through from a project directory to a client or global key emits a
+  warning to stderr; `MidbrainApi.create()` sets `projectFallbackNote`, hooks
+  log it through `logProjectFallback()`, and `memory_diagnostics` reports
+  `project_root` plus a main-agent note when the answering key equals the
+  global key. `MIDBRAIN_STRICT_PROJECT=1` makes the fallback an error
+  (`code: PROJECT_KEY_REQUIRED`) instead.
 - Never commit `.midbrain-key` files, `.midbrain-keystore.json`, or real API keys.
 
 ## Keystore And Account Management

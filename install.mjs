@@ -262,8 +262,10 @@ async function ensureHookCredential() {
     const key = (process.env.MIDBRAIN_API_KEY || '').trim();
     if (!key) return;
     if ((process.env.MIDBRAIN_API_URL || '').trim()) return;
+    // Global credential only: a project directory in the env is not this
+    // install's concern, and strict mode must not abort the installer.
     const resolved = await getClient(process.env.MIDBRAIN_CLIENT)
-      .resolveKey(undefined, { includeScope: true });
+      .resolveKey(undefined, { includeScope: true, skipProject: true });
     if (resolved?.scope !== 'environment') return;
     const targetPath = path.join(globalConfigDir(), KEY_FILENAME);
     const { action } = await writeCredential({
@@ -749,7 +751,10 @@ async function resolveKeys(clients, { nonInteractive = false, forceLogin = false
   // Check if any client already has a key
   let anyKeyFound = false;
   for (const client of clients) {
-    const existing = await client.resolveKey(undefined, { includeScope: true });
+    // The global install looks for client and global keys only; a project
+    // directory in the env must neither count as found nor, in strict mode,
+    // abort the installer that strict mode's own error points the user at.
+    const existing = await client.resolveKey(undefined, { includeScope: true, skipProject: true });
     if (existing) {
       console.log(`Found ${client.displayName} key: ${existing.source}`);
       keys.set(client.id, existing);
@@ -1223,13 +1228,21 @@ async function setupProject(rawPath, opts = {}) {
   }
 
   // --- Resolve key ---
+  // The project's own key when it has one; otherwise the seed comes from the
+  // client/global chain with no project directory, so neither strict mode
+  // (which would refuse the fallback) nor an enclosing project's key decides
+  // which agent this project is set up for.
   const generic = getClient('generic');
+  const existingProjectKey = await generic.getProjectKey(projectDir);
   let apiKey;
   if (apiKeyParam) {
     apiKey = apiKeyParam.trim();
+  } else if (existingProjectKey) {
+    apiKey = existingProjectKey.key;
+    lines.push(`Key resolved from: ${existingProjectKey.source}`);
   } else {
     const client = getClient(process.env.MIDBRAIN_CLIENT);
-    const result = await client.resolveKey(projectDir);
+    const result = await client.resolveKey(undefined, { skipProject: true });
     if (!result) {
       throw new Error("No API key found. Run the installer first (npx midbrain-memory-mcp install).");
     }
@@ -1239,9 +1252,11 @@ async function setupProject(rawPath, opts = {}) {
 
   // --- Ensure project has its own key file ---
   let keyCreated = false;
-  const existingProjectKey = await generic.getProjectKey(projectDir);
   if (existingProjectKey) {
     lines.push("Existing project key preserved.");
+    if (apiKeyParam && existingProjectKey.key !== apiKey) {
+      lines.push("Note: the supplied api_key differs from the existing project key, which is kept; use set_agent to replace it.");
+    }
   } else {
     const keyPath = await generic.setProjectKey(projectDir, apiKey);
     keyCreated = true;
