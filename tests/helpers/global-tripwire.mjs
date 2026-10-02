@@ -2,15 +2,16 @@
  * Real-home tripwire (PRD-034 S4, AC-8 / B10).
  *
  * Vitest globalSetup: records SHA-256 hashes of the real user's client config
- * surfaces before the suite and fails the run if any of them changed after.
- * Hash-only by design — real-config content is never logged, asserted on, or
- * echoed; a drift report prints paths only.
+ * surfaces, and a count of every entry in the real offline cache, before the
+ * suite and fails the run if either changed after. Hash-only by design —
+ * real-config and cache content is never logged, asserted on, or echoed; a
+ * drift report prints paths and counts only.
  *
  * Runs in the vitest main process, before any test worker overrides HOME.
  */
 
 import { createHash } from 'crypto';
-import { readFileSync, statSync } from 'fs';
+import { readdirSync, readFileSync, statSync } from 'fs';
 import os from 'os';
 import path from 'path';
 
@@ -71,10 +72,79 @@ export function tripwireSurfaces(home = os.homedir()) {
 }
 
 /**
+ * Real MidBrain state directories whose CONTENTS are watched, not just a fixed
+ * file list: the offline episodic cache names files by a hashed key scope, so
+ * a leaking test creates a file no static surface list can name (#88).
+ * Workers scrub MIDBRAIN_STATE_DIR, so a leak lands in the default location.
+ * The log dir is deliberately not watched: live client sessions append to it
+ * during a run, so it would fail the tripwire on every dogfooding machine.
+ */
+export function tripwireStateDirs(home = os.homedir()) {
+  return [path.join(home, '.cache', 'midbrain')];
+}
+
+const CACHE_FILE = /\.ndjson(\.processing)?$/;
+
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** Hash of what identifies a cache entry: its role and text. Content stays private. */
+function cacheEntryKey(line) {
+  try {
+    const entry = JSON.parse(line);
+    return sha256(JSON.stringify([entry.role ?? null, entry.text ?? null]));
+  } catch {
+    return sha256(line);
+  }
+}
+
+/**
+ * Count the entries in each cache directory, keyed by entry hash. Live and
+ * in-flight (.processing) files both count, so a boot-time drain that renames
+ * the file, re-caches a failed entry or deletes the batch never raises a
+ * count; only an entry the run added does (a leaking test, or a live
+ * client's failed capture).
+ *
+ * @returns {Record<string, Record<string, number>>} dir -> entry hash -> count
+ */
+export function snapshotCacheEntries(dirs) {
+  const out = {};
+  for (const dir of dirs) {
+    let names;
+    try { names = readdirSync(dir); } catch { continue; }
+    const counts = {};
+    for (const name of names) {
+      if (!CACHE_FILE.test(name)) continue;
+      let text;
+      try { text = readFileSync(path.join(dir, name), 'utf8'); } catch { continue; }
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        const key = cacheEntryKey(line);
+        counts[key] = (counts[key] ?? 0) + 1;
+      }
+    }
+    out[dir] = counts;
+  }
+  return out;
+}
+
+/** @returns {string[]} one line per directory that holds entries it did not hold before. */
+export function diffCacheEntries(before, after) {
+  const drifted = [];
+  for (const [dir, counts] of Object.entries(after)) {
+    const prior = before[dir] ?? {};
+    let added = 0;
+    for (const [key, count] of Object.entries(counts)) added += Math.max(0, count - (prior[key] ?? 0));
+    if (added > 0) drifted.push(`${dir}: ${added} new cache ${added === 1 ? 'entry' : 'entries'}`);
+  }
+  return drifted;
+}
+
+/**
  * Hash each path. Missing/unreadable -> ABSENT sentinel; a directory -> DIR
  * sentinel — so creation and deletion of files AND directories all register
- * as drift.
- * @returns {Record<string, string>}
+ * as drift (e.g. the OpenCode legacy `clients/` tree cleanup).
  */
 export function collectHashes(paths) {
   const out = {};
@@ -83,7 +153,7 @@ export function collectHashes(paths) {
       if (statSync(p).isDirectory()) {
         out[p] = DIR;
       } else {
-        out[p] = createHash('sha256').update(readFileSync(p)).digest('hex');
+        out[p] = sha256(readFileSync(p));
       }
     } catch {
       out[p] = ABSENT;
@@ -101,27 +171,45 @@ export function diffHashes(before, after) {
   return drifted;
 }
 
+/**
+ * Everything the tripwire watches for one home, in one record: config surface
+ * hashes plus cache entry counts. The globalSetup below and
+ * scripts/check-test-isolation.sh both snapshot and diff through these two
+ * functions, so a leak one can see, the other can too.
+ */
+export function snapshotWatched(home = os.homedir()) {
+  return {
+    surfaces: collectHashes(tripwireSurfaces(home)),
+    cache: snapshotCacheEntries(tripwireStateDirs(home)),
+  };
+}
+
+/** @returns {string[]} drift lines: changed surface paths, then cache dirs with new entries. */
+export function diffWatched(before, after) {
+  return [
+    ...diffHashes(before.surfaces, after.surfaces),
+    ...diffCacheEntries(before.cache ?? {}, after.cache ?? {}),
+  ];
+}
+
 let baseline = null;
-let surfaces = null;
 
 export function setup() {
-  surfaces = tripwireSurfaces();
-  baseline = collectHashes(surfaces);
+  baseline = snapshotWatched();
 }
 
 export function teardown() {
-  const after = collectHashes(surfaces);
-  const drifted = diffHashes(baseline, after);
+  const drifted = diffWatched(baseline, snapshotWatched());
   if (drifted.length > 0) {
     // process.exitCode (not just a throw): vitest 4 logs a teardown error but
-    // still exits 0, which would let a config-mutating suite pass CI. The
+    // may still exit 0 when all tests passed (observed in CI); setting the
     // explicit exit code makes drift fail the run (AC-8/B10).
     process.exitCode = 1;
     throw new Error(
-      '[midbrain tripwire] REAL client config changed during the test run:\n' +
+      '[midbrain tripwire] REAL client config or MidBrain cache changed during the test run:\n' +
       drifted.map((p) => `  - ${p}`).join('\n') +
-      '\nIf a live AI client session was active on this machine, re-run the suite in a quiet window.' +
-      '\nIf this reproduces in isolation, a test is mutating real config — fix the test before anything else.',
+      '\nIf a live AI client session was active on this machine (a failed capture adds a cache entry), re-run the suite in a quiet window.' +
+      '\nIf this reproduces in isolation, a test is writing real state — fix the test before anything else.',
     );
   }
 }

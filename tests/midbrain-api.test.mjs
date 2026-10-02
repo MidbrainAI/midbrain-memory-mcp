@@ -272,14 +272,21 @@ describe("MidbrainApi diagnostic output audit", () => {
 describe("MidbrainApi.storeEpisodic", () => {
   let fetchSpy;
   let api;
+  let tmpDir;
 
   beforeEach(() => {
+    // Failed stores append to the offline cache; keep that cache in a temp dir
+    // so the suite never writes the developer's real ~/.cache/midbrain (#88).
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-store-episodic-"));
+    _setCachePath(tmpDir);
     fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, status: 200 });
     api = new MidbrainApi("test-key", "test-source");
   });
 
   afterEach(() => {
     fetchSpy.mockRestore();
+    _setCachePath(null);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("POSTs to the episodic endpoint with correct body", async () => {
