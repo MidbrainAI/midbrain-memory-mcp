@@ -30,6 +30,7 @@ import { randomUUID } from "crypto";
 import { fileURLToPath } from "url";
 
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
+import { hookProjectDir, logProjectFallback } from "../../shared/project-dir.mjs";
 import { appendToCache } from "../../shared/episodic-cache.mjs";
 import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
@@ -51,7 +52,7 @@ const STORE_TIME_LIMIT_ENV = "MIDBRAIN_CURSOR_STORE_TIMEOUT_MS";
 export const CONTINUE = Object.freeze({ continue: true });
 
 export async function createApi(cwd) {
-  return MidbrainApi.create(getClient(CLIENT), cwd);
+  return MidbrainApi.create(getClient(CLIENT), hookProjectDir(cwd));
 }
 
 function text(value) {
@@ -159,6 +160,7 @@ export async function storeUserJob(job, deps = makeDefaultDeps()) {
   let api;
   const work = (async () => {
     api = await deps.createApi(job.cwd);
+    logProjectFallback(api, deps.logger);
     const stored = await api.storeEpisodic(job.prompt, "user", deps.logger, metadata);
     return stored === false ? "failed" : "stored";
   })().catch((err) => {

@@ -74,6 +74,18 @@ describe("Codex hook capture", () => {
     ]);
   });
 
+  it("captureUser logs when a non-project key answers for the hook's cwd (#92)", async () => {
+    deps.api.projectFallbackNote = "no project key covers the project directory; captures from it use the global key";
+    deps.api.requestedProjectDir = "/repo";
+    await captureUser({ prompt: "remember this", cwd: "/repo" }, deps);
+    expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^SCOPE: no project key covers.*\(project directory: \/repo\)$/));
+  });
+
+  it("captureUser logs nothing about scope when the project key wins (#92)", async () => {
+    await captureUser({ prompt: "remember this", cwd: "/repo" }, deps);
+    expect(deps.logger.warn).not.toHaveBeenCalledWith(expect.stringMatching(/^SCOPE:/));
+  });
+
   it("captureUser resolves the API key once and skips PK search by default", async () => {
     deps.api.searchProcedural.mockResolvedValueOnce([
       { id: 1, title: "Git", content: "squash before merge" },
@@ -498,6 +510,36 @@ describe("Codex hook wrappers", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("");
+  });
+
+  it("UserPromptSubmit wrapper from a project subfolder uses the project key, not the global one (#92)", () => {
+    const home = tempHomeWithNamedKey("global-key");
+    const project = path.join(home, "work", "proj");
+    fs.mkdirSync(path.join(project, ".midbrain"), { recursive: true });
+    fs.writeFileSync(path.join(project, ".midbrain", ".midbrain-key"), "project-key\n", { mode: 0o600 });
+    const sub = path.join(project, "packages", "api");
+    fs.mkdirSync(sub, { recursive: true });
+    const loaded = preloadWithRequestLog();
+    const fetchLog = path.join(home, "fetch-log.ndjson");
+    try {
+      const result = spawnSync(process.execPath, [
+        "--import", pathToFileURL(loaded.file).href,
+        path.join(REPO_ROOT, "plugins", "codex", "capture-user.mjs"),
+      ], {
+        input: JSON.stringify({ prompt: "from a subfolder", cwd: sub }),
+        encoding: "utf8",
+        env: sandboxHomeEnv(home, { MIDBRAIN_TEST_FETCH_LOG: fetchLog, MIDBRAIN_TEST_FETCH_MODE: "ok" }),
+      });
+      expect(result.status).toBe(0);
+      const posts = readFetchLog(fetchLog).filter((r) => r.url.includes("/memories/episodic"));
+      expect(posts).toHaveLength(1);
+      expect(posts[0].authorization).toBe("Bearer project-key");
+      const log = fs.readFileSync(path.join(home, "logs", "midbrain-codex.log"), "utf8");
+      expect(log).not.toContain("SCOPE:");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(loaded.dir, { recursive: true, force: true });
+    }
   });
 
   it("UserPromptSubmit wrapper caches an outage memory under the current key scope (issue #53: no per-store flush; a different key never re-POSTs it)", () => {

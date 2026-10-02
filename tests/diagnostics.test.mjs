@@ -8,6 +8,7 @@ import {
   assembleDiagnosticsReport,
   assembleResolutionFailureReport,
   credentialShadowNote,
+  fallbackReachesMainAgent,
   homeRelativePath,
   nextStepsFor,
   probeApi,
@@ -135,6 +136,63 @@ describe("assembleDiagnosticsReport", () => {
     const report = assembleDiagnosticsReport({ ...BASE_STATE, projectDir: undefined });
     expect(report).toContain("project: not configured");
     expect(report).not.toContain("undefined");
+  });
+});
+
+describe("project fallback (#92)", () => {
+  const NOTE = "no project key covers the project directory; captures from it use the global key";
+
+  it("adds the project step and both notes when the global key answers for the project", () => {
+    const state = { ...BASE_STATE, projectFallbackNote: NOTE };
+    expect(nextStepsFor(state).join("\n")).toContain("memory_setup_project");
+    const report = assembleDiagnosticsReport(state);
+    expect(report).toContain("project: ~/project");
+    expect(report).toContain("project_root: none (no project key in the project directory, its parent directories");
+    expect(report).toContain(`note: ${NOTE}`);
+    expect(report).toContain("note: the key answering for the project equals the global key, so those captures land in the main agent");
+    expect(report).not.toContain("alice");
+  });
+
+  it("names the main agent only when the client key equals the global key", () => {
+    const clientWins = (sameAsGlobal) => ({
+      projectFallbackNote: NOTE,
+      keyScope: "client",
+      credentialScopes: [{ scope: "client", winner: true, sameAsGlobal }, { scope: "global", status: "present" }],
+    });
+    expect(fallbackReachesMainAgent(clientWins(true))).toBe(true);
+    expect(fallbackReachesMainAgent(clientWins(false))).toBe(false);
+    expect(fallbackReachesMainAgent({
+      projectFallbackNote: NOTE,
+      keyScope: "environment",
+      credentialScopes: [{ scope: "environment", winner: true, sameAsGlobal: true }],
+    })).toBe(true);
+    expect(fallbackReachesMainAgent({ keyScope: "global", projectFallbackNote: null })).toBe(false);
+    expect(assembleDiagnosticsReport({ ...BASE_STATE, ...clientWins(false), keySource: "/Users/alice/.config/codex/.midbrain-key" }))
+      .not.toContain("main agent");
+  });
+
+  it("shows the project root and no note when the project key wins", () => {
+    const report = assembleDiagnosticsReport({
+      ...BASE_STATE,
+      keyScope: "project",
+      keySource: "/Users/alice/project/.midbrain/.midbrain-key",
+      projectRoot: "/Users/alice/project",
+    });
+    expect(report).toContain("project_root: ~/project");
+    expect(report).not.toContain("note:");
+  });
+
+  it("explains a strict-mode refusal in the failure report instead of blaming a file", () => {
+    const error = Object.assign(new Error('No project key found under "/Users/alice/project" and MIDBRAIN_STRICT_PROJECT=1'), { code: "PROJECT_KEY_REQUIRED" });
+    const report = assembleResolutionFailureReport({ ...BASE_STATE, error });
+    expect(report).toContain("credential_error: no project key for the configured project (MIDBRAIN_STRICT_PROJECT=1 withholds the fallback)");
+    expect(report).toContain("run memory_setup_project in the project root");
+    expect(report).not.toContain("repair the credential file");
+    expect(report).not.toContain("alice");
+  });
+
+  it("omits project_root when no project is configured", () => {
+    expect(assembleDiagnosticsReport({ ...BASE_STATE, projectDir: undefined })).not.toContain("project_root");
   });
 });
 

@@ -11,6 +11,7 @@ import os from "os";
 import path from "path";
 
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
+import { hookProjectDir, logProjectFallback } from "../../shared/project-dir.mjs";
 import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 
@@ -71,14 +72,16 @@ export function isNoKeyError(err) {
  * @returns {Promise<MidbrainApi>}
  */
 export async function createApi(cwd, { waitForKey = false, clientLabel } = {}) {
-  const projectDir = cwd?.trim() || undefined;
+  const projectDir = hookProjectDir(cwd);
   const client = getClient("claude");
   const resolvedClientLabel = clientLabel || await captureClientLabel();
   const deadline = Date.now() + (waitForKey ? keyWaitDeadlineMs() : 0);
   const pollMs = keyWaitPollMs();
   for (;;) {
     try {
-      return await MidbrainApi.create(client, projectDir, { clientLabel: resolvedClientLabel });
+      const api = await MidbrainApi.create(client, projectDir, { clientLabel: resolvedClientLabel });
+      logProjectFallback(api, log);
+      return api;
     } catch (err) {
       if (!isNoKeyError(err) || Date.now() + pollMs > deadline) throw err;
       await sleep(pollMs);

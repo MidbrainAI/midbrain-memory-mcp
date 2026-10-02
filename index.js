@@ -70,6 +70,12 @@ if (isMain) {
       console.error("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool OR hook hermes user|assistant OR hook cursor user|assistant|tool");
       process.exit(2);
     }
+  } else if (process.argv[2] === "capture-user" || process.argv[2] === "capture-assistant") {
+    // Legacy form written by early project-level Claude settings: the hooks
+    // did nothing, so the capture silently never happened (issue #92).
+    const role = process.argv[2] === "capture-user" ? "user" : "assistant";
+    console.error(`[midbrain] "${process.argv[2]}" is the legacy form of "hook claude ${role}"; re-run the installer to refresh the hook command.`);
+    await import(role === "user" ? "./plugins/claude-code/capture-user.mjs" : "./plugins/claude-code/capture-assistant.mjs");
   } else if (process.argv[2] === "install") {
     const { runInstallerCli } = await import("./install.mjs");
     await runInstallerCli(process.argv.slice(3));

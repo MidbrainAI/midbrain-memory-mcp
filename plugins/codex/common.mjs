@@ -10,6 +10,7 @@ import path from "path";
 import { createHash, randomUUID } from "crypto";
 
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
+import { hookProjectDir, logProjectFallback } from "../../shared/project-dir.mjs";
 import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
@@ -30,7 +31,7 @@ const SECRET_VALUE_RES = [
 const INPUT_KEYS = ["cmd", "command", "query", "pattern", "q", "path", "file_path", "ref_id"];
 
 export async function createApi(cwd) {
-  return MidbrainApi.create(getClient("codex"), cwd);
+  return MidbrainApi.create(getClient("codex"), hookProjectDir(cwd));
 }
 
 /**
@@ -51,6 +52,7 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
   let api;
   try {
     api = await deps.createApi(projectDir);
+    logProjectFallback(api, deps.logger);
   } catch (err) {
     safeLog(deps.logger, `CODEX CAPTURE ERROR (user): ${errorMessage(err)}`);
     return undefined;
@@ -158,6 +160,7 @@ async function postEpisodic(text, role, input, deps, api) {
     const cwd = typeof input?.cwd === "string" && input.cwd.trim() ? input.cwd : undefined;
     if (!api) {
       api = await deps.createApi(cwd);
+      logProjectFallback(api, deps.logger);
     }
     const metadata = buildCaptureMetadata({ client, cwd, sessionId: input?.session_id });
     const stored = await Promise.resolve(api.storeEpisodic(text, role, deps.logger, metadata));

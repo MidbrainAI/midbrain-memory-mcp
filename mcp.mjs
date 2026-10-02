@@ -13,6 +13,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { MidbrainApi } from "./shared/midbrain-api.mjs";
+import { configuredProjectDir } from "./shared/project-dir.mjs";
 import { getClient } from "./shared/clients/registry.mjs";
 import { setupProject } from "./install.mjs";
 import {
@@ -27,17 +28,12 @@ import { CredentialReplaceNotApprovedError } from "./shared/clients/credential-w
 
 const EPISODIC_PAGE_LIMIT = 1000;
 const PEEK_TTL_MS = 60_000; // 1 minute cache
-const TERMINAL_CWD_PLACEHOLDER = "${TERMINAL_CWD}";
 
 /** Creates a MidbrainApi instance for the current environment. */
 export async function createApi() {
-  return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT), currentProjectDir());
+  return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT), configuredProjectDir());
 }
 
-function currentProjectDir() {
-  const configured = process.env.MIDBRAIN_PROJECT_DIR;
-  return configured === TERMINAL_CWD_PLACEHOLDER ? undefined : configured || undefined;
-}
 
 /** Creates a user-key authenticated MidbrainApi for account operations. */
 async function createAccountApi() {
@@ -433,7 +429,7 @@ probe, pending capture cache counts, safe locations, and actionable next steps.`
           probe,
           createApi,
           clientId: process.env.MIDBRAIN_CLIENT || "generic",
-          projectDir: currentProjectDir(),
+          projectDir: configuredProjectDir(),
         });
         return { content: [{ type: "text", text }] };
       } catch (err) {

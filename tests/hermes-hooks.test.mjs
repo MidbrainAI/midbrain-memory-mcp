@@ -38,6 +38,18 @@ describe("captureUser", () => {
     expect(stored).toEqual([{ text: "hello world", role: "user", metadata: { client: "hermes", cwd: "/proj" } }]);
   });
 
+  it("logs when a non-project key answers for the hook's cwd (#92)", async () => {
+    const { deps } = makeDeps();
+    deps.createApi = vi.fn(async () => ({
+      projectFallbackNote: "no project key covers the project directory; captures from it use the client key",
+      requestedProjectDir: "/proj",
+      storeEpisodic: vi.fn(async () => true),
+      searchProcedural: vi.fn(async () => []),
+    }));
+    await captureUser({ extra: { user_message: "hi" }, cwd: "/proj" }, deps);
+    expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/^SCOPE: no project key covers/));
+  });
+
   it("passes cwd through as the project dir for key resolution", async () => {
     const { deps } = makeDeps();
     await captureUser({ extra: { user_message: "hi" }, cwd: "/proj" }, deps);

@@ -22,7 +22,9 @@
 
 import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
-import { MidbrainApi, makeLogger, logFile, homeRelativePath, buildCaptureMetadata, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from "./midbrain-shared.mjs";
+import { MidbrainApi, makeLogger, logFile, homeRelativePath, buildCaptureMetadata, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext,
+  hookProjectDir, logProjectFallback,
+} from "./midbrain-shared.mjs";
 
 const OPENCODE_HISTORY_TIMEOUT_MS = 500;
 
@@ -78,11 +80,12 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
   let api: InstanceType<typeof MidbrainApi>;
   try {
-    api = await MidbrainApi.create(getClient("opencode"), directory);
+    api = await MidbrainApi.create(getClient("opencode"), hookProjectDir(directory));
     log.info(
       `INIT: dir=${homeRelativePath(directory)} credential_scope=${api.keyScope} ` +
       `host=${api.effectiveApiBase} host_scope=${api.apiBaseScope}`,
     );
+    logProjectFallback(api, log);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error(`INIT ERROR: ${msg}`);

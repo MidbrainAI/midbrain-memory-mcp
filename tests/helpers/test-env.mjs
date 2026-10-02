@@ -49,6 +49,7 @@ const MANAGED_ENV_KEYS = [
   'MIDBRAIN_TEST_SANDBOX',
   'MIDBRAIN_ENABLE_PK_INJECTION',
   'MIDBRAIN_DEV',
+  'MIDBRAIN_STRICT_PROJECT',
   'CI',
 ];
 
@@ -106,6 +107,7 @@ export async function makeTestEnv(opts = {}) {
     MIDBRAIN_TEST_SANDBOX: root,
     MIDBRAIN_ENABLE_PK_INJECTION: undefined,
     MIDBRAIN_DEV: undefined,
+    MIDBRAIN_STRICT_PROJECT: undefined,
     CI: undefined,
     ...extraEnv,
   };

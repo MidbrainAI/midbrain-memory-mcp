@@ -14,13 +14,14 @@
  */
 
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
+import { hookProjectDir, logProjectFallback } from "../../shared/project-dir.mjs";
 import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
 
 export async function createApi(cwd) {
-  return MidbrainApi.create(getClient("hermes"), cwd);
+  return MidbrainApi.create(getClient("hermes"), hookProjectDir(cwd));
 }
 
 /** Pull a trimmed string field from the Hermes payload's `extra` (or top level). */
@@ -67,6 +68,7 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
   let api;
   try {
     api = await deps.createApi(projectDir);
+    logProjectFallback(api, deps.logger);
   } catch (err) {
     safeLog(deps.logger, `HERMES CAPTURE ERROR (user): ${errorMessage(err)}`);
     return undefined;
@@ -102,6 +104,7 @@ export async function captureAssistant(input, deps = makeDefaultDeps()) {
   let api;
   try {
     api = await deps.createApi(projectDir);
+    logProjectFallback(api, deps.logger);
   } catch (err) {
     safeLog(deps.logger, `HERMES CAPTURE ERROR (assistant): ${errorMessage(err)}`);
     return undefined;

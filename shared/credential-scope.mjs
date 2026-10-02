@@ -22,8 +22,13 @@ function keyDigest(value) {
  */
 export function credentialShadowNote(scope, winnerKey, globalKey) {
   if (!winnerKey || !globalKey || !["project", "client"].includes(scope)) return null;
-  if (keyDigest(winnerKey) === keyDigest(globalKey)) return null;
+  if (sameCredential(winnerKey, globalKey)) return null;
   return `${scope} credential shadows the global credential for this client`;
+}
+
+/** True when two credentials have the same content. Compares digests only. */
+export function sameCredential(a, b) {
+  return Boolean(a && b) && keyDigest(a) === keyDigest(b);
 }
 
 /**
