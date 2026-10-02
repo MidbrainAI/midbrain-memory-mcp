@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { makeResetMocks, makeExistsFor, makeReadFileReturns } from "./fs-mock.mjs";
 import { makeTestEnv } from "./helpers/test-env.mjs";
-import { sandboxedChildEnv } from "./helpers/sandboxed-child-env.mjs";
+import { sandboxHomeEnv } from "./helpers/sandboxed-child-env.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
 import { PKG_VERSION } from "../shared/clients/utils.mjs";
 
@@ -59,15 +59,6 @@ const MCP_KEY = "midbrain-memory";
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
 const PK_ENV = "MIDBRAIN_ENABLE_PK_INJECTION";
-
-function hookChildEnv(home, extra = {}) {
-  return sandboxedChildEnv(process.env, {
-    HOME: home,
-    USERPROFILE: home,
-    MIDBRAIN_LOG_DIR: path.join(home, "logs"),
-    ...extra,
-  });
-}
 
 const PATHS = {
   claudeKey:      path.join(HOME, ".config", "claude", ".midbrain-key"),
@@ -404,8 +395,7 @@ describe("Claude capture-user hook wrapper", () => {
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
-      // os.homedir() reads USERPROFILE on Windows, HOME on POSIX; set both.
-      env: hookChildEnv(home, { [PK_ENV]: undefined, ...extraEnv }),
+      env: sandboxHomeEnv(home, extraEnv),
     });
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });
     return result;
@@ -537,10 +527,7 @@ describe("Claude capture-assistant hook wrapper", () => {
   }
 
   function runAssistant(home, loaded, transcript, extraEnv = {}) {
-    const env = hookChildEnv(home, extraEnv);
-    for (const [key, value] of Object.entries(env)) {
-      if (value === undefined) delete env[key];
-    }
+    const env = sandboxHomeEnv(home, extraEnv);
     return spawnSync(process.execPath, [
       "--import", pathToFileURL(loaded.file).href,
       path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
@@ -569,7 +556,7 @@ describe("Claude capture-assistant hook wrapper", () => {
     ], {
       input: JSON.stringify({ last_assistant_message: `${block}\n\nVisible response`, cwd: "/repo" }),
       encoding: "utf8",
-      env: hookChildEnv(home),
+      env: sandboxHomeEnv(home),
     });
 
     expect(result.status).toBe(0);
@@ -756,7 +743,7 @@ describe("Claude capture-assistant hook wrapper", () => {
         session_id: "fallback-session",
       }),
       encoding: "utf8",
-      env: hookChildEnv(home),
+      env: sandboxHomeEnv(home),
     });
 
     expect(result.status).toBe(0);
@@ -796,11 +783,7 @@ describe("Claude NanoClaw spool binding boundary", () => {
     ], {
       input: JSON.stringify({ ...payload, cwd: project }),
       encoding: "utf8",
-      env: hookChildEnv(home, {
-        MIDBRAIN_KEY_WAIT_MS: "0",
-        MIDBRAIN_API_KEY: undefined,
-        MIDBRAIN_API_URL: undefined,
-      }),
+      env: sandboxHomeEnv(home, { MIDBRAIN_KEY_WAIT_MS: "0" }),
     });
 
     expect(result.status).toBe(0);
@@ -874,7 +857,7 @@ describe("Claude capture hooks client label (issue #48)", () => {
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
-      env: hookChildEnv(home, { [PK_ENV]: undefined, [CAPTURE_ENV]: undefined, ...extraEnv }),
+      env: sandboxHomeEnv(home, extraEnv),
     });
     expect(result.status).toBe(0);
     const episodic = fsSync.readFileSync(logPath, "utf8").trim().split("\n")

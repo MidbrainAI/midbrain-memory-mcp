@@ -12,8 +12,6 @@
  */
 
 import { describe, it, expect } from "vitest";
-
-import { sandboxedChildEnv } from "./helpers/sandboxed-child-env.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fsSync from "node:fs";
@@ -21,6 +19,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { buildRulesBlock } from "../shared/agent-rules.mjs";
+import { sandboxedChildEnv } from "./helpers/sandboxed-child-env.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -85,6 +84,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     const result = spawnSync("bash", [SCRIPT_PATH], {
       cwd: REPO_ROOT,
       encoding: "utf8",
+      env: sandboxedChildEnv(process.env),
       timeout: 60000,
     });
     expect(result.status).toBe(0);
