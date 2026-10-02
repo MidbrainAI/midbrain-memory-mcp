@@ -15,22 +15,7 @@ import {
   captureUser,
 } from "../plugins/codex/common.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
-import { SCRUBBED_ENV_KEYS } from "./helpers/scrub-env.mjs";
-
-// Same ambient set the worker scrub already deletes, plus the account key,
-// which is not in that list. The wrapper must drop these itself: copying
-// process.env would still hand a real credential to the spawned hook.
-const WRAPPER_ENV_DROPS = [...SCRUBBED_ENV_KEYS, "MIDBRAIN_USER_API_KEY"];
-
-function sandboxedChildEnv(baseEnv, { home, logDir, stateDir }) {
-  const env = { ...baseEnv };
-  for (const key of WRAPPER_ENV_DROPS) delete env[key];
-  env.HOME = home;
-  env.USERPROFILE = home;
-  env.MIDBRAIN_LOG_DIR = logDir;
-  env.MIDBRAIN_STATE_DIR = stateDir;
-  return env;
-}
+import { sandboxHomeEnv } from "./helpers/sandboxed-child-env.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -400,7 +385,7 @@ describe("Codex hook wrappers", () => {
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
-      env: { ...process.env, HOME: home, USERPROFILE: home, [PK_ENV]: undefined, ...extraEnv },
+      env: sandboxHomeEnv(home, extraEnv),
     });
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(loaded.dir, { recursive: true, force: true });
@@ -453,16 +438,10 @@ describe("Codex hook wrappers", () => {
     ], {
       input: JSON.stringify({ prompt, cwd: path.join(home, "project") }),
       encoding: "utf8",
-      env: {
-        ...process.env,
-        HOME: home,
-        // os.homedir() reads USERPROFILE on Windows, HOME on POSIX; set both so
-        // key resolution and the episodic cache dir land in the sandbox home.
-        USERPROFILE: home,
-        [PK_ENV]: undefined,
+      env: sandboxHomeEnv(home, {
         MIDBRAIN_TEST_FETCH_LOG: fetchLog,
         MIDBRAIN_TEST_FETCH_MODE: mode,
-      },
+      }),
     });
   }
 
@@ -565,74 +544,51 @@ describe("Codex hook wrappers", () => {
     }
   });
 
-  it("drops inherited credentials and path overrides from the wrapper child", () => {
-    const home = "/tmp/midbrain-codex-wrapper-home";
-    const logDir = "/tmp/midbrain-codex-wrapper-home/logs";
-    const stateDir = "/tmp/midbrain-codex-wrapper-home/.midbrain-state";
-    const env = sandboxedChildEnv({
-      PATH: "/usr/bin",
-      HOME: "/real/home",
-      USERPROFILE: "/real/home",
-      MIDBRAIN_API_KEY: "secret-agent",
-      MIDBRAIN_USER_API_KEY: "secret-user",
-      MIDBRAIN_PROJECT_DIR: "/real/project",
-      MIDBRAIN_CONFIG_DIR: "/real/midbrain-config",
-      XDG_CONFIG_HOME: "/real/config",
-      XDG_STATE_HOME: "/real/state",
-    }, { home, logDir, stateDir });
-
-    expect(env.HOME).toBe(home);
-    expect(env.USERPROFILE).toBe(home);
-    expect(env.MIDBRAIN_LOG_DIR).toBe(logDir);
-    expect(env.MIDBRAIN_STATE_DIR).toBe(stateDir);
-    expect(env.PATH).toBe("/usr/bin");
-    for (const key of [
-      "MIDBRAIN_API_KEY",
-      "MIDBRAIN_USER_API_KEY",
-      "MIDBRAIN_PROJECT_DIR",
-      "MIDBRAIN_CONFIG_DIR",
-      "XDG_CONFIG_HOME",
-      "XDG_STATE_HOME",
-    ]) {
-      expect(env).not.toHaveProperty(key);
-    }
-  });
-
-  // The Stop/PostToolUse wrappers run in a throwaway HOME with a sandboxed
-  // log dir: with the real HOME they logged to the developer's real log dir
-  // and, on a machine with a Codex key, stored a memory in the real account
-  // (#88). Inherited API keys and path overrides are removed as well, so a
-  // credential in the parent environment cannot reach the child.
+  // The Stop/PostToolUse wrappers run in a throwaway home with their own log,
+  // cache and temp dirs: with the real HOME they logged to the developer's
+  // real log dir and, on a machine with a Codex key, stored a memory in the
+  // real account (#88). Inherited keys and path overrides are dropped, the
+  // update-check cache is pre-seeded, and fetch is stubbed and recorded, so
+  // the child can reach neither the real system nor the network.
   function runSandboxedWrapper(script, payload) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-codex-wrapper-"));
-    const logDir = path.join(home, "logs");
-    const stateDir = path.join(home, ".midbrain-state");
+    const loaded = preloadWithRequestLog();
+    const fetchLog = path.join(home, "fetch-log.ndjson");
     try {
-      const result = spawnSync(process.execPath, [path.join(REPO_ROOT, "plugins", "codex", script)], {
+      const result = spawnSync(process.execPath, [
+        "--import", pathToFileURL(loaded.file).href,
+        path.join(REPO_ROOT, "plugins", "codex", script),
+      ], {
         input: JSON.stringify(payload),
         encoding: "utf8",
-        env: sandboxedChildEnv(process.env, { home, logDir, stateDir }),
+        timeout: 15_000,
+        env: sandboxHomeEnv(home, { MIDBRAIN_TEST_FETCH_LOG: fetchLog }),
       });
+      const logDir = path.join(home, "logs");
       const logFiles = fs.existsSync(logDir) ? fs.readdirSync(logDir) : [];
-      return { result, logFiles };
+      return { result, logFiles, requests: readFetchLog(fetchLog) };
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(loaded.dir, { recursive: true, force: true });
     }
   }
 
   it("Stop wrapper exits zero and writes JSON stdout", () => {
-    const { result, logFiles } = runSandboxedWrapper("capture-assistant.mjs", { last_assistant_message: "hi" });
+    const { result, logFiles, requests } = runSandboxedWrapper("capture-assistant.mjs", { last_assistant_message: "hi" });
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("{}");
     // Its "no API key" error was logged inside the sandbox, not the real log dir.
     expect(logFiles).toContain("midbrain-codex.log");
+    // No key resolved and the update check found its fresh cache: no request left the child.
+    expect(requests).toEqual([]);
   });
 
   it("PostToolUse wrapper exits zero and writes JSON stdout", () => {
-    const { result } = runSandboxedWrapper("capture-tool.mjs", { tool_name: "Bash" });
+    const { result, requests } = runSandboxedWrapper("capture-tool.mjs", { tool_name: "Bash" });
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("{}");
+    expect(requests).toEqual([]);
   });
 });
