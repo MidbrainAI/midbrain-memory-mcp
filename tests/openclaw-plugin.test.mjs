@@ -107,19 +107,77 @@ describe("createAgentEndHandler", () => {
     expect(stored().map((s) => s.text)).toEqual(["one", "r1", "two", "r2"]);
   });
 
+  it("stores a failed-model retry once, then the reply when one finally arrives", async () => {
+    const onEnd = handler();
+    await onEnd({ success: true, messages: [user("same", 1)] }, CTX);
+    await onEnd({ success: true, messages: [user("same", 2)] }, CTX);
+    await onEnd({ success: true, messages: [user("same", 3)] }, CTX);
+    await onEnd({ success: true, messages: [user("same", 4), assistant("ok")] }, CTX);
+    await onEnd({ success: true, messages: [user("same", 5), assistant("again")] }, CTX);
+    expect(stored().map((s) => s.text)).toEqual(["same", "ok", "same", "again"]);
+  });
+
   it("stores only the prompt when the run produced no assistant text", async () => {
     await handler()({ success: true, messages: [user("q"), toolCall()] }, CTX);
     expect(stored().map((s) => s.role)).toEqual(["user"]);
   });
 
-  it("caches the entry when a store exceeds the time limit", async () => {
+  it("caches a store that is still in flight when the process exits", async () => {
     api.storeEpisodic = vi.fn(() => new Promise(() => {}));
-    await handler({ storeTimeLimitMs: 20 })({ success: true, messages: [user("slow"), assistant("")] }, CTX);
-    expect(cache).toHaveBeenCalledWith(
-      { text: "slow", role: "user", memory_metadata: expect.objectContaining({ client: "openclaw" }) },
-      "scope-1",
+    const running = handler({ storeTimeLimitMs: 60_000 })(
+      { success: true, messages: [user("slow"), assistant("reply")] },
+      CTX,
     );
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("OPENCLAW CAPTURE TIMEOUT (user)"));
+    await vi.waitFor(() => expect(api.storeEpisodic).toHaveBeenCalled());
+    process.emit("exit", 0);
+    expect(cache.mock.calls.map(([entry]) => entry.role)).toEqual(["user", "assistant"]);
+    expect(cache.mock.calls.map(([entry]) => entry.text)).toEqual(["slow", "reply"]);
+    running.catch(() => {});
+  });
+
+  it("stops waiting for a slow store but never caches it itself: a late success is stored once", async () => {
+    let finish;
+    api.storeEpisodic = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    await handler({ storeTimeLimitMs: 20 })({ success: true, messages: [user("slow"), assistant("")] }, CTX);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("OPENCLAW CAPTURE SLOW (user)"));
+    expect(cache).not.toHaveBeenCalled();
+
+    finish(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    process.emit("exit", 0);
+    // stored live, so there is nothing left for the exit flush to replay
+    expect(cache).not.toHaveBeenCalled();
+    expect(api.storeEpisodic).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a late failure to the API's own cache write instead of caching twice", async () => {
+    let fail;
+    api.storeEpisodic = vi.fn(() => new Promise((resolve) => { fail = resolve; }));
+    await handler({ storeTimeLimitMs: 20 })({ success: true, messages: [user("slow"), assistant("")] }, CTX);
+    fail(false); // MidbrainApi.storeEpisodic returns false after appending to the cache itself
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    process.emit("exit", 0);
+    expect(cache).not.toHaveBeenCalled();
+  });
+
+  it("holds identical prompts from two sessions separately for the exit flush", async () => {
+    api.storeEpisodic = vi.fn(() => new Promise(() => {}));
+    const onEnd = handler({ storeTimeLimitMs: 60_000 });
+    const a = onEnd({ success: true, messages: [user("yes")] }, { ...CTX, sessionKey: "a", sessionId: "sa" });
+    const b = onEnd({ success: true, messages: [user("yes")] }, { ...CTX, sessionKey: "b", sessionId: "sb" });
+    await vi.waitFor(() => expect(api.storeEpisodic).toHaveBeenCalledTimes(2));
+    process.emit("exit", 0);
+    expect(cache.mock.calls.map(([entry]) => entry.memory_metadata.session_id)).toEqual(["sa", "sb"]);
+    a.catch(() => {});
+    b.catch(() => {});
+  });
+
+  it("drops the turn, with a log line, when the API does not resolve within the limit", async () => {
+    createApi.mockImplementationOnce(() => new Promise(() => {}));
+    await handler({ storeTimeLimitMs: 20 })({ success: true, messages: [user("q"), assistant("a")] }, CTX);
+    expect(api.storeEpisodic).not.toHaveBeenCalled();
+    expect(cache).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("key/host not resolved after 20ms"));
   });
 
   it("never throws when the API cannot be created, and retries on the next turn", async () => {

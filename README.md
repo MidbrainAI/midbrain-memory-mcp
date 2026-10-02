@@ -879,7 +879,7 @@ Supported OpenClaw surfaces:
 | Surface | Memory search (MCP) | Capture (plugin) |
 |---|---|---|
 | Embedded/local agent runs (`openclaw agent --local`) | Yes | Yes (validated 2026-09-29, OpenClaw 2026.9.6) |
-| Gateway-served runs (Control UI, chat channels) | Same MCP server | Same plugin hook; not separately validated live |
+| Gateway-served runs (Control UI, chat channels) | Same MCP server | Yes (validated 2026-10-02, OpenClaw 2026.9.6) |
 
 What is captured: the plugin listens on OpenClaw's typed `agent_end` hook.
 `agent_end` carries the whole session history, so the plugin stores only the
@@ -889,8 +889,9 @@ triggers; it captures runs with trigger `user` or no trigger.
 
 Each capture sends `client: "openclaw"`, `session_id` from OpenClaw's
 `sessionId`, and `cwd` from the agent workspace directory. Capture is
-fail-open: each store has a 10-second limit, an unfinished store goes to the
-offline cache that drains at the next server start, and the handler never
+fail-open: the handler waits at most 10 seconds per store, a failed store
+goes to the offline cache that drains at the next server start, a store still
+in flight when the gateway exits is cached on exit, and the handler never
 throws, so it never breaks a turn.
 
 Limitations:
