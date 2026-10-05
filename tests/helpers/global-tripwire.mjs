@@ -28,6 +28,19 @@ export function tripwireSurfaces(home = os.homedir()) {
     ? path.resolve(process.env.HERMES_HOME.trim())
     : path.join(home, '.hermes');
   const opencodeDir = path.join(home, '.config', 'opencode');
+  // Mirrors openclaw.mjs state/config resolution from the ambient env,
+  // including the profile-suffixed state dir.
+  const openclawProfile = process.env.OPENCLAW_PROFILE?.trim();
+  const openclawStateName = openclawProfile && openclawProfile !== 'default'
+    ? `.openclaw-${openclawProfile}`
+    : '.openclaw';
+  const openclawState = process.env.OPENCLAW_STATE_DIR?.trim()
+    ? path.resolve(process.env.OPENCLAW_STATE_DIR.trim())
+    : path.join(process.env.OPENCLAW_HOME?.trim() || home, openclawStateName);
+  const openclawConfig = process.env.OPENCLAW_CONFIG_PATH?.trim()
+    ? path.resolve(process.env.OPENCLAW_CONFIG_PATH.trim())
+    : path.join(openclawState, 'openclaw.json');
+  const openclawPlugin = path.join(home, '.config', 'openclaw', 'midbrain-plugin');
   const nanoclawRoots = NANOCLAW_DIRS.map((dir) => path.join(home, dir));
   if (process.env.NANOCLAW_HOME?.trim()) {
     nanoclawRoots.unshift(path.resolve(process.env.NANOCLAW_HOME.trim()));
@@ -39,6 +52,11 @@ export function tripwireSurfaces(home = os.homedir()) {
     path.join(home, '.codex', 'hooks.json'),
     path.join(home, '.cursor', 'mcp.json'),
     path.join(home, '.cursor', 'hooks.json'),
+    openclawConfig,
+    path.join(openclawState, 'workspace', 'AGENTS.md'),
+    openclawPlugin,
+    ...['index.js', 'openclaw.plugin.json', 'package.json', 'midbrain-shared.mjs', '.midbrain-repo-root']
+      .map((name) => path.join(openclawPlugin, name)),
     path.join(hermesHome, 'config.yaml'),
     path.join(opencodeDir, 'opencode.json'),
     path.join(opencodeDir, 'opencode.jsonc'),
@@ -68,6 +86,7 @@ export function tripwireSurfaces(home = os.homedir()) {
     path.join(home, '.config', 'hermes', '.midbrain-key'),
     path.join(home, '.config', 'nanoclaw', '.midbrain-key'),
     path.join(home, '.config', 'cursor', '.midbrain-key'),
+    path.join(home, '.config', 'openclaw', '.midbrain-key'),
   ];
 }
 

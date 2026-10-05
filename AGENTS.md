@@ -4,7 +4,7 @@
 
 `midbrain-memory-mcp` is an MCP server plus capture hooks for persistent AI
 memory. It supports OpenCode, Claude Code, OpenAI Codex, Cursor, Hermes Agent,
-and NanoClaw.
+OpenClaw, and NanoClaw.
 
 Public package:
 
@@ -39,6 +39,7 @@ shared/
     cursor.mjs                   Cursor mcp.json and hooks.json
     nanoclaw.mjs                 NanoClaw skill copy
     hermes.mjs                   Hermes YAML config (mcp_servers + shell hooks)
+    openclaw.mjs                 OpenClaw JSON5 openclaw.json and plugin copy
     generic.mjs                  Fallback client
     registry.mjs                 getClient(), detectClients(), allClients()
 plugins/
@@ -47,6 +48,7 @@ plugins/
   codex/                         Codex hook scripts
   cursor/                        Cursor hook scripts (reuse the Codex runtime)
   hermes/                        Hermes shell-hook capture scripts
+  openclaw/                      OpenClaw gateway plugin (agent_end capture)
 skills/
   nanoclaw/                      /add-midbrain skill
 dist/
@@ -409,6 +411,48 @@ Hermes Agent:
   global key via the standard resolution chain). Detection keys on
   `~/.hermes/config.yaml` or `~/.hermes/`.
 
+OpenClaw:
+
+- `plugins/openclaw/index.js` runs in-process in the OpenClaw gateway and
+  imports runtime helpers from `./midbrain-shared.mjs` (the installed copy
+  receives the built bundle). It registers one handler on the typed
+  `agent_end` hook; `memory_search` stays in the MCP server.
+- `agent_end` carries the whole session history: the handler stores only the
+  newest user message and the final assistant text after it, once per session
+  turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
+  triggers (captures trigger `user` or no trigger). Metadata: `client
+  "openclaw"`, `session_id` from `ctx.sessionId`, `cwd` from the agent
+  workspace dir.
+- The handler waits at most 10 seconds per store, then moves on while the
+  store runs. A failed POST is cached by `MidbrainApi.storeEpisodic`; a POST
+  still in flight when the gateway exits is cached by the plugin's exit flush.
+  Nothing is cached twice. The handler never throws.
+- Config is `<state>/openclaw.json` (JSON5). State dir is `~/.openclaw`, or
+  `OPENCLAW_STATE_DIR`, `OPENCLAW_HOME`, `OPENCLAW_PROFILE`
+  (`~/.openclaw-<profile>`); `OPENCLAW_CONFIG_PATH` overrides the file.
+  Install writes `mcp.servers["midbrain-memory"]`, appends the plugin dir to
+  `plugins.load.paths`, and sets `plugins.entries["midbrain-memory"]` to
+  `{ enabled: true, hooks: { allowConversationAccess: true } }` (OpenClaw
+  requires it for a non-bundled plugin to receive `agent_end`).
+- Write strategy: JSON/JSONC-compatible file -> surgical `jsonc-parser` edit
+  (keeps comments, `.bak` backup); JSON5-only syntax with `openclaw` on PATH
+  -> `openclaw config patch --stdin`; otherwise JSON5 parse and rewrite as JSON
+  after a backup. Unexpected shapes fail closed. Nothing to change -> no write.
+- The plugin (`index.js`, `openclaw.plugin.json`, `package.json`, bundle, and
+  a `.midbrain-repo-root` version marker) is copied to
+  `~/.config/openclaw/midbrain-plugin/`. `isFresh()`/`repairPlugins()`
+  re-copy stale files on server start and never touch `openclaw.json`;
+  `--dev` installs stay pinned. A gateway restart loads a new plugin copy.
+- No project-level config: `installProject()` is a no-op. Global rules go into
+  the default agent workspace `AGENTS.md` (`OPENCLAW_WORKSPACE_DIR`, else
+  `agents.defaults.workspace`, else `<state>/workspace`) only when that file
+  already exists.
+- MCP tools appear as `midbrain-memory__<tool>` behind `tool_search` ->
+  `tool_describe` -> `tool_call`; OpenClaw's built-in `memory_search` is a
+  different tool.
+- Per-client key file: `~/.config/openclaw/.midbrain-key`. Detection keys on
+  `~/.openclaw/` (or the env-selected state dir / config file).
+
 ## Logging
 
 All file logging goes through `shared/logger.mjs`. Do not call `appendFileSync`
@@ -430,7 +474,8 @@ or hand-roll log files in plugins or hooks.
   - macOS: `~/Library/Logs/midbrain`
   - Windows: `%LOCALAPPDATA%/midbrain/logs` or `%APPDATA%/midbrain/logs`
 - Per-client log files: `midbrain-opencode.log`, `midbrain-claude.log`,
-  `midbrain-codex.log`, `midbrain-hermes.log`, `midbrain-cursor.log`.
+  `midbrain-codex.log`, `midbrain-hermes.log`, `midbrain-cursor.log`,
+  `midbrain-openclaw.log`.
 - `MidbrainApi.storeEpisodic(text, role, logger, metadata)` takes a logger
   object (not a bare function). Pass the client's `log`/`logger` instance.
 
@@ -495,7 +540,9 @@ global file); Claude uses `CLAUDE.md`; Hermes uses
 global `SOUL.md` and prefers an existing project `.hermes.md`, then `HERMES.md`,
 otherwise `AGENTS.md`. NanoClaw updates shared `container/CLAUDE.md` and every
 existing group's writable `CLAUDE.local.md`; composed `CLAUDE.md` files are
-never edited. `--no-rules` remains the explicit opt-out.
+never edited. OpenClaw uses the default agent workspace `AGENTS.md` (global
+only, and only once OpenClaw created it). `--no-rules` remains the explicit
+opt-out.
 
 ## Installer Rules
 
@@ -524,7 +571,7 @@ never edited. `--no-rules` remains the explicit opt-out.
   `clients/` files);
   everything else under `~/.config/opencode/plugins/` is user-owned.
 - `--dev` marks MCP entries with `MIDBRAIN_DEV: "1"`, writes dev-marked
-  shim bodies, and dev-flags the OpenCode plugin marker; automatic repair
+  shim bodies, and dev-flags the OpenCode and OpenClaw plugin markers; automatic repair
   never reverts any of them (dev instances also never auto-propagate).
   Explicit `install` (no flag) restores canonical and drops the markers.
 - `setupProject()` writes project key/config files and returns structured
@@ -539,7 +586,8 @@ never edited. `--no-rules` remains the explicit opt-out.
 - Use `process.execPath` when writing direct Node commands into configs.
 - JSONC config writes must preserve comments where supported.
 - OpenCode configs use `mcp`; Claude and Cursor configs use `mcpServers`;
-  Codex configs use TOML `[mcp_servers.<id>]` tables.
+  OpenClaw uses `mcp.servers` in JSON5 `openclaw.json`; Codex configs use
+  TOML `[mcp_servers.<id>]` tables.
 
 ## Development Practices
 
@@ -579,6 +627,8 @@ Vitest tests live in `tests/`.
 | `tests/client-claude.test.mjs` | `shared/clients/claude.mjs` |
 | `tests/client-cursor.test.mjs` | `shared/clients/cursor.mjs` |
 | `tests/cursor-hooks.test.mjs` | `plugins/cursor/*.mjs` |
+| `tests/client-openclaw.test.mjs` | `shared/clients/openclaw.mjs` |
+| `tests/openclaw-plugin.test.mjs` | `plugins/openclaw/index.js` |
 | `tests/client-registry.test.mjs` | `shared/clients/registry.mjs` |
 | `tests/install.test.mjs` | `install.mjs` |
 | `tests/mcp.test.mjs` | `mcp.mjs` / `index.js` |

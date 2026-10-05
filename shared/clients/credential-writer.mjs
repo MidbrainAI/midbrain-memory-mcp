@@ -13,7 +13,7 @@ import { KEY_FILENAME, MIDBRAIN_DIR } from './utils.mjs';
 import { globalConfigDir } from '../state-dir.mjs';
 
 const TEST_SANDBOX_ENV = 'MIDBRAIN_TEST_SANDBOX';
-const CLIENT_IDS = new Set(['opencode', 'claude', 'codex', 'nanoclaw', 'hermes', 'cursor']);
+const CLIENT_IDS = new Set(['opencode', 'claude', 'codex', 'nanoclaw', 'hermes', 'cursor', 'openclaw']);
 const CORRUPT_KEY_RE = /[\0\uFFFD]/;
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;

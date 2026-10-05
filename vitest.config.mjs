@@ -13,6 +13,7 @@ export default defineConfig({
     env: {
       HERMES_HOME: '/nonexistent/midbrain-poison/hermes',
       NANOCLAW_HOME: '/nonexistent/midbrain-poison/nanoclaw',
+      OPENCLAW_STATE_DIR: '/nonexistent/midbrain-poison/openclaw',
     },
     setupFiles: ['./tests/helpers/scrub-env.mjs'],
   },

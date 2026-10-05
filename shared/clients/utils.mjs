@@ -45,6 +45,26 @@ export const PKG_VERSION = _pkg.version || 'unknown';
 
 // --- Lazy accessors ---
 
+// Plugin-copy freshness marker, shared by the OpenCode and OpenClaw plugin
+// copies (PRD-034 S2/M6, AC-14). Version-only: the marker never embeds the
+// running instance's location. A dev install flags it so automatic repair pins
+// the checkout's plugin bytes; an explicit install rewrites the canonical value.
+export const PLUGIN_MARKER_FILE = '.midbrain-repo-root';
+export const PLUGIN_MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}`;
+export const PLUGIN_MARKER_VALUE_DEV = `${PLUGIN_MARKER_VALUE}-dev`;
+
+/** True for any dev-flagged marker, any version: dev pins never expire. */
+export function isDevMarkerValue(raw) {
+  if (typeof raw !== 'string') return false;
+  const value = raw.trim();
+  return value.startsWith(`${PKG_NAME}@`) && value.endsWith('-dev');
+}
+
+/** True when the running server itself was launched by a dev MCP entry. */
+export function isDevInstance() {
+  return Boolean(process.env[DEV_ENV_MARKER]);
+}
+
 export function home() { return os.homedir(); }
 
 // --- Filesystem helpers ---
@@ -154,7 +174,7 @@ function envObject(entry, envKey) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
-function isObjectRecord(value) {
+export function isObjectRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 

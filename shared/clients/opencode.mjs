@@ -12,7 +12,9 @@
 import { BaseClient, readKeyFile } from './base.mjs';
 import { writeCredential } from './credential-writer.mjs';
 import {
-  KEY_FILENAME, MCP_KEY, REPO_ROOT, PKG_NAME, PKG_VERSION,
+  KEY_FILENAME, MCP_KEY, REPO_ROOT,
+  PLUGIN_MARKER_FILE, PLUGIN_MARKER_VALUE, PLUGIN_MARKER_VALUE_DEV,
+  isDevMarkerValue, isDevInstance,
   home, backup, classifyEntry, formatMigrationLine, writeFileIfChanged,
   migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
@@ -41,27 +43,11 @@ function ownKeyPath() { return path.join(configDir(), KEY_FILENAME); }
 // --- Plugin deploy constants (single source of truth for copy + cleanup) ---
 const PLUGIN_FILE = 'midbrain-memory.ts';
 const BUNDLE_FILE = 'midbrain-shared.mjs';
-const MARKER_FILE = '.midbrain-repo-root';
-// Version-only (PRD-034 S2/M6): the marker must never embed the running
-// instance's location — freshness is version + content, not path identity.
-// Old `name@version:/path` markers mismatch once and migrate on first repair.
-const MARKER_VALUE = `${PKG_NAME}@${PKG_VERSION}`;
-// Dev installs flag the marker (AC-14): automatic repair treats it as pinned
-// regardless of version, mirroring dev shim bodies. Explicit non-dev install
-// rewrites the canonical value, clearing the flag.
-const MARKER_VALUE_DEV = `${MARKER_VALUE}-dev`;
-
-/** True for any dev-flagged marker, any version — dev pins never expire. */
-function isDevMarkerValue(raw) {
-  if (typeof raw !== 'string') return false;
-  const value = raw.trim();
-  return value.startsWith(`${PKG_NAME}@`) && value.endsWith('-dev');
-}
-
-/** True when the running server itself was launched by a dev MCP entry. */
-function isDevInstance() {
-  return Boolean(process.env.MIDBRAIN_DEV);
-}
+// Freshness marker and dev-pin helpers are shared with the OpenClaw plugin
+// copy (PRD-034 S2/M6, AC-14): see utils.mjs.
+const MARKER_FILE = PLUGIN_MARKER_FILE;
+const MARKER_VALUE = PLUGIN_MARKER_VALUE;
+const MARKER_VALUE_DEV = PLUGIN_MARKER_VALUE_DEV;
 
 // Closed list of legacy artifacts (AC-13): exactly what prior releases copied
 // into ~/.config/opencode/plugins/ (pre-bundle era: shared modules — incl.

@@ -18,6 +18,7 @@ import {
   home, readJson, writeJsonIfChanged,
   classifyEntry, formatMigrationLine,
   migrateReservedHostEnv, pinnedHostEnvLine,
+  isObjectRecord as isRecord,
 } from './utils.mjs';
 import {
   shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
@@ -42,10 +43,6 @@ function mcpPath() { return path.join(cursorDir(), 'mcp.json'); }
 function hooksPath() { return path.join(cursorDir(), 'hooks.json'); }
 function cfgDir() { return path.join(home(), '.config', CLIENT_ID); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
-
-function isRecord(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 /** Read a JSON object config; fail closed on anything that is not an object. */
 async function readConfigObject(filePath) {
