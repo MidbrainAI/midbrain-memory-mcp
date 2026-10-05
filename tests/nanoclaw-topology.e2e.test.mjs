@@ -695,7 +695,7 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
   it.skipIf(IS_WIN)("returns promptly and preserves an existing FIFO marker", async () => {
     await seedPre048Group();
     await fs.mkdir(path.dirname(markerPath()), { recursive: true });
-    const fifo = spawnSync("mkfifo", [markerPath()], { encoding: "utf8" });
+    const fifo = spawnSync("mkfifo", [markerPath()], { encoding: "utf8", env: env.childEnv() });
     expect(fifo.status).toBe(0);
     const installUrl = new URL("../install.mjs", import.meta.url).href;
     const script = `

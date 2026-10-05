@@ -34,6 +34,19 @@ export function sandboxedChildEnv(baseEnv, overrides = {}) {
 }
 
 /**
+ * Seed a fresh update-check cache in `dir`, so a child whose os.tmpdir() is
+ * `dir` finds the throttle fresh and never fetches the npm registry.
+ */
+export function seedUpdateCache(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, UPDATE_CACHE_FILENAME),
+    JSON.stringify({ lastCheck: Date.now() }),
+    "utf8",
+  );
+}
+
+/**
  * Child env whose home, logs and temp all live under `home`; the key, cache
  * and shim directories follow HOME by default (MIDBRAIN_STATE_DIR stays unset
  * unless the caller passes it). The temp dir carries a fresh update-check
@@ -43,12 +56,7 @@ export function sandboxedChildEnv(baseEnv, overrides = {}) {
  */
 export function sandboxHomeEnv(home, overrides = {}) {
   const tmp = path.join(home, "tmp");
-  fs.mkdirSync(tmp, { recursive: true });
-  fs.writeFileSync(
-    path.join(tmp, UPDATE_CACHE_FILENAME),
-    JSON.stringify({ lastCheck: Date.now() }),
-    "utf8",
-  );
+  seedUpdateCache(tmp);
   return sandboxedChildEnv(process.env, {
     HOME: home,
     USERPROFILE: home,

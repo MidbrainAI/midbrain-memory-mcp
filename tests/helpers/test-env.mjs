@@ -17,6 +17,8 @@ import { createRequire } from 'module';
 import os from 'os';
 import path from 'path';
 
+import { sandboxedChildEnv, seedUpdateCache } from './sandboxed-child-env.mjs';
+
 // Load the real builtin through CJS so Vitest ESM mocks in adapter tests cannot
 // replace the sandbox fixture's own filesystem operations.
 const fs = createRequire(import.meta.url)('node:fs/promises');
@@ -51,8 +53,6 @@ const MANAGED_ENV_KEYS = [
   'MIDBRAIN_DEV',
   'CI',
 ];
-
-const UPDATE_CACHE_FILENAME = '.midbrain-update-check.json';
 
 /**
  * Create an isolated sandbox environment.
@@ -116,13 +116,7 @@ export async function makeTestEnv(opts = {}) {
 
   const paths = sandboxPaths(home);
 
-  if (freshUpdateCache) {
-    await fs.writeFile(
-      path.join(tmp, UPDATE_CACHE_FILENAME),
-      JSON.stringify({ lastCheck: Date.now() }),
-      'utf8',
-    );
-  }
+  if (freshUpdateCache) seedUpdateCache(tmp);
 
   for (const client of clients) await seedClient(paths, client);
 
@@ -132,13 +126,9 @@ export async function makeTestEnv(opts = {}) {
     home,
     tmp,
     paths,
-    /** Spawn-ready env block: current process env view of the sandbox. */
+    /** Spawn-ready env block: the sandbox view, with nothing inherited. */
     childEnv(extra = {}) {
-      const out = { ...process.env, ...extra };
-      for (const key of MANAGED_ENV_KEYS) {
-        if (managed[key] === undefined && !(key in extra)) delete out[key];
-      }
-      return out;
+      return sandboxedChildEnv(process.env, { ...managed, ...extra });
     },
     snapshot: () => snapshotTree(root),
     async restore() {

@@ -19,6 +19,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { buildRulesBlock } from "../shared/agent-rules.mjs";
+import { sandboxedChildEnv } from "./helpers/sandboxed-child-env.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -83,6 +84,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
     const result = spawnSync("bash", [SCRIPT_PATH], {
       cwd: REPO_ROOT,
       encoding: "utf8",
+      env: sandboxedChildEnv(process.env),
       timeout: 60000,
     });
     expect(result.status).toBe(0);
@@ -136,7 +138,7 @@ describe("docs regression (PRD-011 §8 D-1..D-5)", () => {
       const result = spawnSync("npm", ["pack", "--dry-run", "--json"], {
         cwd: REPO_ROOT,
         encoding: "utf8",
-        env: { ...process.env, npm_config_cache: cacheDir },
+        env: sandboxedChildEnv(process.env, { npm_config_cache: cacheDir }),
         timeout: 60000,
         // npm is npm.cmd on Windows; shell resolution lets spawnSync find it.
         shell: process.platform === "win32",
