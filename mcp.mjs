@@ -15,6 +15,7 @@ import { z } from "zod";
 import { MidbrainApi } from "./shared/midbrain-api.mjs";
 import { configuredProjectDir } from "./shared/project-dir.mjs";
 import { getClient } from "./shared/clients/registry.mjs";
+import { syncCursorInstructionCache } from "./shared/clients/cursor.mjs";
 import { setupProject } from "./install.mjs";
 import {
   readGlobalKeystore,
@@ -24,6 +25,7 @@ import {
   resolveAgentRef,
 } from "./shared/keystore.mjs";
 import { runMemoryDiagnostics } from "./shared/diagnostics.mjs";
+import { loadIdentityContext } from "./shared/identity-context.mjs";
 import { CredentialReplaceNotApprovedError } from "./shared/clients/credential-writer.mjs";
 
 const EPISODIC_PAGE_LIMIT = 1000;
@@ -35,11 +37,53 @@ const PEEK_TTL_MS = 60_000; // 1 minute cache
 // unannotated (the spec defaults them to non-read-only).
 const READ_ONLY_TOOL = { readOnlyHint: true };
 
+// Clients that get persona and profile from the server instructions. Cursor's
+// hooks cannot add context in time; every other client injects them from its
+// own hooks or plugin, so adding them here would send them twice.
+const INSTRUCTION_IDENTITY_CLIENTS = new Set(["cursor"]);
+
 /** Creates a MidbrainApi instance for the current environment. */
 export async function createApi() {
   return MidbrainApi.create(getClient(process.env.MIDBRAIN_CLIENT), configuredProjectDir());
 }
 
+
+/**
+ * Read persona and profile for the server instructions, once at startup.
+ * Resolves undefined for other clients, a blank account, or any failure.
+ * Never throws.
+ *
+ * @param {{clientId?: string, createApiFn?: Function}} [opts]
+ * @returns {Promise<string|undefined>}
+ */
+export async function loadServerInstructions({
+  clientId = process.env.MIDBRAIN_CLIENT,
+  createApiFn = createApi,
+  syncInstructionCacheFn = syncCursorInstructionCache,
+  log = console.error,
+} = {}) {
+  if (!INSTRUCTION_IDENTITY_CLIENTS.has(clientId)) return undefined;
+  try {
+    const block = await loadIdentityContext(await createApiFn());
+    if (!block) {
+      log("[midbrain] persona/profile not added: both are blank or could not be read");
+      return undefined;
+    }
+    log(`[midbrain] persona/profile added to the server instructions (${block.length} chars)`);
+    // Cursor agents read instructions from a per-project cache file that the
+    // app often skips writing on reconnect; heal every existing MidBrain cache.
+    try {
+      const synced = await syncInstructionCacheFn(block);
+      if (synced > 0) {
+        log(`[midbrain] synced persona/profile into ${synced} Cursor MCP instruction cache(s)`);
+      }
+    } catch { /* never block readiness */ }
+    return block;
+  } catch (err) {
+    log(`[midbrain] persona/profile not added: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+}
 
 /** Creates a user-key authenticated MidbrainApi for account operations. */
 async function createAccountApi() {
@@ -71,13 +115,14 @@ function formatGrepResult(result) {
  * Creates and returns a fully configured McpServer with all tools registered.
  * Does NOT connect a transport — the caller is responsible for that.
  * @param {string} version - Package version string for the MCP server metadata.
+ * @param {{instructions?: string}} [opts] - Instructions sent in the initialize result.
  * @returns {McpServer}
  */
-export function createServer(version) {
+export function createServer(version, { instructions } = {}) {
   const server = new McpServer({
     name: "midbrain-memory",
     version: version || "unknown",
-  });
+  }, instructions ? { instructions } : undefined);
 
   // --- Recency peek state (scoped to this server instance) ---
   let lastSeenTimestamp = null;

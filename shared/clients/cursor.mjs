@@ -15,7 +15,7 @@ import { BaseClient, readKeyFile } from './base.mjs';
 import { writeCredential } from './credential-writer.mjs';
 import {
   KEY_FILENAME, MCP_KEY, REPO_ROOT,
-  home, readJson, writeJsonIfChanged,
+  home, readJson, writeJsonIfChanged, writeFileIfChanged,
   classifyEntry, formatMigrationLine,
   migrateReservedHostEnv, pinnedHostEnvLine,
   isObjectRecord as isRecord,
@@ -26,11 +26,16 @@ import {
 } from './shim.mjs';
 
 import { existsSync } from 'fs';
+import fs from 'fs/promises';
 import path from 'path';
 
 const CLIENT_ID = 'cursor';
 const HOOK_TIMEOUT_SEC = 10;
 const HOOKS_VERSION = 1;
+// Cursor agents read MCP instructions from this per-project cache folder.
+// The desktop app often skips writing INSTRUCTIONS.md when reconnecting to a
+// server that was first discovered without instructions.
+export const CURSOR_MCP_CACHE_ID = 'user-midbrain-memory';
 // Cursor event -> capture role passed to the stable shim.
 const HOOK_EVENTS = {
   beforeSubmitPrompt: 'user',
@@ -43,6 +48,42 @@ function mcpPath() { return path.join(cursorDir(), 'mcp.json'); }
 function hooksPath() { return path.join(cursorDir(), 'hooks.json'); }
 function cfgDir() { return path.join(home(), '.config', CLIENT_ID); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
+function projectsDir() { return path.join(cursorDir(), 'projects'); }
+
+/**
+ * Sync persona/profile into Cursor's per-project MCP instruction cache.
+ * Only touches existing `mcps/user-midbrain-memory` folders (never creates
+ * project trees). Content-compared; fail-open. Returns how many files changed.
+ *
+ * @param {string} block
+ * @returns {Promise<number>}
+ */
+export async function syncCursorInstructionCache(block) {
+  if (typeof block !== 'string' || !block) return 0;
+  let names;
+  try {
+    names = await fs.readdir(projectsDir());
+  } catch {
+    return 0;
+  }
+  let written = 0;
+  for (const name of names) {
+    const dir = path.join(projectsDir(), name, 'mcps', CURSOR_MCP_CACHE_ID);
+    try {
+      if (!(await fs.stat(dir)).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    try {
+      const meta = await readJson(path.join(dir, 'SERVER_METADATA.json'));
+      if (meta && !isRecord(meta)) continue;
+      if (meta?.serverName && meta.serverName !== MCP_KEY) continue;
+      if (meta?.serverIdentifier && meta.serverIdentifier !== CURSOR_MCP_CACHE_ID) continue;
+      if (await writeFileIfChanged(path.join(dir, 'INSTRUCTIONS.md'), block)) written += 1;
+    } catch { /* fail open per folder */ }
+  }
+  return written;
+}
 
 /** Read a JSON object config; fail closed on anything that is not an object. */
 async function readConfigObject(filePath) {
@@ -186,6 +227,15 @@ export class Cursor extends BaseClient {
 
   projectConfigFiles(_projectDir) {
     return ['.cursor/mcp.json'];
+  }
+
+  /** True when ~/.cursor/hooks.json carries a MidBrain hook. Never throws. */
+  async hasCaptureHooks() {
+    try {
+      const data = (await readJson(hooksPath())) || {};
+      return Object.keys(HOOK_EVENTS).some((event) =>
+        Array.isArray(data.hooks?.[event]) && data.hooks[event].some((hook) => isMidbrainHook(hook)));
+    } catch { return false; }
   }
 
   /**

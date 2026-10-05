@@ -70,6 +70,15 @@ afterAll(async () => {
   await testEnv.restore();
 });
 
+function writeCursorHooks(home) {
+  const dir = path.join(home, ".cursor");
+  fsSync.mkdirSync(dir, { recursive: true });
+  fsSync.writeFileSync(path.join(dir, "hooks.json"), JSON.stringify({
+    version: 1,
+    hooks: { beforeSubmitPrompt: [{ command: "~/.midbrain/bin/cursor-hook user", timeout: 10 }] },
+  }));
+}
+
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);
   err.code = code;
@@ -452,6 +461,23 @@ describe("Claude capture-user hook wrapper", () => {
     expect(payload.hookSpecificOutput.additionalContext).not.toContain("<!-- mb:ctx-start -->");
   });
 
+  it("steps aside when Cursor runs it and Cursor's MidBrain hooks are installed", () => {
+    const home = tempHomeWithKey();
+    writeCursorHooks(home);
+    const result = runHook({ prompt: "hello", cwd: "/repo", cursor_version: "3.23.12" }, { mode: "identity", home });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    fsSync.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("still injects under Cursor when Cursor has no MidBrain hooks", () => {
+    const result = runHook({ prompt: "hello", cwd: "/repo", cursor_version: "3.23.12" }, { mode: "identity" });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain("Be concise.");
+  });
+
   it("emits hookSpecificOutput.additionalContext when PK matches and injection is opted in", () => {
     const result = runHook(
       { prompt: "workflow please", cwd: "/repo" },
@@ -596,6 +622,28 @@ describe("Claude capture-assistant hook wrapper", () => {
     expect(body.text).toBe("Visible response");
     expect(body.text).not.toContain("Claude Echo");
     expect(body.text).not.toContain("<!-- mb:pk 33 -->");
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
+
+  it("stores nothing when Cursor runs it and Cursor's MidBrain hooks are installed", () => {
+    const home = tempHomeWithKey();
+    writeCursorHooks(home);
+    const logPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-")), "fetch.jsonl");
+    const loaded = preload(logPath);
+
+    const result = spawnSync(process.execPath, [
+      "--import", pathToFileURL(loaded.file).href,
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
+    ], {
+      input: JSON.stringify({ last_assistant_message: "Cursor reply", cwd: "/repo", cursor_version: "3.23.12" }),
+      encoding: "utf8",
+      env: sandboxHomeEnv(home),
+    });
+
+    expect(result.status).toBe(0);
+    expect(() => fsSync.readFileSync(logPath, "utf8")).toThrow(/ENOENT/);
     fsSync.rmSync(home, { recursive: true, force: true });
     fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });

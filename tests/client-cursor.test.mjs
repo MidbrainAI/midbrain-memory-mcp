@@ -11,7 +11,7 @@ import path from "path";
 
 import { makeTestEnv, assertSandboxed, diffSnapshots } from "./helpers/test-env.mjs";
 import { BaseClient } from "../shared/clients/base.mjs";
-import { Cursor } from "../shared/clients/cursor.mjs";
+import { Cursor, syncCursorInstructionCache, CURSOR_MCP_CACHE_ID } from "../shared/clients/cursor.mjs";
 import { buildShimBody, stableShimPath } from "../shared/clients/shim.mjs";
 
 const IS_WIN = process.platform === "win32";
@@ -266,6 +266,16 @@ describe("Cursor hook ownership, freshness, and repair", () => {
   it("isFresh is true when no MidBrain hooks are installed", async () => {
     await writeJsonFile(env.paths.cursorHooks, { version: 1, hooks: { stop: [{ command: "./a.sh" }] } });
     expect(await cursor.isFresh()).toBe(true);
+    expect(await cursor.hasCaptureHooks()).toBe(false);
+  });
+
+  it("reports installed capture hooks", async () => {
+    expect(await cursor.hasCaptureHooks()).toBe(true);
+  });
+
+  it("hasCaptureHooks is false for an unreadable hooks.json", async () => {
+    await fs.writeFile(env.paths.cursorHooks, "{ broken", "utf8");
+    expect(await cursor.hasCaptureHooks()).toBe(false);
   });
 
   it("repair reinstalls a stale shim without touching hooks.json", async () => {
@@ -286,6 +296,42 @@ describe("Cursor hook ownership, freshness, and repair", () => {
 
     await expect(cursor.repairHooks()).resolves.toEqual([]);
     expect(diffSnapshots(before, await env.snapshot())).toEqual([]);
+  });
+});
+
+describe("syncCursorInstructionCache", () => {
+  it("writes INSTRUCTIONS.md into existing MidBrain MCP cache folders only", async () => {
+    const cache = path.join(env.home, ".cursor", "projects", "proj-a", "mcps", CURSOR_MCP_CACHE_ID);
+    const other = path.join(env.home, ".cursor", "projects", "proj-b", "mcps", "user-other");
+    await fs.mkdir(cache, { recursive: true });
+    await fs.mkdir(other, { recursive: true });
+    await writeJsonFile(path.join(cache, "SERVER_METADATA.json"), {
+      serverIdentifier: CURSOR_MCP_CACHE_ID,
+      serverName: "midbrain-memory",
+    });
+
+    const block = "<!-- mb:identity-start -->\n## Agent persona\nBe concise.\n<!-- mb:identity-end -->";
+    expect(await syncCursorInstructionCache(block)).toBe(1);
+    expect(await fs.readFile(path.join(cache, "INSTRUCTIONS.md"), "utf8")).toBe(block);
+    await expect(fs.stat(path.join(other, "INSTRUCTIONS.md"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    // content-compared: second sync is a no-op
+    expect(await syncCursorInstructionCache(block)).toBe(0);
+  });
+
+  it("skips folders whose SERVER_METADATA names another server", async () => {
+    const cache = path.join(env.home, ".cursor", "projects", "proj-a", "mcps", CURSOR_MCP_CACHE_ID);
+    await fs.mkdir(cache, { recursive: true });
+    await writeJsonFile(path.join(cache, "SERVER_METADATA.json"), {
+      serverIdentifier: "user-other",
+      serverName: "other",
+    });
+    expect(await syncCursorInstructionCache("block")).toBe(0);
+  });
+
+  it("is fail-open when ~/.cursor/projects is missing", async () => {
+    await fs.rm(path.join(env.home, ".cursor"), { recursive: true, force: true });
+    expect(await syncCursorInstructionCache("block")).toBe(0);
   });
 });
 

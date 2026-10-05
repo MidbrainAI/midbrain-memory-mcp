@@ -15,7 +15,7 @@
  * turns within one session. min_score=0.5 limits repetition to relevant entries.
  */
 
-import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
+import { readStdinJSON, createApi, captureClientLabel, cursorHandlesHook, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
@@ -24,6 +24,7 @@ import { loadIdentityContext } from "../../shared/identity-context.mjs";
 async function captureUser() {
   const input = await readStdinJSON();
   if (!input?.prompt) return;
+  if (await cursorHandlesHook(input)) return;
 
   const client = await captureClientLabel();
   const metadata = buildCaptureMetadata({

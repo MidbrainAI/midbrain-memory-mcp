@@ -322,6 +322,19 @@ Cursor:
   no legacy forms.
 - `beforeSubmitPrompt` must always write `{"continue": true}`; the other
   wrappers write `{}`. Every path exits 0 (Cursor fails open by default).
+- Persona and profile reach Cursor through the MCP server `instructions`:
+  `startMcpServer` calls `loadServerInstructions()` before readiness, which
+  reads them only when `MIDBRAIN_CLIENT` is `cursor` and is fail-open.
+  After a successful read it also calls `syncCursorInstructionCache`, which
+  content-compares
+  `~/.cursor/projects/*/mcps/user-midbrain-memory/INSTRUCTIONS.md` for every
+  existing MidBrain cache folder (Cursor often omits that file on reconnect).
+  Do not use `sessionStart`: Cursor fires it with the first prompt and merges
+  its `additional_context` after that prompt reached the model (measured).
+- Cursor also runs Claude Code hooks (Third-Party Imports) with its own
+  payload, which carries `cursor_version`. The Claude hooks return without
+  capture or injection when they see it and `Cursor.hasCaptureHooks()` is
+  true, so a Cursor turn is not handled twice.
 - Cursor holds the prompt until the `beforeSubmitPrompt` process exits, so the
   user hook does no network work: it writes the mapped fields to a private
   0600 job file and starts a detached `plugins/cursor/store-user.mjs` child
@@ -507,8 +520,9 @@ Rules:
 Persona and profile are injected on the user turn by the Claude Code, Codex,
 Hermes, OpenCode, and OpenClaw paths. They are read-only (`GET /api/v1/persona`
 and `GET /api/v1/profile`), they are not MCP tools, and a failed read is
-skipped. Cursor's prompt hook does not inject them, because that hook does no
-network work. Helpers live in `shared/identity-context.mjs`.
+skipped. Cursor gets them from the MCP server instructions, read once at
+server start (`loadServerInstructions` in `mcp.mjs`), because no Cursor hook
+can add context in time. Helpers live in `shared/identity-context.mjs`.
 
 ## Memory-First Agent Rules
 

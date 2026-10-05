@@ -101,9 +101,10 @@ read `GET /api/v1/persona` and `GET /api/v1/profile` on each user turn and
 inject the descriptions into that turn's context (OpenClaw appends them to the
 system prompt). They are not MCP tools, and the
 hooks do not write either field. Each description is capped at 3,000
-characters. A blank field or a failed read is skipped. Cursor does not inject
-them: its prompt hook returns immediately and does no network work. The stored
-user prompt stays the original text.
+characters. A blank field or a failed read is skipped. Cursor gets them from
+the MidBrain MCP server's instructions instead, read once when the server
+starts, because no Cursor hook can add context in time. The stored user prompt
+stays the original text.
 
 Over time, captured memory can consolidate into procedural knowledge: the
 experience layer that helps agents adapt how they work, not just recall what
@@ -837,6 +838,21 @@ Limitations:
   summarized; stale buffers are removed after 24 hours.
 - Procedural-knowledge injection is not available: `beforeSubmitPrompt` cannot
   add context. `MIDBRAIN_ENABLE_PK_INJECTION` has no effect for Cursor.
+- Persona and profile come from the MidBrain MCP server's instructions, read
+  when the server starts (when Cursor loads the window). An edit shows up after
+  the server restarts, for example after a window reload. The hooks cannot
+  carry them: `beforeSubmitPrompt` cannot add context, and Cursor merges
+  `sessionStart` output only after the first prompt has gone to the model.
+  Cursor shows them to the model from
+  `~/.cursor/projects/*/mcps/user-midbrain-memory/INSTRUCTIONS.md`; the app
+  often skips writing that file when reconnecting to a server first discovered
+  without instructions, so MidBrain also syncs the file on server start for
+  every existing MidBrain cache folder. The server adds them only when
+  `MIDBRAIN_CLIENT` is `cursor`, so other clients do not get them twice.
+- Cursor also runs Claude Code hooks from `~/.claude/settings.json` (its
+  Third-Party Imports setting, on by default). When Cursor's MidBrain hooks are
+  installed, the MidBrain Claude hooks recognize Cursor's payload and do
+  nothing, so a Cursor turn is not stored twice or held for a persona read.
 - Latency: Cursor holds the prompt until the `beforeSubmitPrompt` hook process
   exits. MidBrain code in that hook returns at once and hands the store to a
   detached background process, which stops after 20 seconds and moves an
