@@ -415,8 +415,10 @@ OpenClaw:
 
 - `plugins/openclaw/index.js` runs in-process in the OpenClaw gateway and
   imports runtime helpers from `./midbrain-shared.mjs` (the installed copy
-  receives the built bundle). It registers one handler on the typed
-  `agent_end` hook; `memory_search` stays in the MCP server.
+  receives the built bundle). It registers a `before_prompt_build` handler
+  (persona/profile as `appendSystemContext`, user or no trigger only, 5 s
+  limit, fail-open) and an `agent_end` capture handler; `memory_search`
+  stays in the MCP server.
 - `agent_end` carries the whole session history: the handler stores only the
   newest user message and the final assistant text after it, once per session
   turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
@@ -503,7 +505,7 @@ Rules:
 - Use helpers in `shared/pk-inject.mjs`; do not duplicate marker parsing.
 
 Persona and profile are injected on the user turn by the Claude Code, Codex,
-Hermes, and OpenCode capture paths. They are read-only (`GET /api/v1/persona`
+Hermes, OpenCode, and OpenClaw paths. They are read-only (`GET /api/v1/persona`
 and `GET /api/v1/profile`), they are not MCP tools, and a failed read is
 skipped. Cursor's prompt hook does not inject them, because that hook does no
 network work. Helpers live in `shared/identity-context.mjs`.

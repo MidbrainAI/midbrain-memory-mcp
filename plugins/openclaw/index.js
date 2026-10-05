@@ -17,18 +17,24 @@
  *   because OpenClaw can finish the turn first. Nothing is cached twice. The
  *   handler never throws.
  *
+ * `before_prompt_build` reads the agent persona and user profile and appends
+ * them to the system prompt (`appendSystemContext`) on user-triggered runs.
+ * A blank field or a failed read adds nothing; it never throws.
+ *
  * The installer copies this file, its manifest, package.json and the bundled
  * dist/midbrain-shared.mjs to a stable directory and links it in openclaw.json.
  */
 
 import {
   MidbrainApi, appendToCache, makeLogger, logFile, buildCaptureMetadata, getClient,
-  scrubInjectedPkContext,
+  scrubInjectedPkContext, loadIdentityContext, scrubIdentityContext,
 } from "./midbrain-shared.mjs";
 
 export const CLIENT = "openclaw";
 export const PLUGIN_ID = "midbrain-memory";
 export const STORE_TIME_LIMIT_MS = 10_000;
+// Below OpenClaw's 15 s before_prompt_build timeout, so the turn never waits on it.
+export const IDENTITY_TIME_LIMIT_MS = 5_000;
 const CAPTURED_TRIGGERS = new Set(["user"]);
 
 /** Plain text of one OpenClaw message: string content or its text parts. */
@@ -197,7 +203,7 @@ export function createAgentEndHandler(deps = {}) {
       if (!turn) return;
       const session = ctx.sessionKey || ctx.sessionId || "";
       const prev = session ? lastTurn.get(session) : undefined;
-      const reply = scrubInjectedPkContext(turn.assistant);
+      const reply = scrubIdentityContext(scrubInjectedPkContext(turn.assistant));
       // A model failure is retried as a new success with a fresh timestamp and
       // no reply. The timestamp key would store the prompt again each time.
       const emptyRetry = prev && prev.user === turn.user && !prev.assistant && !reply;
@@ -224,11 +230,55 @@ export function createAgentEndHandler(deps = {}) {
   };
 }
 
+/**
+ * Build the `before_prompt_build` handler. `deps` exists for tests:
+ * createApi(cwd), logger and timeLimitMs.
+ */
+export function createPromptBuildHandler(deps = {}) {
+  const createApi = deps.createApi || ((cwd) => MidbrainApi.create(getClient(CLIENT), cwd));
+  const log = deps.logger || makeLogger(logFile("midbrain-openclaw.log"));
+  const limitMs = deps.timeLimitMs ?? IDENTITY_TIME_LIMIT_MS;
+  const apis = new Map();
+
+  function apiFor(cwd) {
+    const key = cwd || "";
+    if (!apis.has(key)) {
+      const created = Promise.resolve().then(() => createApi(cwd));
+      created.catch(() => apis.delete(key));
+      remember(apis, key, created);
+    }
+    return apis.get(key);
+  }
+
+  return async function onPromptBuild(_event, ctx = {}) {
+    if (ctx?.trigger !== undefined && !CAPTURED_TRIGGERS.has(ctx.trigger)) return undefined;
+    const cwd = typeof ctx?.workspaceDir === "string" ? ctx.workspaceDir : undefined;
+    const timer = expireAfter(limitMs);
+    try {
+      const work = apiFor(cwd).then((api) => loadIdentityContext(api));
+      const block = await Promise.race([work, timer.promise]);
+      if (block === "timeout") {
+        log.error(`OPENCLAW IDENTITY TIMEOUT: persona/profile not loaded after ${limitMs}ms`);
+        return undefined;
+      }
+      if (!block) return undefined;
+      log.info(`IDENTITY: session=${ctx.sessionId || "-"} system_context_len=${block.length}`);
+      return { appendSystemContext: block };
+    } catch (err) {
+      try { log.error(`OPENCLAW IDENTITY ERROR: ${errorMessage(err)}`); } catch { /* ignore */ }
+      return undefined;
+    } finally {
+      timer.cancel();
+    }
+  };
+}
+
 export default {
   id: PLUGIN_ID,
   name: "MidBrain Memory",
-  description: "Stores each user prompt and final assistant reply in MidBrain episodic memory.",
+  description: "Adds the MidBrain persona and profile to each turn and stores each prompt and final reply in episodic memory.",
   register(api) {
+    api.on("before_prompt_build", createPromptBuildHandler());
     api.on("agent_end", createAgentEndHandler());
   },
 };

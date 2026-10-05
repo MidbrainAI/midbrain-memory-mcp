@@ -1,7 +1,7 @@
 {
   "id": "midbrain-memory",
   "name": "MidBrain Memory",
-  "description": "Stores each user prompt and final assistant reply in MidBrain episodic memory.",
+  "description": "Adds the MidBrain persona and profile to each turn and stores each prompt and final reply in episodic memory.",
   "categories": ["other"],
   "activation": { "onStartup": true },
   "configSchema": { "type": "object", "additionalProperties": false }

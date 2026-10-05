@@ -96,9 +96,10 @@ call `/api/v1/memories/search/procedural` or prepend procedural context unless
 There is no manual MCP tool for procedural knowledge; agents should use the
 normal memory tools for explicit recall.
 
-**Persona and profile**: Claude Code, Codex, Hermes, and OpenCode read
-`GET /api/v1/persona` and `GET /api/v1/profile` on each user turn and inject
-the descriptions into that turn's context. They are not MCP tools, and the
+**Persona and profile**: Claude Code, Codex, Hermes, OpenCode, and OpenClaw
+read `GET /api/v1/persona` and `GET /api/v1/profile` on each user turn and
+inject the descriptions into that turn's context (OpenClaw appends them to the
+system prompt). They are not MCP tools, and the
 hooks do not write either field. Each description is capped at 3,000
 characters. A blank field or a failed read is skipped. Cursor does not inject
 them: its prompt hook returns immediately and does no network work. The stored
@@ -906,6 +907,13 @@ What is captured: the plugin listens on OpenClaw's typed `agent_end` hook.
 newest user message and the final assistant text after it, once per session
 turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
 triggers; it captures runs with trigger `user` or no trigger.
+
+The same plugin also listens on `before_prompt_build`. On user-triggered runs
+it reads the persona and profile and returns them as `appendSystemContext`, so
+OpenClaw appends them to the system prompt. It waits at most 5 seconds, a
+blank field or failed read adds nothing, and setting
+`plugins.entries["midbrain-memory"].hooks.allowPromptInjection` to `false`
+turns it off.
 
 Each capture sends `client: "openclaw"`, `session_id` from OpenClaw's
 `sessionId`, and `cwd` from the agent workspace directory. Capture is
