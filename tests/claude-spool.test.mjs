@@ -16,6 +16,8 @@ import os from "os";
 import path from "path";
 import { execFileSync, spawnSync } from "child_process";
 
+import { sandboxedChildEnv } from "./helpers/sandboxed-child-env.mjs";
+
 import {
   appendToSpool,
   beginSpoolFlush,
@@ -65,7 +67,7 @@ function probeFifoBinding(operation) {
     process.stdout.write(JSON.stringify(${expression}));
   `;
   return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
-    env: { ...process.env, MIDBRAIN_TEST_SPOOL_DIR: tmpDir },
+    env: sandboxedChildEnv(process.env, { MIDBRAIN_TEST_SPOOL_DIR: tmpDir }),
     encoding: "utf8",
     timeout: 1_000,
     killSignal: "SIGKILL",
@@ -83,7 +85,7 @@ function probeLockFlush() {
     process.stdout.write(JSON.stringify({ claimed: flush.claimed }));
   `;
   return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
-    env: { ...process.env, MIDBRAIN_TEST_SPOOL_DIR: tmpDir },
+    env: sandboxedChildEnv(process.env, { MIDBRAIN_TEST_SPOOL_DIR: tmpDir }),
     encoding: "utf8",
     timeout: 1_000,
     killSignal: "SIGKILL",
@@ -230,7 +232,7 @@ describe("appendToSpool", () => {
     "returns promptly when %s sees a FIFO binding sidecar",
     (operation) => {
       fs.unlinkSync(spoolBindingPath());
-      execFileSync("mkfifo", [spoolBindingPath()]);
+      execFileSync("mkfifo", [spoolBindingPath()], { env: sandboxedChildEnv(process.env) });
 
       const probe = probeFifoBinding(operation);
 
@@ -368,7 +370,7 @@ describe("spool flush claim", () => {
       appendToSpool(entry(`pending-behind-${kind}`));
       const lockFile = `${spoolFilePath()}.lock`;
       const fifo = kind === "fifo" ? lockFile : `${lockFile}.target`;
-      execFileSync("mkfifo", [fifo]);
+      execFileSync("mkfifo", [fifo], { env: sandboxedChildEnv(process.env) });
       if (kind === "symlink-to-fifo") fs.symlinkSync(fifo, lockFile);
 
       const probe = probeLockFlush();
