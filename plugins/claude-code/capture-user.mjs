@@ -6,7 +6,7 @@
  *
  * Stdin JSON: { prompt: "...", session_id, cwd, ... }
  * session_id and cwd are forwarded into episodic memory_metadata for scoping.
- * Stdout JSON (on opted-in PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
+ * Stdout JSON (persona, profile, or an opted-in PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
  * Capture failures are non-fatal. Capture completes before finishHook(), whose
  * throttled self-update check may delay hook exit by up to UPDATE_FETCH_TIMEOUT_MS.
  *
@@ -19,6 +19,7 @@ import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKey
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
+import { loadIdentityContext } from "../../shared/identity-context.mjs";
 
 async function captureUser() {
   const input = await readStdinJSON();
@@ -52,17 +53,26 @@ async function captureUser() {
   // Episodic capture must complete before default-off exits.
   await api.storeEpisodic(input.prompt, "user", log, metadata);
 
-  if (!isPkInjectionEnabled()) return;
+  const sections = [];
+  try {
+    const identity = await loadIdentityContext(api);
+    if (identity) sections.push(identity);
+  } catch { /* fail open */ }
 
-  // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
-  const entries = await api.searchProcedural({ query: input.prompt, excludeIds: [] });
-  if (entries.length > 0) {
-    const ctx = formatPkContext(entries);
-    log.debug(`PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`);
+  if (isPkInjectionEnabled()) {
+    // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
+    const entries = await api.searchProcedural({ query: input.prompt, excludeIds: [] });
+    if (entries.length > 0) {
+      sections.push(formatPkContext(entries));
+      log.debug(`PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`);
+    }
+  }
+
+  if (sections.length > 0) {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
-        additionalContext: ctx,
+        additionalContext: sections.join("\n\n"),
       },
     }));
   }

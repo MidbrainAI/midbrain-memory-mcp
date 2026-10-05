@@ -28,6 +28,7 @@ shared/
   agent-rules.mjs                MidBrain rules block writer for AGENTS.md/CLAUDE.md
   midbrain-api.mjs               MidbrainApi client; all HTTP calls go here
   pk-inject.mjs                  Procedural-knowledge context helpers
+  identity-context.mjs           Persona and profile session-context helpers
   logger.mjs                     Leveled file logger + platform log dir
   plugin-entry.mjs               esbuild bundle entry point
   clients/
@@ -456,6 +457,12 @@ Rules:
   per entry, and 6,000 characters total. Marker-like text is escaped.
 - Use helpers in `shared/pk-inject.mjs`; do not duplicate marker parsing.
 
+Persona and profile are injected on the user turn by the Claude Code, Codex,
+Hermes, and OpenCode capture paths. They are read-only (`GET /api/v1/persona`
+and `GET /api/v1/profile`), they are not MCP tools, and a failed read is
+skipped. Cursor's prompt hook does not inject them, because that hook does no
+network work. Helpers live in `shared/identity-context.mjs`.
+
 ## Memory-First Agent Rules
 
 Public-safe agent instructions should say:
@@ -566,6 +573,7 @@ Vitest tests live in `tests/`.
 |---|---|
 | `tests/midbrain-api.test.mjs` | `shared/midbrain-api.mjs` |
 | `tests/pk-inject.test.mjs` | `shared/pk-inject.mjs` |
+| `tests/identity-context.test.mjs` | `shared/identity-context.mjs` |
 | `tests/logger.test.mjs` | `shared/logger.mjs` |
 | `tests/client-opencode.test.mjs` | `shared/clients/opencode.mjs` |
 | `tests/client-claude.test.mjs` | `shared/clients/claude.mjs` |

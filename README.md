@@ -91,6 +91,14 @@ call `/api/v1/memories/search/procedural` or prepend procedural context unless
 There is no manual MCP tool for procedural knowledge; agents should use the
 normal memory tools for explicit recall.
 
+**Persona and profile**: Claude Code, Codex, Hermes, and OpenCode read
+`GET /api/v1/persona` and `GET /api/v1/profile` on each user turn and inject
+the descriptions into that turn's context. They are not MCP tools, and the
+hooks do not write either field. Each description is capped at 3,000
+characters. A blank field or a failed read is skipped. Cursor does not inject
+them: its prompt hook returns immediately and does no network work. The stored
+user prompt stays the original text.
+
 Over time, captured memory can consolidate into procedural knowledge: the
 experience layer that helps agents adapt how they work, not just recall what
 happened.

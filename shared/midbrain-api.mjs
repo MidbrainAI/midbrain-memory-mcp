@@ -43,6 +43,8 @@ function buildEndpoints(apiBase) {
     EPISODIC:          `${apiV1}/memories/episodic`,
     SEMANTIC_FILES:    `${apiV1}/memories/semantic/files`,
     PROCEDURAL:        `${apiV1}/memories/procedural`,
+    PERSONA:           `${apiV1}/persona`,
+    PROFILE:           `${apiV1}/profile`,
   };
 }
 
@@ -459,6 +461,54 @@ export class MidbrainApi {
       return Array.isArray(data) ? data : [];
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * Read the agent persona (`GET /api/v1/persona`). Returns the description,
+   * or null when it is blank or the request fails. Never throws.
+   *
+   * @param {{timeoutMs?: number}} [opts]
+   * @returns {Promise<string|null>}
+   */
+  async getPersona({ timeoutMs } = {}) {
+    return this.#getDescription(this.#endpoints.PERSONA, timeoutMs);
+  }
+
+  /**
+   * Read the user profile (`GET /api/v1/profile`). Returns the description,
+   * or null when it is blank or the request fails. Never throws.
+   *
+   * @param {{timeoutMs?: number}} [opts]
+   * @returns {Promise<string|null>}
+   */
+  async getProfile({ timeoutMs } = {}) {
+    return this.#getDescription(this.#endpoints.PROFILE, timeoutMs);
+  }
+
+  /**
+   * GET a `{ description }` identity field. No POST fallback: a 404 must not
+   * become a write. Never throws.
+   *
+   * @param {string} endpoint
+   * @param {number} [timeoutMs]
+   * @returns {Promise<string|null>}
+   */
+  async #getDescription(endpoint, timeoutMs) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "GET",
+        headers: this.#headers(),
+        signal: AbortSignal.timeout(timeoutMs ?? PK_DEFAULT_TIMEOUT_MS),
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      const description = data && typeof data === "object" ? data.description : null;
+      if (typeof description !== "string") return null;
+      const trimmed = description.trim();
+      return trimmed ? trimmed : null;
+    } catch {
+      return null;
     }
   }
 

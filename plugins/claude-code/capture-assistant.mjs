@@ -20,6 +20,7 @@ import {
 } from "../../shared/claude-transcript.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
+import { scrubIdentityContext } from "../../shared/identity-context.mjs";
 
 const INTERNAL_ONLY_RE = /^\s*<internal>[\s\S]*<\/internal>\s*$/;
 
@@ -39,9 +40,9 @@ async function captureAssistant() {
   const transcriptRows = client === "nanoclaw"
     ? readClaudeTranscript(input.transcript_path)
     : null;
-  let text = scrubInjectedPkContext(input.last_assistant_message);
+  let text = scrubIdentityContext(scrubInjectedPkContext(input.last_assistant_message));
   if (client === "nanoclaw" && INTERNAL_ONLY_RE.test(text)) {
-    text = scrubInjectedPkContext(deliveredNanoclawMessage(transcriptRows));
+    text = scrubIdentityContext(scrubInjectedPkContext(deliveredNanoclawMessage(transcriptRows)));
   }
   if (!text) return;
 

@@ -16,14 +16,15 @@
  * Safety:
  * - Exactly 1 API POST per message (no backlog dumps, no history scans)
  * - Directory-based instance filtering (only matching instance processes)
- * - Fire-and-forget: never blocks chat on API response
+ * - Episodic capture is fire-and-forget. Persona and profile reads are awaited
+ *   under the API timeout so the current turn can include them.
  * - Opt-in PK injection: silent fallthrough on any error or timeout
  */
 
 import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
 import { MidbrainApi, makeLogger, logFile, homeRelativePath, buildCaptureMetadata, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext,
-  hookProjectDir, logProjectFallback,
+  hookProjectDir, logProjectFallback, loadIdentityContext, scrubIdentityContext,
 } from "./midbrain-shared.mjs";
 
 const OPENCODE_HISTORY_TIMEOUT_MS = 500;
@@ -116,35 +117,47 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
       storedMessages.add(messageID);
       api.storeEpisodic(text, "user", log, buildCaptureMetadata({ client: "opencode", cwd: directory, sessionId: sessionID }));
 
-      if (!isPkInjectionEnabled()) return;
-
-      // Opt-in legacy PK injection: search and prepend relevant procedural context.
+      const blocks: string[] = [];
       try {
-        let excludeIds: number[] = [];
-
-        if (sessionID) {
-          const priorTexts = await fetchPriorMessageTexts(client, sessionID);
-          excludeIds = extractInjectedPkIds(priorTexts);
-        }
-
-        const entries = await api.searchProcedural({ query: text, excludeIds });
-        if (entries.length > 0) {
-          const ctxBlock = formatPkContext(entries);
-          // Strip any stale block from the first text part, then prepend fresh block
-          const firstTextIdx = parts.findIndex(
-            (p: { type: string }) => p.type === "text"
-          );
-          if (firstTextIdx !== -1) {
-            const stripped = stripInjectedContext(parts[firstTextIdx].text ?? "");
-            parts[firstTextIdx] = { ...parts[firstTextIdx], text: ctxBlock + "\n\n" + stripped };
-          } else {
-            parts.unshift({ type: "text", text: ctxBlock });
-          }
-          log.debug(`PK: injected ${entries.length} entries ids=${entries.map((e: { id: number }) => e.id).join(",")}`);
-        }
+        const identity = await loadIdentityContext(api);
+        if (identity) blocks.push(identity);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        log.error(`PK INJECT ERROR: ${msg}`);
+        log.error(`IDENTITY INJECT ERROR: ${msg}`);
+      }
+
+      if (isPkInjectionEnabled()) {
+        // Opt-in legacy PK injection: search and prepend relevant procedural context.
+        try {
+          let excludeIds: number[] = [];
+
+          if (sessionID) {
+            const priorTexts = await fetchPriorMessageTexts(client, sessionID);
+            excludeIds = extractInjectedPkIds(priorTexts);
+          }
+
+          const entries = await api.searchProcedural({ query: text, excludeIds });
+          if (entries.length > 0) {
+            blocks.push(formatPkContext(entries));
+            log.debug(`PK: injected ${entries.length} entries ids=${entries.map((e: { id: number }) => e.id).join(",")}`);
+          }
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error(`PK INJECT ERROR: ${msg}`);
+        }
+      }
+
+      if (blocks.length > 0) {
+        const ctxBlock = blocks.join("\n\n");
+        const firstTextIdx = parts.findIndex(
+          (p: { type: string }) => p.type === "text"
+        );
+        if (firstTextIdx !== -1) {
+          const stripped = stripInjectedContext(parts[firstTextIdx].text ?? "");
+          parts[firstTextIdx] = { ...parts[firstTextIdx], text: ctxBlock + "\n\n" + stripped };
+        } else {
+          parts.unshift({ type: "text", text: ctxBlock });
+        }
       }
     },
 
@@ -197,7 +210,7 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
           return;
         }
 
-        const safeText = scrubInjectedPkContext(text);
+        const safeText = scrubIdentityContext(scrubInjectedPkContext(text));
         if (!safeText) return;
 
         log.info(`ASSISTANT: storing id=${msgID} len=${safeText.length}`);

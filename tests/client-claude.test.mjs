@@ -373,6 +373,14 @@ describe("Claude capture-user hook wrapper", () => {
           });
         }
         if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
+        if (text.includes("/api/v1/persona")) {
+          const description = ${JSON.stringify(mode)} === "identity" ? "Be concise." : null;
+          return { ok: true, status: 200, json: async () => ({ description }) };
+        }
+        if (text.includes("/api/v1/profile")) {
+          const description = ${JSON.stringify(mode)} === "identity" ? "Works at CX2." : null;
+          return { ok: true, status: 200, json: async () => ({ description }) };
+        }
         if (text.includes("/memories/search/procedural")) {
           const body = ${JSON.stringify(mode)} === "match"
             ? [{ id: 42, title: "Workflow", content: "Use the checklist" }]
@@ -431,6 +439,17 @@ describe("Claude capture-user hook wrapper", () => {
     const log = fsSync.readFileSync(path.join(home, "logs", "midbrain-claude.log"), "utf8");
     expect(log).toMatch(/SCOPE: no project key covers the project directory; captures from it use the (client|global) key \(project directory: /);
     fsSync.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("emits persona and profile as additionalContext while PK injection is off", () => {
+    const result = runHook({ prompt: "hello", cwd: "/repo" }, { mode: "identity" });
+
+    expect(result.status).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(payload.hookSpecificOutput.additionalContext).toContain("## Agent persona\nBe concise.");
+    expect(payload.hookSpecificOutput.additionalContext).toContain("## User profile\nWorks at CX2.");
+    expect(payload.hookSpecificOutput.additionalContext).not.toContain("<!-- mb:ctx-start -->");
   });
 
   it("emits hookSpecificOutput.additionalContext when PK matches and injection is opted in", () => {
