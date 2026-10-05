@@ -45,6 +45,18 @@ describe("tripwireSurfaces (AC-15)", () => {
     }
   });
 
+  it("follows OPENCLAW_PROFILE like the adapter's state-dir resolution", () => {
+    const saved = process.env.OPENCLAW_PROFILE;
+    process.env.OPENCLAW_PROFILE = "work";
+    try {
+      expect(tripwireSurfaces(HOME)).toContain(path.join(HOME, ".openclaw-work", "openclaw.json"));
+      expect(tripwireSurfaces(HOME)).not.toContain(path.join(HOME, ".openclaw", "openclaw.json"));
+    } finally {
+      if (saved === undefined) delete process.env.OPENCLAW_PROFILE;
+      else process.env.OPENCLAW_PROFILE = saved;
+    }
+  });
+
   it("honors an explicit NANOCLAW_HOME for the skill destination", () => {
     const saved = process.env.NANOCLAW_HOME;
     process.env.NANOCLAW_HOME = "/opt/ncw";

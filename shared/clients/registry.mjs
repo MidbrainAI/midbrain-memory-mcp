@@ -11,9 +11,10 @@ import { Codex } from './codex.mjs';
 import { NanoClaw } from './nanoclaw.mjs';
 import { Hermes } from './hermes.mjs';
 import { Cursor } from './cursor.mjs';
+import { OpenClaw } from './openclaw.mjs';
 import { Generic } from './generic.mjs';
 
-const CLIENTS = [new OpenCode(), new Claude(), new Codex(), new NanoClaw(), new Hermes(), new Cursor()];
+const CLIENTS = [new OpenCode(), new Claude(), new Codex(), new NanoClaw(), new Hermes(), new Cursor(), new OpenClaw()];
 const FALLBACK = new Generic();
 
 /** Returns all registered client adapters (excludes generic fallback). */
