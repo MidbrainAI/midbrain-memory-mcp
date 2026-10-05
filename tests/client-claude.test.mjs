@@ -421,6 +421,18 @@ describe("Claude capture-user hook wrapper", () => {
     fsSync.rmSync(marker, { force: true });
   });
 
+  it("writes the scope fallback to the hook log when the cwd has no project key (#92)", () => {
+    const home = tempHomeWithKey();
+    const result = runHook(
+      { prompt: "outside any project", cwd: path.join(home, "scratch") },
+      { home, extraEnv: { MIDBRAIN_LOG_DIR: path.join(home, "logs") } },
+    );
+    expect(result.status).toBe(0);
+    const log = fsSync.readFileSync(path.join(home, "logs", "midbrain-claude.log"), "utf8");
+    expect(log).toMatch(/SCOPE: no project key covers the project directory; captures from it use the (client|global) key \(project directory: /);
+    fsSync.rmSync(home, { recursive: true, force: true });
+  });
+
   it("emits hookSpecificOutput.additionalContext when PK matches and injection is opted in", () => {
     const result = runHook(
       { prompt: "workflow please", cwd: "/repo" },

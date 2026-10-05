@@ -15,6 +15,8 @@ const CACHE_STEP = "pending entries auto-flush on the next successful capture ag
 const HOST_STEP = "verify the non-default host source shown above is intentional";
 const SHADOW_STEP = "review the shadowing note before changing any credential";
 const FILE_STEP = "repair the credential file shown above, then re-run the installer";
+const PROJECT_STEP = "captures from the configured project use a non-project key: run memory_setup_project in the project root, launch from inside the project, or set MIDBRAIN_STRICT_PROJECT=1 to withhold them";
+const MAIN_AGENT_NOTE = "the key answering for the project equals the global key, so those captures land in the main agent";
 
 /**
  * Render paths under the user's home with a leading `~` and portable
@@ -78,8 +80,16 @@ export function nextStepsFor(state) {
     steps.push(HOST_STEP);
   }
   if (state.shadowNote) steps.push(SHADOW_STEP);
+  if (state.projectFallbackNote) steps.push(PROJECT_STEP);
   if (state.credentialError) steps.push(FILE_STEP);
   return steps;
+}
+
+/** True when a fallback capture reaches the main agent: the global key, or a winning key equal to it. */
+export function fallbackReachesMainAgent(state) {
+  if (!state.projectFallbackNote) return false;
+  if (state.keyScope === "global") return true;
+  return (state.credentialScopes || []).some((entry) => entry.winner && entry.sameAsGlobal);
 }
 
 function formatCredentialScope(entry, homeDir) {
@@ -116,6 +126,9 @@ function staticLines(state) {
     `version: ${state.version}`,
     `client: ${state.clientId}`,
     `project: ${state.projectDir ? homeRelativePath(state.projectDir, homeDir) : "not configured"}`,
+    ...(state.projectDir
+      ? [`project_root: ${state.projectRoot ? homeRelativePath(state.projectRoot, homeDir) : "none (no project key in the project directory, its parent directories, or a linked worktree's main root)"}`]
+      : []),
     `api_host: ${state.apiBase}`,
     `api_scope: ${state.apiBaseScope}`,
     `api_source: ${homeRelativePath(state.apiBaseSource, homeDir)}`,
@@ -132,6 +145,8 @@ export function assembleDiagnosticsReport(state) {
   lines.push("credential_scopes:");
   lines.push(...(state.credentialScopes || []).map((entry) => formatCredentialScope(entry, homeDir)));
   if (state.shadowNote) lines.push(`note: ${state.shadowNote}`);
+  if (state.projectFallbackNote) lines.push(`note: ${state.projectFallbackNote}`);
+  if (fallbackReachesMainAgent(state)) lines.push(`note: ${MAIN_AGENT_NOTE}`);
   lines.push(`probe: ${state.probeStatus}`);
   lines.push("capture_mode: fail-open (failures never block the client)");
   lines.push(`pending_entries: ${pendingLabel(state)}`);
@@ -145,7 +160,11 @@ export function assembleDiagnosticsReport(state) {
   return lines.join("\n");
 }
 
-function credentialErrorDetails(message, homeDir) {
+const STRICT_DETAIL = "no project key for the configured project (MIDBRAIN_STRICT_PROJECT=1 withholds the fallback)";
+const STRICT_STEP = "run memory_setup_project in the project root, launch from inside the project, or unset MIDBRAIN_STRICT_PROJECT";
+
+function credentialErrorDetails(message, homeDir, code) {
+  if (code === "PROJECT_KEY_REQUIRED") return STRICT_DETAIL;
   if (/No API key configured/i.test(message)) return "no credential found";
   const empty = message.match(/^Key file is empty:\s*(.+)$/i);
   if (empty) return `empty file ${homeRelativePath(empty[1], homeDir)}`;
@@ -157,7 +176,7 @@ function credentialErrorDetails(message, homeDir) {
 /** Assemble a paste-safe report when credential resolution prevents API creation. */
 export function assembleResolutionFailureReport(state) {
   const homeDir = state.homeDir || os.homedir();
-  const detail = credentialErrorDetails(state.error?.message || String(state.error), homeDir);
+  const detail = credentialErrorDetails(state.error?.message || String(state.error), homeDir, state.error?.code);
   const lines = [
     "MidBrain memory diagnostics",
     `version: ${state.version}`,
@@ -168,8 +187,10 @@ export function assembleResolutionFailureReport(state) {
     "probe: unavailable (credential resolution failed)",
     "next_steps:",
   ];
-  const install = detail === "no credential found" ? "run: npx midbrain-memory-mcp install" : FILE_STEP;
-  lines.push(`  - ${install}`);
+  const step = detail === STRICT_DETAIL
+    ? STRICT_STEP
+    : detail === "no credential found" ? "run: npx midbrain-memory-mcp install" : FILE_STEP;
+  lines.push(`  - ${step}`);
   return lines.join("\n");
 }
 
@@ -213,6 +234,8 @@ export async function runMemoryDiagnostics(options) {
     apiBaseSource: api.apiBaseSource,
     keyScope: api.keyScope,
     keySource: api.keySource,
+    projectRoot: api.projectRoot,
+    projectFallbackNote: api.projectFallbackNote,
     credentialScopes: api.credentialScopes,
     shadowNote: api.credentialShadowNote,
     probeStatus: await probeApi(api, options.probe !== false),

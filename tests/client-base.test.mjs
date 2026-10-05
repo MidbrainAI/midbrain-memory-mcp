@@ -206,6 +206,174 @@ describe("BaseClient.resolveKey — project→global WARN", () => {
   });
 });
 
+describe("BaseClient.resolveKey — project root search (#92)", () => {
+  const client = new TestClient();
+  const HOME = path.resolve("/home/testuser");
+  const PROJ = path.join(HOME, "proj");
+  const KEY = path.join(PROJ, ".midbrain", ".midbrain-key");
+  const ENV_KEYS = ["MIDBRAIN_PROJECT_DIR", "MIDBRAIN_API_KEY", "MIDBRAIN_STRICT_PROJECT", "HOME", "USERPROFILE"];
+  const savedEnv = {};
+  let errSpy;
+
+  beforeEach(() => {
+    resetMocks();
+    for (const k of ENV_KEYS) { savedEnv[k] = process.env[k]; delete process.env[k]; }
+    // os.homedir() reads HOME on POSIX and USERPROFILE on Windows
+    process.env.HOME = HOME;
+    process.env.USERPROFILE = HOME;
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errSpy.mockRestore();
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("finds the project key from a subfolder and reports the root it sits in", async () => {
+    readFileReturns({ [KEY]: "proj-key\n" });
+    const start = path.join(PROJ, "sub", "deeper");
+    const result = await client.resolveKey(start, { includeScope: true });
+    expect(result).toEqual({ key: "proj-key", source: KEY, scope: "project", projectRoot: PROJ, projectDir: start });
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it("never treats the home directory or the filesystem root as a project", async () => {
+    readFileReturns({
+      [path.join(HOME, ".midbrain", ".midbrain-key")]: "home-key",
+      [path.join(path.parse(HOME).root, ".midbrain-key")]: "root-key",
+    });
+    expect(await client.resolveKey(PROJ)).toBeNull();
+    expect(errSpy).toHaveBeenCalledWith(expect.stringMatching(/no project key found.*parent directories/));
+  });
+
+  it("resolves a linked git worktree to the main worktree's project key", async () => {
+    const WT = path.join(HOME, "wt");
+    readFileReturns({
+      [path.join(WT, ".git")]: `gitdir: ${path.join(PROJ, ".git", "worktrees", "wt")}\n`,
+      [KEY]: "proj-key",
+    });
+    expect(await client.resolveKey(path.join(WT, "src"))).toEqual({ key: "proj-key", source: KEY });
+  });
+
+  it("reads the key files of a directory before probing it for a worktree", async () => {
+    const start = path.join(PROJ, "sub");
+    readFileReturns({ [path.join(start, ".midbrain", ".midbrain-key")]: "sub-key" });
+    expect(await client.resolveKey(start)).toMatchObject({ key: "sub-key" });
+    expect(mocks.readFile.mock.calls.map(([file]) => file)).not.toContain(path.join(start, ".git"));
+  });
+
+  it("skips an unusable key file above the client's directory with a warning, but not in it", async () => {
+    const aboveKey = path.join(PROJ, ".midbrain-key");
+    mocks.readFile.mockImplementation(async (file) => {
+      if (file === aboveKey) throw fileError("EACCES", file);
+      throw fileError("ENOENT", file);
+    });
+    process.env.MIDBRAIN_API_KEY = "fallback-key";
+    expect(await client.resolveKey(path.join(PROJ, "sub"))).toEqual({ key: "fallback-key", source: "env:MIDBRAIN_API_KEY" });
+    expect(errSpy).toHaveBeenCalledWith(expect.stringMatching(/WARN: ignoring an unusable project key file.*permission-denied/));
+    await expect(client.resolveKey(PROJ)).rejects.toThrow(/Permission denied reading key file/);
+
+    // the skipped file is still visible to diagnostics, with or without a key found above it
+    const resolved = await client.resolveKey(path.join(PROJ, "sub"), { includeScope: true });
+    mocks.readFile.mockImplementation(async (file) => {
+      if (file === aboveKey) throw fileError("EACCES", file);
+      if (file === path.join(HOME, ".midbrain", ".midbrain-key")) return "never-used";
+      throw fileError("ENOENT", file);
+    });
+    process.env.MIDBRAIN_STRICT_PROJECT = "1";
+    await expect(client.resolveKey(path.join(PROJ, "sub"))).rejects.toThrow(/unusable key file was skipped: permission-denied/);
+    delete process.env.MIDBRAIN_STRICT_PROJECT;
+    expect(resolved).toMatchObject({ scope: "environment", projectDir: path.join(PROJ, "sub"), projectKeyIssue: "permission-denied" });
+    const { entries } = await client.inspectCredentialScopes(path.join(PROJ, "sub"), resolved);
+    expect(entries.find((e) => e.scope === "project")).toEqual({ scope: "project", status: "error", reason: "permission-denied", winner: false });
+  });
+
+  it("marks an environment key equal to the global key for diagnostics", async () => {
+    readFileReturns({ [path.join(HOME, ".config", "midbrain", ".midbrain-key")]: "same-key" });
+    process.env.MIDBRAIN_API_KEY = "same-key";
+    const resolved = await client.resolveKey(PROJ, { includeScope: true });
+    expect(resolved.scope).toBe("global");
+    const { entries } = await client.inspectCredentialScopes(PROJ, resolved);
+    expect(entries.find((e) => e.scope === "environment")).toMatchObject({ status: "present", sameAsGlobal: true });
+  });
+
+  it("skipProject resolves the client/global chain even with MIDBRAIN_PROJECT_DIR set", async () => {
+    process.env.MIDBRAIN_PROJECT_DIR = PROJ;
+    process.env.MIDBRAIN_API_KEY = "fallback-key";
+    readFileReturns({ [KEY]: "proj-key" });
+    expect(await client.resolveKey(undefined)).toMatchObject({ key: "proj-key" });
+    expect(await client.resolveKey(undefined, { skipProject: true })).toEqual({ key: "fallback-key", source: "env:MIDBRAIN_API_KEY" });
+  });
+
+  it("walks a project outside home up to the filesystem root", async () => {
+    const OUT = path.resolve("/srv/proj");
+    const outKey = path.join(OUT, ".midbrain", ".midbrain-key");
+    readFileReturns({ [outKey]: "srv-key" });
+    expect(await client.resolveKey(path.join(OUT, "a", "b"))).toEqual({ key: "srv-key", source: outKey });
+  });
+
+  it("MIDBRAIN_STRICT_PROJECT=1 refuses to fall back instead of warning", async () => {
+    process.env.MIDBRAIN_API_KEY = "fallback-key";
+    process.env.MIDBRAIN_STRICT_PROJECT = "1";
+    readFileReturns({});
+    await expect(client.resolveKey(PROJ)).rejects.toMatchObject({
+      code: "PROJECT_KEY_REQUIRED",
+      message: expect.stringContaining("MIDBRAIN_STRICT_PROJECT=1"),
+    });
+    expect(errSpy).not.toHaveBeenCalled();
+
+    readFileReturns({ [KEY]: "proj-key" });
+    expect(await client.resolveKey(path.join(PROJ, "sub"))).toEqual({ key: "proj-key", source: KEY });
+    // no project directory at all is not a fallback
+    expect(await client.resolveKey(undefined)).toEqual({ key: "fallback-key", source: "env:MIDBRAIN_API_KEY" });
+  });
+});
+
+describe("BaseClient.inspectCredentialScopes — client key equal to global (#92)", () => {
+  const HOME = path.resolve("/home/testuser");
+  const GLOBAL = path.join(HOME, ".config", "midbrain", ".midbrain-key");
+  const savedEnv = {};
+
+  class SameKeyClient extends TestClient {
+    async resolveClientKey() { return { key: "shared-key", source: "/client/key" }; }
+  }
+  class OtherKeyClient extends TestClient {
+    async resolveClientKey() { return { key: "client-only", source: "/client/key" }; }
+  }
+
+  beforeEach(() => {
+    resetMocks();
+    for (const k of ["HOME", "USERPROFILE", "MIDBRAIN_PROJECT_DIR", "MIDBRAIN_API_KEY"]) { savedEnv[k] = process.env[k]; delete process.env[k]; }
+    process.env.HOME = HOME;
+    process.env.USERPROFILE = HOME;
+    readFileReturns({ [GLOBAL]: "shared-key" });
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("marks the client entry when its key equals the global key", async () => {
+    const client = new SameKeyClient();
+    const resolved = await client.resolveKey(undefined, { includeScope: true });
+    const { entries } = await client.inspectCredentialScopes(undefined, resolved);
+    expect(entries.find((e) => e.scope === "client")).toMatchObject({ winner: true, sameAsGlobal: true });
+  });
+
+  it("marks a differing client key as not the global key", async () => {
+    const client = new OtherKeyClient();
+    const resolved = await client.resolveKey(undefined, { includeScope: true });
+    const { entries } = await client.inspectCredentialScopes(undefined, resolved);
+    expect(entries.find((e) => e.scope === "client")).toMatchObject({ winner: true, sameAsGlobal: false });
+  });
+});
+
 describe("BaseClient.inspectCredentialScopes", () => {
   const client = new TestClient();
   const PROJECT_DIR = "/home/testuser/proj";

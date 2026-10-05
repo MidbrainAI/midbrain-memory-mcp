@@ -6,6 +6,7 @@
  */
 
 import fs from "node:fs/promises";
+import { effectiveProjectDir } from "./project-dir.mjs";
 import path from "node:path";
 import { globalConfigDir } from "./state-dir.mjs";
 
@@ -14,7 +15,6 @@ export const API_URL_ENV = "MIDBRAIN_API_URL";
 
 const CONFIG_FILENAME = "config.json";
 const MIDBRAIN_DIR = ".midbrain";
-const TERMINAL_CWD_PLACEHOLDER = "${TERMINAL_CWD}";
 
 function warn(message) {
   console.error(`WARN: ${message}`);
@@ -88,19 +88,15 @@ function selectCandidate(value, { source, field, scope }) {
 }
 
 function resolveProjectDir(projectDir) {
-  const explicit = typeof projectDir === "string" && projectDir.trim()
-    ? projectDir
-    : undefined;
-  const envProjectDir = explicit ? undefined : process.env.MIDBRAIN_PROJECT_DIR;
-  const candidate = explicit || envProjectDir;
-  if (candidate === TERMINAL_CWD_PLACEHOLDER) {
+  const { dir, unresolved } = effectiveProjectDir(projectDir);
+  if (unresolved) {
     warn(
       "MIDBRAIN_PROJECT_DIR TERMINAL_CWD placeholder is unresolved " +
       "(${TERMINAL_CWD}); project API-host scope skipped.",
     );
     return undefined;
   }
-  return candidate || undefined;
+  return dir;
 }
 
 async function projectCandidate(projectDir, keyScope) {

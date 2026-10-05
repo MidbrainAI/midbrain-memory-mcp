@@ -19,25 +19,28 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { readKeystore, getUserKey } from '../keystore.mjs';
-import { classifyScopeError, credentialShadowNote } from '../credential-scope.mjs';
+import { classifyScopeError, credentialShadowNote, sameCredential } from '../credential-scope.mjs';
 import { globalConfigDir } from '../state-dir.mjs';
+import {
+  STRICT_PROJECT_ENV, effectiveProjectDir, isStrictProject, walkProjectRoots,
+} from '../project-dir.mjs';
 
 const KEY_FILENAME = ".midbrain-key";
 const KEYSTORE_FILENAME = '.midbrain-keystore.json';
 const MIDBRAIN_DIR = '.midbrain';
 const ENV_VAR = 'MIDBRAIN_API_KEY';
 const USER_ENV_VAR = 'MIDBRAIN_USER_API_KEY';
-const UNRESOLVED_TERMINAL_CWD = '${TERMINAL_CWD}';
 
-function projectContext(projectDir) {
-  const explicit = typeof projectDir === 'string' && projectDir.trim()
-    ? projectDir
-    : undefined;
-  const fromEnv = explicit ? undefined : process.env.MIDBRAIN_PROJECT_DIR;
-  return {
-    dir: explicit || (fromEnv === UNRESOLVED_TERMINAL_CWD ? undefined : fromEnv),
-    unresolved: fromEnv === UNRESOLVED_TERMINAL_CWD,
-  };
+/** Opt-in strict mode refuses the fallback instead of warning about it. */
+function projectKeyRequired(dir, issue) {
+  const err = new Error(
+    `No usable project key found under "${dir}" and ${STRICT_PROJECT_ENV}=1` +
+    (issue ? ` (an unusable key file was skipped: ${issue})` : '') +
+    ': not falling back to the client or global key. Run memory_setup_project ' +
+    `in the project root, or unset ${STRICT_PROJECT_ENV}.`,
+  );
+  err.code = 'PROJECT_KEY_REQUIRED';
+  return err;
 }
 
 async function inspectScope(scope, reader, configured = true) {
@@ -70,6 +73,19 @@ export async function readKeyFile(filePath) {
   return key;
 }
 
+/** The project key in one directory: `.midbrain/.midbrain-key`, then the flat file. */
+export async function readProjectKeyIn(projDir) {
+  const subPath = join(projDir, MIDBRAIN_DIR, KEY_FILENAME);
+  const subKey = await readKeyFile(subPath);
+  if (subKey) return { key: subKey, source: subPath };
+
+  const flatPath = join(projDir, KEY_FILENAME);
+  const flatKey = await readKeyFile(flatPath);
+  if (flatKey) return { key: flatKey, source: flatPath };
+
+  return null;
+}
+
 export class BaseClient {
   /** @returns {string} Machine-readable identifier ("opencode", "claude", "codex") */
   get id() { throw new Error("BaseClient.id not implemented"); }
@@ -90,40 +106,59 @@ export class BaseClient {
 
   /**
    * Resolves the API key using the standard priority chain:
-   *   1. Project key (<projectDir>/.midbrain/.midbrain-key, then flat .midbrain-key)
+   *   1. Project key: <dir>/.midbrain/.midbrain-key, then <dir>/.midbrain-key,
+   *      for the project directory and each parent up to the home directory
+   *      or the filesystem root, plus a linked git worktree's main root
+   *      (see projectRootCandidates in shared/project-dir.mjs)
    *   2. Client's own storage (resolveClientKey())
    *   3. Global (~/.config/midbrain/.midbrain-key)
    *   4. MIDBRAIN_API_KEY env var
    *
+   * With MIDBRAIN_STRICT_PROJECT=1 a project directory without a key is an
+   * error (code PROJECT_KEY_REQUIRED) instead of a fallthrough.
+   *
    * @param {string} [projectDir] - Explicit project directory (overrides MIDBRAIN_PROJECT_DIR env).
-   * @param {{includeScope?: boolean}} [opts] - Include the selected resolution
-   * scope for installer bookkeeping without bypassing this resolver.
-   * @returns {Promise<{key: string, source: string, scope?: string} | null>}
+   * @param {{includeScope?: boolean, skipProject?: boolean}} [opts] - `includeScope`
+   * adds the selected resolution scope (and, for a project key, the directory
+   * it was found in) for installer bookkeeping without bypassing this
+   * resolver. `skipProject` resolves the client/global chain only, ignoring
+   * both the argument and MIDBRAIN_PROJECT_DIR.
+   * @returns {Promise<{key: string, source: string, scope?: string, projectRoot?: string} | null>}
    */
-  async resolveKey(projectDir, { includeScope = false } = {}) {
-    const project = projectContext(projectDir);
+  async resolveKey(projectDir, { includeScope = false, skipProject = false } = {}) {
+    const project = skipProject ? { dir: undefined, unresolved: false } : effectiveProjectDir(projectDir);
     if (project.unresolved) {
       console.error(
         'WARN: MIDBRAIN_PROJECT_DIR TERMINAL_CWD placeholder is unresolved (${TERMINAL_CWD}); falling through to global key.',
       );
     }
+    // Bookkeeping for includeScope callers: the directory asked for, and the
+    // first unusable key file the walk skipped, so diagnostics can show both.
+    const context = { projectDir: project.dir };
     if (project.dir) {
-      const key = await this.#resolveProjectKey(project.dir);
-      if (key) return includeScope ? { ...key, scope: 'project' } : key;
-      console.error(`WARN: no project key found in "${project.dir}", falling through to global key.`);
+      const { found, issue } = await this.#resolveProjectKey(project.dir);
+      if (issue) context.projectKeyIssue = issue;
+      if (found) {
+        const { root, ...key } = found;
+        return includeScope ? { ...key, scope: 'project', projectRoot: root, ...context } : key;
+      }
+      if (isStrictProject()) throw projectKeyRequired(project.dir, issue);
+      console.error(
+        `WARN: no project key found in "${project.dir}" or its parent directories, falling through to global key.`,
+      );
     }
 
     const own = await this.resolveClientKey();
-    if (own) return includeScope ? { ...own, scope: 'client' } : own;
+    if (own) return includeScope ? { ...own, scope: 'client', ...context } : own;
 
     const global_ = await this.#resolveGlobalKey();
-    if (global_) return includeScope ? { ...global_, scope: 'global' } : global_;
+    if (global_) return includeScope ? { ...global_, scope: 'global', ...context } : global_;
 
     if (process.env[ENV_VAR]) {
       const key = process.env[ENV_VAR].trim();
       if (key) {
         const result = { key, source: `env:${ENV_VAR}` };
-        return includeScope ? { ...result, scope: 'environment' } : result;
+        return includeScope ? { ...result, scope: 'environment', ...context } : result;
       }
     }
 
@@ -137,9 +172,17 @@ export class BaseClient {
    * @param {{key: string, source: string, scope: string}} resolved
    */
   async inspectCredentialScopes(projectDir, resolved) {
-    const project = projectContext(projectDir);
+    const project = effectiveProjectDir(projectDir);
+    // resolveKey already walked the project directory tree for `resolved`:
+    // a project winner is the project entry, an unusable file it skipped is
+    // the error entry, and any other winner means the walk found nothing.
+    const projectEntry = resolved.projectKeyIssue
+      ? { scope: 'project', status: 'error', reason: resolved.projectKeyIssue }
+      : await inspectScope('project', async () => (
+        resolved.scope === 'project' ? { key: resolved.key, source: resolved.source } : null
+      ), Boolean(project.dir));
     const candidates = [
-      await inspectScope('project', () => this.#resolveProjectKey(project.dir), Boolean(project.dir)),
+      projectEntry,
       await inspectScope('client', () => this.resolveClientKey()),
       await inspectScope('global', () => this.#resolveGlobalKey()),
       await inspectScope('environment', async () => {
@@ -149,23 +192,41 @@ export class BaseClient {
     ];
     const globalKey = candidates.find((entry) => entry.scope === 'global')?.key;
     const shadowNote = credentialShadowNote(resolved.scope, resolved.key, globalKey);
-    const entries = candidates.map(({ key: _key, ...entry }) => ({
+    const entries = candidates.map(({ key, ...entry }) => ({
       ...entry,
       winner: entry.scope === resolved.scope && entry.source === resolved.source,
+      // A client or environment key equal to the global key means a fallback
+      // capture lands in the main agent; diagnostics says so without seeing
+      // either key.
+      ...(['client', 'environment'].includes(entry.scope) && key && globalKey
+        ? { sameAsGlobal: sameCredential(key, globalKey) }
+        : {}),
     }));
     return { entries, shadowNote };
   }
 
-  async #resolveProjectKey(projDir) {
-    const subPath = join(projDir, MIDBRAIN_DIR, KEY_FILENAME);
-    const subKey = await readKeyFile(subPath);
-    if (subKey) return { key: subKey, source: subPath };
-
-    const flatPath = join(projDir, KEY_FILENAME);
-    const flatKey = await readKeyFile(flatPath);
-    if (flatKey) return { key: flatKey, source: flatPath };
-
-    return null;
+  /**
+   * The nearest project key for work started in `startDir`, with the
+   * directory it sits in. A broken key file (empty, unreadable) in the
+   * directory the client named is a hard error, as before; one higher up the
+   * tree may not even be this user's, so it is skipped with a warning.
+   */
+  async #resolveProjectKey(startDir) {
+    let first = true;
+    let issue;
+    for await (const dir of walkProjectRoots(startDir)) {
+      try {
+        const key = await readProjectKeyIn(dir);
+        if (key) return { found: { ...key, root: dir }, issue };
+      } catch (err) {
+        if (first) throw err;
+        const reason = classifyScopeError(err);
+        issue ??= reason;
+        console.error(`WARN: ignoring an unusable project key file in "${dir}" (${reason}); continuing the search.`);
+      }
+      first = false;
+    }
+    return { found: null, issue };
   }
 
   async #resolveGlobalKey() {

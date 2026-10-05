@@ -21,6 +21,7 @@
  */
 
 import { createHash } from "crypto";
+import { effectiveProjectDir } from "./project-dir.mjs";
 
 import { appendToCache } from "./episodic-cache.mjs";
 import { DEFAULT_API_BASE, resolveApiHost } from "./api-host.mjs";
@@ -115,6 +116,9 @@ export class MidbrainApi {
   #keyScope;
   #credentialScopes;
   #credentialShadowNote;
+  #requestedProjectDir;
+  #projectRoot;
+  #projectFallbackNote;
   #endpoints;
   #userAgent;
 
@@ -136,6 +140,9 @@ export class MidbrainApi {
     this.#keyScope = options.keyScope;
     this.#credentialScopes = options.credentialScopes || [];
     this.#credentialShadowNote = options.credentialShadowNote || null;
+    this.#requestedProjectDir = options.requestedProjectDir || null;
+    this.#projectRoot = options.projectRoot || null;
+    this.#projectFallbackNote = options.projectFallbackNote || null;
     this.#endpoints = buildEndpoints(this.#apiBase);
     this.#userAgent = options.clientId ? `${PRODUCT_USER_AGENT} ${options.clientId}` : PRODUCT_USER_AGENT;
     this.#cacheScope = createHash("sha256")
@@ -172,17 +179,30 @@ export class MidbrainApi {
   static async create(client, projectDir, { clientLabel } = {}) {
     const result = await client.resolveKey(projectDir, { includeScope: true });
     if (!result) throw new Error("No API key configured. Run: npx midbrain-memory-mcp install");
+    // The project host config lives next to the project key, which may be in
+    // a parent of the requested directory or in the main worktree.
     const host = await resolveApiHost({
       clientId: client.id,
-      projectDir,
+      projectDir: result.projectRoot || projectDir,
       keyScope: result.scope,
     });
     const credentialState = await inspectCredentialScopes(client, projectDir, result);
+    // A project directory was asked for but no project key covers it: say so,
+    // so a hook can log it and diagnostics can report it (issue #92).
+    const requestedDir = result.projectDir ?? effectiveProjectDir(projectDir).dir;
+    // Path-free on purpose: the note is printed by the paste-safe diagnostics
+    // report; the directory itself is reported separately.
+    const projectFallbackNote = requestedDir && result.scope !== "project"
+      ? `no project key covers the project directory; captures from it use the ${result.scope} key`
+      : null;
     return new MidbrainApi(result.key, result.source, {
       apiBase: host.url,
       apiBaseScope: host.scope,
       apiBaseSource: host.source,
       keyScope: result.scope,
+      requestedProjectDir: requestedDir,
+      projectRoot: result.projectRoot,
+      projectFallbackNote,
       credentialScopes: credentialState.entries,
       credentialShadowNote: credentialState.shadowNote,
       clientId: resolveClientLabel(client.id, clientLabel),
@@ -228,6 +248,12 @@ export class MidbrainApi {
   get keyScope() { return this.#keyScope; }
   get credentialScopes() { return this.#credentialScopes; }
   get credentialShadowNote() { return this.#credentialShadowNote; }
+  /** The project directory this instance was asked to resolve for, if any. */
+  get requestedProjectDir() { return this.#requestedProjectDir; }
+  /** Directory the project key was found in, when the key scope is "project". */
+  get projectRoot() { return this.#projectRoot; }
+  /** Set when a project directory was requested but a non-project key answers for it. */
+  get projectFallbackNote() { return this.#projectFallbackNote; }
   get cacheScope() { return this.#cacheScope; }
 
   /** Effective API base and its resolution metadata. */

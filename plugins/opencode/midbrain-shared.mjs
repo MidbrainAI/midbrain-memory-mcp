@@ -5,4 +5,5 @@ export { makeLogger, logFile, logDir } from '../../shared/logger.mjs';
 export { homeRelativePath } from '../../shared/diagnostics.mjs';
 export { buildCaptureMetadata } from '../../shared/capture-metadata.mjs';
 export { getClient } from '../../shared/clients/registry.mjs';
+export { hookProjectDir, logProjectFallback } from '../../shared/project-dir.mjs';
 export { extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from '../../shared/pk-inject.mjs';

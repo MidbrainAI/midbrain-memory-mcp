@@ -1650,6 +1650,17 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
     expect(result.stderr).not.toMatch(/MCP server running/);
   });
 
+  it.each(["capture-user", "capture-assistant"])(
+    "legacy %s dispatches to the Claude hook with a notice instead of doing nothing (#92)",
+    (command) => {
+      const result = spawnServer([command]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("legacy form");
+      expect(result.stderr).not.toMatch(/MCP server running/);
+    },
+  );
+
   it("NanoClaw hook dispatch: claude assistant exits 0 without starting MCP when stdin is empty", () => {
     const result = spawnServer(["hook", "claude", "assistant"]);
     expect(result.status).toBe(0);

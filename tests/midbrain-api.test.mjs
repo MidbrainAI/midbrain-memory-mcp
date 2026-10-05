@@ -4,6 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
+import fsp from "fs/promises";
 import os from "os";
 import path from "path";
 import { createHash } from "crypto";
@@ -852,6 +853,59 @@ describe("MidbrainApi.create", () => {
       "/some/dir",
       { includeScope: true },
     );
+  });
+
+  it("notes a project directory that a non-project key answers for (#92)", async () => {
+    const mockClient = {
+      id: "codex",
+      resolveKey: vi.fn().mockResolvedValue({ key: "abc123", source: "global", scope: "global" }),
+    };
+    const api = await MidbrainApi.create(mockClient, "/work/proj/sub");
+    expect(api.requestedProjectDir).toBe("/work/proj/sub");
+    expect(api.projectRoot).toBeNull();
+    expect(api.projectFallbackNote)
+      .toBe("no project key covers the project directory; captures from it use the global key");
+  });
+
+  it("carries the project root and no note when the project key wins (#92)", async () => {
+    const mockClient = {
+      id: "codex",
+      resolveKey: vi.fn().mockResolvedValue({
+        key: "abc123", source: "/work/proj/.midbrain/.midbrain-key", scope: "project", projectRoot: "/work/proj",
+      }),
+    };
+    const api = await MidbrainApi.create(mockClient, "/work/proj/sub");
+    expect(api.projectRoot).toBe("/work/proj");
+    expect(api.projectFallbackNote).toBeNull();
+  });
+
+  it("reads the project host config from the directory the key was found in (#92)", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "midbrain-host-root-"));
+    try {
+      await fsp.mkdir(path.join(root, ".midbrain"), { recursive: true });
+      await fsp.writeFile(path.join(root, ".midbrain", "config.json"), JSON.stringify({ apiUrl: "https://project.example/" }));
+      const mockClient = {
+        id: "codex",
+        resolveKey: vi.fn().mockResolvedValue({
+          key: "abc123", source: path.join(root, ".midbrain", ".midbrain-key"), scope: "project", projectRoot: root,
+        }),
+      };
+      const api = await MidbrainApi.create(mockClient, path.join(root, "packages", "api"));
+      expect(api.effectiveApiBase).toBe("https://project.example");
+      expect(api.apiBaseScope).toBe("project");
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("has no fallback note when no project directory was requested (#92)", async () => {
+    const mockClient = {
+      id: "codex",
+      resolveKey: vi.fn().mockResolvedValue({ key: "abc123", source: "global", scope: "global" }),
+    };
+    const api = await MidbrainApi.create(mockClient, undefined);
+    expect(api.requestedProjectDir).toBeNull();
+    expect(api.projectFallbackNote).toBeNull();
   });
 
   it("uses the client adapter's id as the UA client token", async () => {
