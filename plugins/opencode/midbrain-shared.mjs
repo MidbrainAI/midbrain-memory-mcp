@@ -7,3 +7,4 @@ export { buildCaptureMetadata } from '../../shared/capture-metadata.mjs';
 export { getClient } from '../../shared/clients/registry.mjs';
 export { hookProjectDir, logProjectFallback } from '../../shared/project-dir.mjs';
 export { extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from '../../shared/pk-inject.mjs';
+export { loadIdentityContext, scrubIdentityContext } from '../../shared/identity-context.mjs';

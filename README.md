@@ -96,6 +96,16 @@ call `/api/v1/memories/search/procedural` or prepend procedural context unless
 There is no manual MCP tool for procedural knowledge; agents should use the
 normal memory tools for explicit recall.
 
+**Persona and profile**: Claude Code, Codex, Hermes, OpenCode, and OpenClaw
+read `GET /api/v1/persona` and `GET /api/v1/profile` on each user turn and
+inject the descriptions into that turn's context (OpenClaw appends them to the
+system prompt). They are not MCP tools, and the
+hooks do not write either field. Each description is capped at 3,000
+characters. A blank field or a failed read is skipped. Cursor gets them from
+the MidBrain MCP server's instructions instead, read once when the server
+starts, because no Cursor hook can add context in time. The stored user prompt
+stays the original text.
+
 Over time, captured memory can consolidate into procedural knowledge: the
 experience layer that helps agents adapt how they work, not just recall what
 happened.
@@ -828,6 +838,24 @@ Limitations:
   summarized; stale buffers are removed after 24 hours.
 - Procedural-knowledge injection is not available: `beforeSubmitPrompt` cannot
   add context. `MIDBRAIN_ENABLE_PK_INJECTION` has no effect for Cursor.
+- Persona and profile come from the MidBrain MCP server's instructions, read
+  when the server starts (when Cursor loads the window). An edit shows up after
+  the server restarts, for example after a window reload. The hooks cannot
+  carry them: `beforeSubmitPrompt` cannot add context, and Cursor merges
+  `sessionStart` output only after the first prompt has gone to the model.
+  MidBrain sends native MCP instructions, including an explicit empty-state
+  message when neither field is available. It never copies one project's
+  identity into another project's Cursor cache. On startup it retires complete
+  legacy identity-only cache files from this draft, saving private backups in
+  MidBrain's global config directory under `cursor-identity-backups/`.
+  Mixed or unrecognized files are preserved. If Cursor still shows old
+  instructions, remove and re-add the MidBrain MCP connection and start a new
+  chat. The server adds identity only when `MIDBRAIN_CLIENT` is `cursor`, so
+  other clients do not get it twice.
+- Cursor also runs Claude Code hooks from `~/.claude/settings.json` (its
+  Third-Party Imports setting, on by default). When Cursor's MidBrain hooks are
+  installed, the MidBrain Claude hooks recognize Cursor's payload and do
+  nothing, so a Cursor turn is not stored twice or held for a persona read.
 - Latency: Cursor holds the prompt until the `beforeSubmitPrompt` hook process
   exits. MidBrain code in that hook returns at once and hands the store to a
   detached background process, which stops after 20 seconds and moves an
@@ -898,6 +926,13 @@ What is captured: the plugin listens on OpenClaw's typed `agent_end` hook.
 newest user message and the final assistant text after it, once per session
 turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
 triggers; it captures runs with trigger `user` or no trigger.
+
+The same plugin also listens on `before_prompt_build`. On user-triggered runs
+it reads the persona and profile and returns them as `appendSystemContext`, so
+OpenClaw appends them to the system prompt. It waits at most 5 seconds, a
+blank field or failed read adds nothing, and setting
+`plugins.entries["midbrain-memory"].hooks.allowPromptInjection` to `false`
+turns it off.
 
 Each capture sends `client: "openclaw"`, `session_id` from OpenClaw's
 `sessionId`, and `cwd` from the agent workspace directory. Capture is

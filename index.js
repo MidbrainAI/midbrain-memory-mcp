@@ -10,24 +10,30 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createServer } from "./mcp.mjs";
+import { createServer, loadServerInstructions } from "./mcp.mjs";
 import { PKG_VERSION, checkForUpdate, prepareCaptureClientMigration } from "./install.mjs";
 import { realpathSync } from "fs";
 import { fileURLToPath } from "url";
 
 export { createServer };
 
-/** Start the real MCP stdio path with only capture-label migration pre-ready. */
+/**
+ * Start the real MCP stdio path. Only the capture-label migration and the
+ * Cursor persona/profile read (bounded by the API timeout) run before
+ * readiness.
+ */
 export async function startMcpServer({
   serverFactory = createServer,
   transportFactory = () => new StdioServerTransport(),
   prepareCaptureClientMigrationFn = prepareCaptureClientMigration,
+  loadServerInstructionsFn = loadServerInstructions,
   checkForUpdateFn = checkForUpdate,
   prepareOptions,
   log = console.error,
 } = {}) {
   const preparation = await prepareCaptureClientMigrationFn(prepareOptions);
-  const server = serverFactory(PKG_VERSION);
+  const instructions = await loadServerInstructionsFn();
+  const server = serverFactory(PKG_VERSION, { instructions });
   const transport = transportFactory();
   await server.connect(transport);
   log(`MCP server running (midbrain-memory-mcp v${PKG_VERSION})`);

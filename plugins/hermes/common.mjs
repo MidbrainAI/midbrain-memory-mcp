@@ -19,6 +19,7 @@ import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
+import { loadIdentityContext } from "../../shared/identity-context.mjs";
 
 export async function createApi(cwd) {
   return MidbrainApi.create(getClient("hermes"), hookProjectDir(cwd));
@@ -77,19 +78,32 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
 
   await postEpisodic(prompt, "user", input, deps, api);
 
-  if (!isPkInjectionEnabled()) return undefined;
+  const context = await sessionContext(api, prompt, deps);
+  return context ? { context } : undefined;
+}
+
+async function sessionContext(api, prompt, deps) {
+  const sections = [];
+  try {
+    const identity = await loadIdentityContext(api);
+    if (identity) sections.push(identity);
+  } catch (err) {
+    safeLog(deps.logger, `IDENTITY INJECT ERROR: ${errorMessage(err)}`);
+  }
+
+  if (!isPkInjectionEnabled()) return sections.join("\n\n");
 
   // Opt-in legacy PK injection. Hermes prepends `context` to the LLM turn.
   try {
     const entries = await api.searchProcedural({ query: prompt, excludeIds: [] });
     if (entries.length > 0) {
       safeLog(deps.logger, `PK: injected ${entries.length} entries`, "debug");
-      return { context: formatPkContext(entries) };
+      sections.push(formatPkContext(entries));
     }
   } catch (err) {
     safeLog(deps.logger, `PK INJECT ERROR: ${errorMessage(err)}`);
   }
-  return undefined;
+  return sections.join("\n\n");
 }
 
 /** Capture the assistant's final response as episodic memory. */

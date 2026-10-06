@@ -70,6 +70,15 @@ afterAll(async () => {
   await testEnv.restore();
 });
 
+function writeCursorHooks(home) {
+  const dir = path.join(home, ".cursor");
+  fsSync.mkdirSync(dir, { recursive: true });
+  fsSync.writeFileSync(path.join(dir, "hooks.json"), JSON.stringify({
+    version: 1,
+    hooks: { beforeSubmitPrompt: [{ command: "~/.midbrain/bin/cursor-hook user", timeout: 10 }] },
+  }));
+}
+
 function fileError(code, filePath) {
   const err = new Error(`${code}: test failure, open '${filePath}'`);
   err.code = code;
@@ -373,6 +382,14 @@ describe("Claude capture-user hook wrapper", () => {
           });
         }
         if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
+        if (text.includes("/api/v1/persona")) {
+          const description = ${JSON.stringify(mode)} === "identity" ? "Be concise." : null;
+          return { ok: true, status: 200, json: async () => ({ description }) };
+        }
+        if (text.includes("/api/v1/profile")) {
+          const description = ${JSON.stringify(mode)} === "identity" ? "Works at CX2." : null;
+          return { ok: true, status: 200, json: async () => ({ description }) };
+        }
         if (text.includes("/memories/search/procedural")) {
           const body = ${JSON.stringify(mode)} === "match"
             ? [{ id: 42, title: "Workflow", content: "Use the checklist" }]
@@ -431,6 +448,34 @@ describe("Claude capture-user hook wrapper", () => {
     const log = fsSync.readFileSync(path.join(home, "logs", "midbrain-claude.log"), "utf8");
     expect(log).toMatch(/SCOPE: no project key covers the project directory; captures from it use the (client|global) key \(project directory: /);
     fsSync.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("emits persona and profile as additionalContext while PK injection is off", () => {
+    const result = runHook({ prompt: "hello", cwd: "/repo" }, { mode: "identity" });
+
+    expect(result.status).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(payload.hookSpecificOutput.additionalContext).toContain("## Agent persona\nBe concise.");
+    expect(payload.hookSpecificOutput.additionalContext).toContain("## User profile\nWorks at CX2.");
+    expect(payload.hookSpecificOutput.additionalContext).not.toContain("<!-- mb:ctx-start -->");
+  });
+
+  it("steps aside when Cursor runs it and Cursor's MidBrain hooks are installed", () => {
+    const home = tempHomeWithKey();
+    writeCursorHooks(home);
+    const result = runHook({ prompt: "hello", cwd: "/repo", cursor_version: "3.23.12" }, { mode: "identity", home });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    fsSync.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("still injects under Cursor when Cursor has no MidBrain hooks", () => {
+    const result = runHook({ prompt: "hello", cwd: "/repo", cursor_version: "3.23.12" }, { mode: "identity" });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain("Be concise.");
   });
 
   it("emits hookSpecificOutput.additionalContext when PK matches and injection is opted in", () => {
@@ -577,6 +622,28 @@ describe("Claude capture-assistant hook wrapper", () => {
     expect(body.text).toBe("Visible response");
     expect(body.text).not.toContain("Claude Echo");
     expect(body.text).not.toContain("<!-- mb:pk 33 -->");
+    fsSync.rmSync(home, { recursive: true, force: true });
+    fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
+    fsSync.rmSync(loaded.dir, { recursive: true, force: true });
+  });
+
+  it("stores nothing when Cursor runs it and Cursor's MidBrain hooks are installed", () => {
+    const home = tempHomeWithKey();
+    writeCursorHooks(home);
+    const logPath = path.join(fsSync.mkdtempSync(path.join(os.tmpdir(), "claude-assist-log-")), "fetch.jsonl");
+    const loaded = preload(logPath);
+
+    const result = spawnSync(process.execPath, [
+      "--import", pathToFileURL(loaded.file).href,
+      path.join(REPO_ROOT, "plugins", "claude-code", "capture-assistant.mjs"),
+    ], {
+      input: JSON.stringify({ last_assistant_message: "Cursor reply", cwd: "/repo", cursor_version: "3.23.12" }),
+      encoding: "utf8",
+      env: sandboxHomeEnv(home),
+    });
+
+    expect(result.status).toBe(0);
+    expect(() => fsSync.readFileSync(logPath, "utf8")).toThrow(/ENOENT/);
     fsSync.rmSync(home, { recursive: true, force: true });
     fsSync.rmSync(path.dirname(logPath), { recursive: true, force: true });
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });

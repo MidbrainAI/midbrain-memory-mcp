@@ -84,6 +84,21 @@ describe("captureUser", () => {
     expect(deps.createApi).not.toHaveBeenCalled();
   });
 
+  it("injects persona and profile while PK injection is off", async () => {
+    const { deps } = makeDeps();
+    deps.createApi = vi.fn(async () => ({
+      storeEpisodic: vi.fn(async () => true),
+      searchProcedural: vi.fn(async () => []),
+      getPersona: vi.fn(async () => "Be concise."),
+      getProfile: vi.fn(async () => "Works at CX2."),
+    }));
+
+    const out = await captureUser({ extra: { user_message: "hi" } }, deps);
+
+    expect(out.context).toContain("## Agent persona\nBe concise.");
+    expect(out.context).toContain("## User profile\nWorks at CX2.");
+  });
+
   it("does not inject PK context by default", async () => {
     const { deps } = makeDeps();
     const out = await captureUser({ extra: { user_message: "hi" } }, deps);

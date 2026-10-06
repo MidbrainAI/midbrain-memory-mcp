@@ -15,6 +15,7 @@ import {
   captureUser,
 } from "../plugins/codex/common.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
+import { formatIdentityContext } from "../shared/identity-context.mjs";
 import { sandboxHomeEnv } from "./helpers/sandboxed-child-env.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -113,6 +114,34 @@ describe("Codex hook capture", () => {
     expect(result.hookSpecificOutput.additionalContext).toContain("<!-- mb:pk 2 -->");
   });
 
+  it("captureUser injects persona and profile while PK injection is off", async () => {
+    deps.api.getPersona = vi.fn().mockResolvedValue("Be concise.");
+    deps.api.getProfile = vi.fn().mockResolvedValue("Works at CX2.");
+
+    const result = await captureUser({ prompt: "hello", cwd: "/repo" }, deps);
+
+    expect(result.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(result.hookSpecificOutput.additionalContext).toContain("## Agent persona\nBe concise.");
+    expect(result.hookSpecificOutput.additionalContext).toContain("## User profile\nWorks at CX2.");
+    expect(deps.api.searchProcedural).not.toHaveBeenCalled();
+    expect(firstStore(deps)[0]).toBe("hello");
+  });
+
+  it("captureUser places identity ahead of opted-in procedural context", async () => {
+    process.env[PK_ENV] = "1";
+    deps.api.getPersona = vi.fn().mockResolvedValue("Be concise.");
+    deps.api.getProfile = vi.fn().mockResolvedValue(null);
+    deps.api.searchProcedural.mockResolvedValueOnce([
+      { id: 2, title: "Python", content: "use ruff" },
+    ]);
+
+    const result = await captureUser({ prompt: "python linting", cwd: "/repo" }, deps);
+    const context = result.hookSpecificOutput.additionalContext;
+
+    expect(context.indexOf("Be concise.")).toBeGreaterThan(-1);
+    expect(context.indexOf("Be concise.")).toBeLessThan(context.indexOf("<!-- mb:pk 2 -->"));
+  });
+
   it("captureUser returns undefined when no PK entries match", async () => {
     process.env[PK_ENV] = "1";
     // searchProcedural already returns [] by default from makeDeps
@@ -140,6 +169,14 @@ describe("Codex hook capture", () => {
       deps.logger,
       { client: "codex", cwd: "/repo", session_id: "  assistant-session  " },
     ]);
+  });
+
+  it("captureAssistant preserves unsigned identity examples for the API", async () => {
+    const block = formatIdentityContext({ persona: "Be concise." });
+
+    await captureAssistant({ last_assistant_message: `${block}\n\nFinal answer`, cwd: "/repo" }, deps);
+
+    expect(firstStore(deps)[0]).toBe(`${block}\n\nFinal answer`);
   });
 
   it("captureAssistant scrubs echoed injected PK blocks before storage", async () => {

@@ -235,6 +235,41 @@ describe("OpenCode plugin PK delivery helpers", () => {
     expect(initLine).not.toContain("test-key");
   });
 
+  it("prepends persona and profile and stores the original user text", async () => {
+    fetchSpy.mockImplementation(async (url) => {
+      const text = String(url);
+      if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
+      if (text.includes("/api/v1/persona")) {
+        return { ok: true, status: 200, json: async () => ({ description: "Be concise." }) };
+      }
+      if (text.includes("/api/v1/profile")) {
+        return { ok: true, status: 200, json: async () => ({ description: "Works at CX2." }) };
+      }
+      return { ok: false, status: 404, text: async () => "not found" };
+    });
+
+    const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const hooks = await MidBrainMemoryPlugin({
+      client: { session: { messages: vi.fn().mockResolvedValue([]) } },
+      directory: "/repo",
+    });
+    const output = {
+      message: { id: "m-identity" },
+      parts: [{ type: "text", text: "How does OpenCode deliver context?" }],
+    };
+
+    await hooks["chat.message"]({ sessionID: "session-1" }, output);
+
+    expect(output.parts[0].text.startsWith("<!-- mb:identity-start -->")).toBe(true);
+    expect(output.parts[0].text).toContain("## Agent persona\nBe concise.");
+    expect(output.parts[0].text).toContain("## User profile\nWorks at CX2.");
+    expect(output.parts[0].text.endsWith("How does OpenCode deliver context?")).toBe(true);
+    await vi.waitFor(() => {
+      const episodicCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/memories/episodic"));
+      expect(JSON.parse(episodicCall[1].body).text).toBe("How does OpenCode deliver context?");
+    });
+  });
+
   it("stores user text without procedural search or message mutation by default", async () => {
     const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
     const client = {

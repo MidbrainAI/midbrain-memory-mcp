@@ -121,6 +121,25 @@ export async function captureClientLabel() {
 }
 
 /**
+ * Cursor also runs Claude Code hooks (its Third-Party Imports setting) and
+ * sends them its own payload, which carries `cursor_version`. When Cursor's
+ * MidBrain hooks are installed they already capture the turn and add the
+ * persona, so the Claude hook steps aside instead of doing both twice.
+ * Never throws.
+ *
+ * @param {object} input - The hook payload.
+ * @returns {Promise<boolean>}
+ */
+export async function cursorHandlesHook(input) {
+  if (typeof input?.cursor_version !== "string") return false;
+  try {
+    return await getClient("cursor").hasCaptureHooks();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Pre-built leveled logger for Claude Code hooks. Appends timestamped,
  * level-tagged lines to the platform log dir (see shared/logger.mjs).
  * Never throws.

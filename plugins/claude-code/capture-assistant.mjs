@@ -10,7 +10,7 @@
  * Fails silently on any error.
  */
 
-import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
+import { readStdinJSON, createApi, captureClientLabel, cursorHandlesHook, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { claimLegacyOpenerRecovery } from "../../shared/claude-opener-recovery.mjs";
 import {
@@ -29,6 +29,7 @@ async function captureAssistant() {
   if (!input) return;
   if (input.stop_hook_active) return;
   if (!input.last_assistant_message) return;
+  if (await cursorHandlesHook(input)) return;
 
   const client = await captureClientLabel();
   const metadata = buildCaptureMetadata({

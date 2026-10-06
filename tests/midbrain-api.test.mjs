@@ -830,6 +830,66 @@ describe("MidbrainApi.searchProcedural", () => {
 });
 
 // ---------------------------------------------------------------------------
+// getPersona / getProfile
+// ---------------------------------------------------------------------------
+
+describe("MidbrainApi persona and profile reads", () => {
+  let fetchSpy;
+  let api;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+    api = new MidbrainApi("test-key", "test-source");
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  function okJson(body) {
+    return Promise.resolve({ ok: true, status: 200, json: async () => body });
+  }
+
+  it("GETs /api/v1/persona and returns the description", async () => {
+    fetchSpy.mockReturnValueOnce(okJson({ description: "Be concise.", updated_at: "2026-08-01T00:00:00Z" }));
+
+    await expect(api.getPersona()).resolves.toBe("Be concise.");
+
+    const [url, opts] = fetchSpy.mock.calls[0];
+    expect(new URL(url).pathname).toBe("/api/v1/persona");
+    expect(opts.method).toBe("GET");
+    expect(opts.headers.Authorization).toBe("Bearer test-key");
+    expect(opts.signal).toBeDefined();
+  });
+
+  it("GETs /api/v1/profile and returns the description", async () => {
+    fetchSpy.mockReturnValueOnce(okJson({ description: "Works at CX2.", updated_at: null }));
+
+    await expect(api.getProfile()).resolves.toBe("Works at CX2.");
+    expect(new URL(fetchSpy.mock.calls[0][0]).pathname).toBe("/api/v1/profile");
+  });
+
+  it("returns null when the description is missing or blank", async () => {
+    fetchSpy.mockReturnValueOnce(okJson({ description: null }));
+    await expect(api.getPersona()).resolves.toBeNull();
+
+    fetchSpy.mockReturnValueOnce(okJson({ description: "   " }));
+    await expect(api.getProfile()).resolves.toBeNull();
+  });
+
+  it("returns null on a non-OK response, a network error, or a bad body", async () => {
+    fetchSpy.mockReturnValueOnce(Promise.resolve({ ok: false, status: 503, text: async () => "down" }));
+    await expect(api.getPersona()).resolves.toBeNull();
+
+    fetchSpy.mockRejectedValueOnce(new Error("network down"));
+    await expect(api.getProfile()).resolves.toBeNull();
+
+    fetchSpy.mockReturnValueOnce(okJson(["not-an-object"]));
+    await expect(api.getPersona()).resolves.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // create factory
 // ---------------------------------------------------------------------------
 

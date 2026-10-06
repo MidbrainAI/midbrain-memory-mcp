@@ -18,8 +18,11 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-import { createServer } from "../index.js";
+import { createServer, startMcpServer } from "../index.js";
+import { loadServerInstructions } from "../mcp.mjs";
+import { formatIdentityContext } from "../shared/identity-context.mjs";
 import { PKG_VERSION } from "../shared/clients/utils.mjs";
+import { makeTestEnv } from "./helpers/test-env.mjs";
 import { sandboxHomeEnv } from "./helpers/sandboxed-child-env.mjs";
 
 // Windows cannot represent POSIX 0o600 file modes; skip exact-mode assertions
@@ -1881,6 +1884,76 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
     expect(commonSrc).not.toMatch(/process\.stdin\.destroy\(/);
     expect(commonSrc).not.toMatch(/process\.exit\(/);
     expect(commonSrc).toMatch(/process\.exitCode\s*=\s*code/);
+  });
+});
+
+describe("server instructions carry persona and profile for Cursor", () => {
+  let identityEnv;
+  beforeEach(async () => { identityEnv = await makeTestEnv(); });
+  afterEach(async () => { await identityEnv.restore(); });
+  const identityApi = () => ({
+    getPersona: vi.fn(async () => "Be concise."),
+    getProfile: vi.fn(async () => "Works at CX2."),
+  });
+
+  it("sends the instructions in the initialize result", async () => {
+    const server = createServer("1.0.0", { instructions: "Persona block" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const probe = new Client({ name: "probe", version: "1.0.0" });
+    await server.connect(serverTransport);
+    await probe.connect(clientTransport);
+
+    expect(probe.getInstructions()).toBe("Persona block");
+    await probe.close();
+  });
+
+  it("sends no instructions by default", async () => {
+    const server = createServer("1.0.0");
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const probe = new Client({ name: "probe", version: "1.0.0" });
+    await server.connect(serverTransport);
+    await probe.connect(clientTransport);
+
+    expect(probe.getInstructions()).toBeUndefined();
+    await probe.close();
+  });
+
+  it("loads identity in the native server instructions", async () => {
+    await expect(loadServerInstructions({ clientId: "cursor", createApiFn: async () => identityApi() }))
+      .resolves.toBe(formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }));
+  });
+
+  it.each(["claude", "codex", "hermes", "opencode", "openclaw", "nanoclaw", undefined])(
+    "loads nothing for %s, whose hooks or plugin inject it", async (clientId) => {
+      const createApiFn = vi.fn(async () => identityApi());
+      await expect(loadServerInstructions({ clientId, createApiFn })).resolves.toBeUndefined();
+      expect(createApiFn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("is fail-open when no key resolves or both fields are blank", async () => {
+    await expect(loadServerInstructions({
+      clientId: "cursor",
+      createApiFn: async () => { throw new Error("No API key configured"); },
+    })).resolves.toBe("No persona or profile is supplied for this server connection.");
+    await expect(loadServerInstructions({
+      clientId: "cursor",
+      createApiFn: async () => ({ getPersona: async () => null, getProfile: async () => null }),
+    })).resolves.toBe("No persona or profile is supplied for this server connection.");
+  });
+
+  it("startMcpServer builds the server with the loaded instructions", async () => {
+    const serverFactory = vi.fn(() => ({ connect: async () => {} }));
+    await startMcpServer({
+      serverFactory,
+      transportFactory: () => ({}),
+      prepareCaptureClientMigrationFn: async () => ({}),
+      loadServerInstructionsFn: async () => "Persona block",
+      checkForUpdateFn: () => {},
+      log: () => {},
+    });
+
+    expect(serverFactory).toHaveBeenCalledWith(PKG_VERSION, { instructions: "Persona block" });
   });
 });
 

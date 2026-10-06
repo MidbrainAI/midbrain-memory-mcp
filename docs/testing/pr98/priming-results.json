@@ -1,0 +1,2177 @@
+{
+  "productRevision": "2fce56eb992c0b7951b3ad4543963292dbd111e5",
+  "date": "2026-10-06",
+  "api": "https://memory.midbrain.ai",
+  "model": "gpt-6-astra",
+  "kind": "descriptive-smoke-not-statistical-proof",
+  "trialCount": 36,
+  "runs": [
+    {
+      "id": "codex-decision-1-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 101.405,
+      "client": "codex",
+      "firstAction": "memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 7,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295368433
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295368433
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input_tokens": 403642,
+          "cached_input_tokens": 356864,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1631,
+          "reasoning_output_tokens": 61
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "codex-decision-1-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 86.549,
+      "client": "codex",
+      "firstAction": "shell",
+      "memoryFirst": false,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 7,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 747,
+          "at": 1791295283131
+        },
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 789,
+          "at": 1791295283148
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input_tokens": 291553,
+          "cached_input_tokens": 252544,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1236,
+          "reasoning_output_tokens": 90
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "codex-decision-2-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 91.903,
+      "client": "codex",
+      "firstAction": "memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 8,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295816280
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295816280
+        }
+      ],
+      "httpErrors": [
+        {
+          "kind": "http",
+          "path": "/api/v1/memories/search/lexical",
+          "method": "GET",
+          "status": 400,
+          "ms": 768,
+          "at": 1791295881677
+        }
+      ],
+      "tokens": [
+        {
+          "input_tokens": 500233,
+          "cached_input_tokens": 442624,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1521,
+          "reasoning_output_tokens": 105
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "codex-decision-2-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 94.311,
+      "client": "codex",
+      "firstAction": "memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 6,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 706,
+          "at": 1791295908984
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 711,
+          "at": 1791295909011
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input_tokens": 263155,
+          "cached_input_tokens": 224256,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 994,
+          "reasoning_output_tokens": 52
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "codex-missing-1-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 31.679,
+      "client": "codex",
+      "firstAction": "memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295784274
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295784274
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input_tokens": 120802,
+          "cached_input_tokens": 85504,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 462,
+          "reasoning_output_tokens": 10
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "codex-missing-1-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 64.732,
+      "client": "codex",
+      "firstAction": "memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 710,
+          "at": 1791295723501
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 720,
+          "at": 1791295723533
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input_tokens": 121470,
+          "cached_input_tokens": 100096,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 470,
+          "reasoning_output_tokens": 18
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "codex-missing-2-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 52.835,
+      "client": "codex",
+      "firstAction": "memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791296214722
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791296214722
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input_tokens": 145433,
+          "cached_input_tokens": 118400,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 466,
+          "reasoning_output_tokens": 13
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "codex-missing-2-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 24.462,
+      "client": "codex",
+      "firstAction": "memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 745,
+          "at": 1791296267881
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 737,
+          "at": 1791296267895
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input_tokens": 121960,
+          "cached_input_tokens": 93824,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 468,
+          "reasoning_output_tokens": 8
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "codex-recovery-1-off",
+      "identity": "off",
+      "code": null,
+      "seconds": 125.011,
+      "client": "codex",
+      "firstAction": "memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": false,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 6,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295594739
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295594739
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [],
+      "reviewedOutcome": "process-timeout"
+    },
+    {
+      "id": "codex-recovery-1-on",
+      "identity": "on",
+      "code": null,
+      "seconds": 125.016,
+      "client": "codex",
+      "firstAction": "memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 6,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 686,
+          "at": 1791295470212
+        },
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 728,
+          "at": 1791295470231
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [],
+      "reviewedOutcome": "process-timeout"
+    },
+    {
+      "id": "codex-recovery-2-off",
+      "identity": "off",
+      "code": null,
+      "seconds": 125.016,
+      "client": "codex",
+      "firstAction": "shell",
+      "memoryFirst": false,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 8,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791296002080
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791296002080
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [],
+      "reviewedOutcome": "process-timeout"
+    },
+    {
+      "id": "codex-recovery-2-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 87.209,
+      "client": "codex",
+      "firstAction": "shell",
+      "memoryFirst": false,
+      "initialAnchorPreserved": false,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 6,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 758,
+          "at": 1791296129434
+        },
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 782,
+          "at": 1791296129437
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input_tokens": 375524,
+          "cached_input_tokens": 328192,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1198,
+          "reasoning_output_tokens": 42
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "hermes-decision-1-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 78.464,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295388004
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295388005
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 37627,
+          "output": 1045,
+          "total": 166416,
+          "cache_read": 127744,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "hermes-decision-1-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 105.502,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 686,
+          "at": 1791295284143
+        },
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 725,
+          "at": 1791295284159
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 23303,
+          "output": 599,
+          "total": 148318,
+          "cache_read": 124416,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "hermes-decision-2-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 114.627,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295715758
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295715758
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 32444,
+          "output": 1119,
+          "total": 158747,
+          "cache_read": 125184,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "hermes-decision-2-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 117.375,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 714,
+          "at": 1791295831033
+        },
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 738,
+          "at": 1791295831034
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 26511,
+          "output": 1070,
+          "total": 176189,
+          "cache_read": 148608,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "hermes-missing-1-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 34.72,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295681176
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295681176
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 19038,
+          "output": 282,
+          "total": 80760,
+          "cache_read": 61440,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "hermes-missing-1-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 27.252,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 683,
+          "at": 1791295654604
+        },
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 735,
+          "at": 1791295654634
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 19044,
+          "output": 278,
+          "total": 81274,
+          "cache_read": 61952,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "hermes-missing-2-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 64.488,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791296157746
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791296157746
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 34530,
+          "output": 408,
+          "total": 99450,
+          "cache_read": 64512,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "hermes-missing-2-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 54.18,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 770,
+          "at": 1791296222925
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 751,
+          "at": 1791296222927
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 19066,
+          "output": 287,
+          "total": 81305,
+          "cache_read": 61952,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "hermes-recovery-1-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 76.587,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 4,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295577261
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295577261
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 47061,
+          "output": 1212,
+          "total": 277521,
+          "cache_read": 229248,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "hermes-recovery-1-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 111.163,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 731,
+          "at": 1791295467062
+        },
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 767,
+          "at": 1791295467075
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 8345,
+          "output": 445,
+          "total": 147158,
+          "cache_read": 138368,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "honest-abstention-target-not-recovered"
+    },
+    {
+      "id": "hermes-recovery-2-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 89.163,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 4,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295947784
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295947784
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 50440,
+          "output": 1253,
+          "total": 314989,
+          "cache_read": 263296,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "hermes-recovery-2-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 120.747,
+      "client": "hermes",
+      "firstAction": "mcp__midbrain_memory__memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 746,
+          "at": 1791296037607
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 726,
+          "at": 1791296037608
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "input": 45049,
+          "output": 1101,
+          "total": 245318,
+          "cache_read": 199168,
+          "cache_write": 0
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "opencode-decision-1-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 63.849,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": false,
+      "toolCount": 2,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295350439
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295350439
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21385,
+          "input": 21347,
+          "output": 38,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 23782,
+          "input": 2515,
+          "output": 19,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 24728,
+          "input": 1017,
+          "output": 31,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 23680
+          }
+        },
+        {
+          "total": 25169,
+          "input": 551,
+          "output": 42,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 24576
+          }
+        },
+        {
+          "total": 25246,
+          "input": 252,
+          "output": 34,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 24960
+          }
+        },
+        {
+          "total": 29100,
+          "input": 3971,
+          "output": 41,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 25088
+          }
+        },
+        {
+          "total": 37889,
+          "input": 8199,
+          "output": 762,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 28928
+          }
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "opencode-decision-1-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 70.084,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 668,
+          "at": 1791295283419
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 705,
+          "at": 1791295283456
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21490,
+          "input": 21453,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 24106,
+          "input": 2839,
+          "output": 19,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 25058,
+          "input": 1085,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 23936
+          }
+        },
+        {
+          "total": 39145,
+          "input": 14272,
+          "output": 41,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 24832
+          }
+        },
+        {
+          "total": 39225,
+          "input": 276,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 38912
+          }
+        },
+        {
+          "total": 39664,
+          "input": 584,
+          "output": 40,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39040
+          }
+        },
+        {
+          "total": 42397,
+          "input": 2932,
+          "output": 41,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39424
+          }
+        },
+        {
+          "total": 51141,
+          "input": 8184,
+          "output": 717,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 42240
+          }
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "opencode-decision-2-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 62.595,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295613403
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295613403
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21383,
+          "input": 21346,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 24427,
+          "input": 3160,
+          "output": 19,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 25384,
+          "input": 1022,
+          "output": 42,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 24320
+          }
+        },
+        {
+          "total": 25464,
+          "input": 211,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 25216
+          }
+        },
+        {
+          "total": 39417,
+          "input": 14039,
+          "output": 34,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 25344
+          }
+        },
+        {
+          "total": 39854,
+          "input": 520,
+          "output": 38,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39296
+          }
+        },
+        {
+          "total": 43706,
+          "input": 3987,
+          "output": 39,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39680
+          }
+        },
+        {
+          "total": 51478,
+          "input": 7209,
+          "output": 749,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 43520
+          }
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "opencode-decision-2-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 107.207,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 729,
+          "at": 1791295676713
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 735,
+          "at": 1791295676719
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21478,
+          "input": 21445,
+          "output": 33,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 22424,
+          "input": 1143,
+          "output": 33,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 36206,
+          "input": 13915,
+          "output": 19,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 22272
+          }
+        },
+        {
+          "total": 37163,
+          "input": 1025,
+          "output": 42,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 36096
+          }
+        },
+        {
+          "total": 37236,
+          "input": 214,
+          "output": 30,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 36992
+          }
+        },
+        {
+          "total": 37669,
+          "input": 515,
+          "output": 34,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 37120
+          }
+        },
+        {
+          "total": 41517,
+          "input": 3978,
+          "output": 35,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 37504
+          }
+        },
+        {
+          "total": 49276,
+          "input": 7196,
+          "output": 736,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 41344
+          }
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "opencode-missing-1-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 26.702,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295586722
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295586722
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21375,
+          "input": 21336,
+          "output": 39,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 22164,
+          "input": 877,
+          "output": 39,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 34889,
+          "input": 12829,
+          "output": 44,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 22016
+          }
+        },
+        {
+          "total": 34986,
+          "input": 236,
+          "output": 62,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 34688
+          }
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "opencode-missing-1-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 48.797,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 733,
+          "at": 1791295538646
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 752,
+          "at": 1791295538665
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21479,
+          "input": 21440,
+          "output": 39,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 22268,
+          "input": 981,
+          "output": 39,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 34993,
+          "input": 12805,
+          "output": 44,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 22144
+          }
+        },
+        {
+          "total": 35096,
+          "input": 212,
+          "output": 68,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 34816
+          }
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "opencode-missing-2-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 18.018,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295898064
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295898064
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21377,
+          "input": 21338,
+          "output": 39,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 22166,
+          "input": 879,
+          "output": 39,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 34891,
+          "input": 12831,
+          "output": 44,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 22016
+          }
+        },
+        {
+          "total": 34994,
+          "input": 238,
+          "output": 68,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 34688
+          }
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "opencode-missing-2-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 22.03,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 700,
+          "at": 1791295916753
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 700,
+          "at": 1791295916753
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21489,
+          "input": 21450,
+          "output": 39,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 22278,
+          "input": 991,
+          "output": 39,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 35003,
+          "input": 12815,
+          "output": 44,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 22144
+          }
+        },
+        {
+          "total": 35105,
+          "input": 222,
+          "output": 67,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 34816
+          }
+        }
+      ],
+      "reviewedOutcome": "correct-not-found-no-fabrication"
+    },
+    {
+      "id": "opencode-recovery-1-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 60.753,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295477160
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295477160
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21380,
+          "input": 21343,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 24736,
+          "input": 3451,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 38734,
+          "input": 14124,
+          "output": 34,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 24576
+          }
+        },
+        {
+          "total": 38782,
+          "input": 235,
+          "output": 19,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 38528
+          }
+        },
+        {
+          "total": 39739,
+          "input": 1041,
+          "output": 42,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 38656
+          }
+        },
+        {
+          "total": 39844,
+          "input": 230,
+          "output": 62,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39552
+          }
+        },
+        {
+          "total": 40548,
+          "input": 825,
+          "output": 43,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39680
+          }
+        },
+        {
+          "total": 42876,
+          "input": 2516,
+          "output": 40,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 40320
+          }
+        },
+        {
+          "total": 44512,
+          "input": 1226,
+          "output": 534,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 42752
+          }
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "opencode-recovery-1-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 62.946,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 1155,
+          "at": 1791295415464
+        },
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 1156,
+          "at": 1791295415465
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21472,
+          "input": 21435,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 24890,
+          "input": 3543,
+          "output": 99,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 39843,
+          "input": 15103,
+          "output": 36,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 24704
+          }
+        },
+        {
+          "total": 40015,
+          "input": 272,
+          "output": 63,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39680
+          }
+        },
+        {
+          "total": 40914,
+          "input": 945,
+          "output": 146,
+          "reasoning": 15,
+          "cache": {
+            "write": 0,
+            "read": 39808
+          }
+        },
+        {
+          "total": 44089,
+          "input": 2998,
+          "output": 515,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 40576
+          }
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "opencode-recovery-2-off",
+      "identity": "off",
+      "code": 0,
+      "seconds": 52.01,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": false,
+          "at": 1791295783192
+        },
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": false,
+          "at": 1791295783192
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21380,
+          "input": 21343,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        {
+          "total": 24736,
+          "input": 3451,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 38564,
+          "input": 13951,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 24576
+          }
+        },
+        {
+          "total": 38692,
+          "input": 273,
+          "output": 19,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 38400
+          }
+        },
+        {
+          "total": 39642,
+          "input": 1079,
+          "output": 35,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 38528
+          }
+        },
+        {
+          "total": 39722,
+          "input": 261,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39424
+          }
+        },
+        {
+          "total": 40184,
+          "input": 584,
+          "output": 48,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39552
+          }
+        },
+        {
+          "total": 41474,
+          "input": 1048,
+          "output": 490,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39936
+          }
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    },
+    {
+      "id": "opencode-recovery-2-on",
+      "identity": "on",
+      "code": 0,
+      "seconds": 62.85,
+      "client": "opencode",
+      "firstAction": "midbrain-memory_memory_search",
+      "memoryFirst": true,
+      "initialAnchorPreserved": true,
+      "initialRequestIdPreserved": true,
+      "startsNear10": true,
+      "widened50": true,
+      "toolCount": 3,
+      "identityReads": [
+        {
+          "kind": "identity",
+          "method": "getProfile",
+          "enabled": true,
+          "present": true,
+          "ms": 715,
+          "at": 1791295835914
+        },
+        {
+          "kind": "identity",
+          "method": "getPersona",
+          "enabled": true,
+          "present": true,
+          "ms": 749,
+          "at": 1791295835948
+        }
+      ],
+      "httpErrors": [],
+      "tokens": [
+        {
+          "total": 21482,
+          "input": 17093,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 4352
+          }
+        },
+        {
+          "total": 24838,
+          "input": 3553,
+          "output": 37,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 21248
+          }
+        },
+        {
+          "total": 38662,
+          "input": 13924,
+          "output": 34,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 24704
+          }
+        },
+        {
+          "total": 38710,
+          "input": 163,
+          "output": 19,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 38528
+          }
+        },
+        {
+          "total": 39660,
+          "input": 1097,
+          "output": 35,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 38528
+          }
+        },
+        {
+          "total": 39765,
+          "input": 279,
+          "output": 62,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39424
+          }
+        },
+        {
+          "total": 40208,
+          "input": 616,
+          "output": 40,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 39552
+          }
+        },
+        {
+          "total": 41357,
+          "input": 1246,
+          "output": 47,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 40064
+          }
+        },
+        {
+          "total": 42804,
+          "input": 1110,
+          "output": 478,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 41216
+          }
+        }
+      ],
+      "reviewedOutcome": "grounded-task-answer"
+    }
+  ]
+}

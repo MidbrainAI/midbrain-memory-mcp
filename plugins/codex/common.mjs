@@ -15,6 +15,7 @@ import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
+import { loadIdentityContext } from "../../shared/identity-context.mjs";
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-assistant-turns");
 const TOOL_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-tool-events");
 const TURN_BUFFER_TTL_MS = 24 * 60 * 60 * 1000;
@@ -60,24 +61,38 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
 
   await postEpisodic(prompt, "user", input, deps, api);
 
-  if (!isPkInjectionEnabled()) return undefined;
+  const context = await sessionContext(api, prompt, deps);
+  if (!context) return undefined;
+  return {
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: context,
+    },
+  };
+}
+
+async function sessionContext(api, prompt, deps) {
+  const sections = [];
+  try {
+    const identity = await loadIdentityContext(api);
+    if (identity) sections.push(identity);
+  } catch (err) {
+    safeLog(deps.logger, `IDENTITY INJECT ERROR: ${errorMessage(err)}`);
+  }
+
+  if (!isPkInjectionEnabled()) return sections.join("\n\n");
 
   // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
   try {
     const entries = await api.searchProcedural({ query: prompt, excludeIds: [] });
     if (entries.length > 0) {
       safeLog(deps.logger, `PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`, "debug");
-      return {
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext: formatPkContext(entries),
-        },
-      };
+      sections.push(formatPkContext(entries));
     }
   } catch (err) {
     safeLog(deps.logger, `PK INJECT ERROR: ${errorMessage(err)}`);
   }
-  return undefined;
+  return sections.join("\n\n");
 }
 
 export async function captureAssistant(input, deps = makeDefaultDeps()) {

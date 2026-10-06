@@ -28,6 +28,7 @@ shared/
   agent-rules.mjs                MidBrain rules block writer for AGENTS.md/CLAUDE.md
   midbrain-api.mjs               MidbrainApi client; all HTTP calls go here
   pk-inject.mjs                  Procedural-knowledge context helpers
+  identity-context.mjs           Persona and profile session-context helpers
   logger.mjs                     Leveled file logger + platform log dir
   plugin-entry.mjs               esbuild bundle entry point
   clients/
@@ -306,6 +307,9 @@ Codex:
   `~/.midbrain/bin/codex-hook` shim, not package-cache capture script paths.
   Codex may require one `/hooks` approval after shim migration; normal package
   and Node updates should not change the hook command after that.
+- When `MIDBRAIN_STATE_DIR` is explicitly set, the Codex shim exports it
+  for env-stripped hooks (including a NanoClaw Codex durable mount). Unset
+  preserves the historical shim body.
 - `Stop` and `PostToolUse` wrappers must write `{}` to stdout on success.
 - Assistant capture stores a clean answer separately from bounded reasoning and
   tool summaries.
@@ -321,6 +325,20 @@ Cursor:
   no legacy forms.
 - `beforeSubmitPrompt` must always write `{"continue": true}`; the other
   wrappers write `{}`. Every path exits 0 (Cursor fails open by default).
+- Persona and profile reach Cursor through the MCP server `instructions`:
+  `startMcpServer` calls `loadServerInstructions()` before readiness, which
+  reads them only when `MIDBRAIN_CLIENT` is `cursor` and is fail-open.
+  Blank/failed reads return explicit neutral instructions. Never populate
+  Cursor's per-project caches: their metadata does not prove an API binding.
+  `retireLegacyCursorInstructionCaches` backs up and removes only complete
+  unsigned legacy identity files under identified MidBrain cache folders;
+  mixed content, signed files, unknown metadata and symlinks are preserved.
+  Do not use `sessionStart`: Cursor fires it with the first prompt and merges
+  its `additional_context` after that prompt reached the model (measured).
+- Cursor also runs Claude Code hooks (Third-Party Imports) with its own
+  payload, which carries `cursor_version`. The Claude hooks return without
+  capture or injection when they see it and `Cursor.hasCaptureHooks()` is
+  true, so a Cursor turn is not handled twice.
 - Cursor holds the prompt until the `beforeSubmitPrompt` process exits, so the
   user hook does no network work: it writes the mapped fields to a private
   0600 job file and starts a detached `plugins/cursor/store-user.mjs` child
@@ -414,8 +432,10 @@ OpenClaw:
 
 - `plugins/openclaw/index.js` runs in-process in the OpenClaw gateway and
   imports runtime helpers from `./midbrain-shared.mjs` (the installed copy
-  receives the built bundle). It registers one handler on the typed
-  `agent_end` hook; `memory_search` stays in the MCP server.
+  receives the built bundle). It registers a `before_prompt_build` handler
+  (persona/profile as `appendSystemContext`, user or no trigger only, 5 s
+  limit, fail-open) and an `agent_end` capture handler; `memory_search`
+  stays in the MCP server.
 - `agent_end` carries the whole session history: the handler stores only the
   newest user message and the final assistant text after it, once per session
   turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
@@ -500,6 +520,16 @@ Rules:
 - PK title/content is capped: 160 title characters, 2,000 content characters
   per entry, and 6,000 characters total. Marker-like text is escaped.
 - Use helpers in `shared/pk-inject.mjs`; do not duplicate marker parsing.
+
+Persona and profile are injected on the user turn by the Claude Code, Codex,
+Hermes, OpenCode, and OpenClaw paths. They are read-only (`GET /api/v1/persona`
+and `GET /api/v1/profile`), they are not MCP tools, and a failed read is
+skipped. Cursor gets them from the MCP server instructions, read once at
+server start (`loadServerInstructions` in `mcp.mjs`), because no Cursor hook
+can add context in time. Helpers live in `shared/identity-context.mjs`. Generated blocks carry a nonce
+and an HMAC over their full contents, bound to the API key and host. Only
+verified assistant echoes are removed, centrally in `storeEpisodic` and
+`postEpisodicResult`; unsigned examples and wrong-binding blocks are preserved.
 
 ## Memory-First Agent Rules
 
@@ -614,6 +644,7 @@ Vitest tests live in `tests/`.
 |---|---|
 | `tests/midbrain-api.test.mjs` | `shared/midbrain-api.mjs` |
 | `tests/pk-inject.test.mjs` | `shared/pk-inject.mjs` |
+| `tests/identity-context.test.mjs` | `shared/identity-context.mjs` |
 | `tests/logger.test.mjs` | `shared/logger.mjs` |
 | `tests/client-opencode.test.mjs` | `shared/clients/opencode.mjs` |
 | `tests/client-claude.test.mjs` | `shared/clients/claude.mjs` |
