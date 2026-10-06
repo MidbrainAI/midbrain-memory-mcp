@@ -15,7 +15,7 @@ import { z } from "zod";
 import { MidbrainApi } from "./shared/midbrain-api.mjs";
 import { configuredProjectDir } from "./shared/project-dir.mjs";
 import { getClient } from "./shared/clients/registry.mjs";
-import { syncCursorInstructionCache } from "./shared/clients/cursor.mjs";
+import { retireLegacyCursorInstructionCaches } from "./shared/cursor-identity-cache.mjs";
 import { setupProject } from "./install.mjs";
 import {
   readGlobalKeystore,
@@ -50,7 +50,8 @@ export async function createApi() {
 
 /**
  * Read persona and profile for the server instructions, once at startup.
- * Resolves undefined for other clients, a blank account, or any failure.
+ * Other clients get no instructions. Blank/failed Cursor reads explicitly
+ * replace earlier identity with a neutral baseline in the initialize result.
  * Never throws.
  *
  * @param {{clientId?: string, createApiFn?: Function}} [opts]
@@ -59,29 +60,23 @@ export async function createApi() {
 export async function loadServerInstructions({
   clientId = process.env.MIDBRAIN_CLIENT,
   createApiFn = createApi,
-  syncInstructionCacheFn = syncCursorInstructionCache,
+  retireLegacyCacheFn = retireLegacyCursorInstructionCaches,
   log = console.error,
 } = {}) {
   if (!INSTRUCTION_IDENTITY_CLIENTS.has(clientId)) return undefined;
+  const empty = "No persona or profile is supplied for this server connection.";
+  try { await retireLegacyCacheFn(); } catch { /* never block readiness */ }
   try {
     const block = await loadIdentityContext(await createApiFn());
     if (!block) {
       log("[midbrain] persona/profile not added: both are blank or could not be read");
-      return undefined;
+      return empty;
     }
     log(`[midbrain] persona/profile added to the server instructions (${block.length} chars)`);
-    // Cursor agents read instructions from a per-project cache file that the
-    // app often skips writing on reconnect; heal every existing MidBrain cache.
-    try {
-      const synced = await syncInstructionCacheFn(block);
-      if (synced > 0) {
-        log(`[midbrain] synced persona/profile into ${synced} Cursor MCP instruction cache(s)`);
-      }
-    } catch { /* never block readiness */ }
     return block;
   } catch (err) {
     log(`[midbrain] persona/profile not added: ${err instanceof Error ? err.message : String(err)}`);
-    return undefined;
+    return empty;
   }
 }
 

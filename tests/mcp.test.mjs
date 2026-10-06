@@ -22,6 +22,7 @@ import { createServer, startMcpServer } from "../index.js";
 import { loadServerInstructions } from "../mcp.mjs";
 import { formatIdentityContext } from "../shared/identity-context.mjs";
 import { PKG_VERSION } from "../shared/clients/utils.mjs";
+import { makeTestEnv } from "./helpers/test-env.mjs";
 import { sandboxHomeEnv } from "./helpers/sandboxed-child-env.mjs";
 
 // Windows cannot represent POSIX 0o600 file modes; skip exact-mode assertions
@@ -1887,6 +1888,9 @@ describe("index.js source invariants (PRD-011 R-1..R-4)", () => {
 });
 
 describe("server instructions carry persona and profile for Cursor", () => {
+  let identityEnv;
+  beforeEach(async () => { identityEnv = await makeTestEnv(); });
+  afterEach(async () => { await identityEnv.restore(); });
   const identityApi = () => ({
     getPersona: vi.fn(async () => "Be concise."),
     getProfile: vi.fn(async () => "Works at CX2."),
@@ -1914,16 +1918,9 @@ describe("server instructions carry persona and profile for Cursor", () => {
     await probe.close();
   });
 
-  it("loads the identity block for Cursor and heals the instruction cache", async () => {
-    const createApiFn = vi.fn(async () => identityApi());
-    const syncInstructionCacheFn = vi.fn(async () => 2);
-    const log = vi.fn();
-    await expect(loadServerInstructions({ clientId: "cursor", createApiFn, syncInstructionCacheFn, log }))
+  it("loads identity in the native server instructions", async () => {
+    await expect(loadServerInstructions({ clientId: "cursor", createApiFn: async () => identityApi() }))
       .resolves.toBe(formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }));
-    expect(syncInstructionCacheFn).toHaveBeenCalledWith(
-      formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }),
-    );
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("synced persona/profile into 2 Cursor MCP"));
   });
 
   it.each(["claude", "codex", "hermes", "opencode", "openclaw", "nanoclaw", undefined])(
@@ -1938,11 +1935,11 @@ describe("server instructions carry persona and profile for Cursor", () => {
     await expect(loadServerInstructions({
       clientId: "cursor",
       createApiFn: async () => { throw new Error("No API key configured"); },
-    })).resolves.toBeUndefined();
+    })).resolves.toBe("No persona or profile is supplied for this server connection.");
     await expect(loadServerInstructions({
       clientId: "cursor",
       createApiFn: async () => ({ getPersona: async () => null, getProfile: async () => null }),
-    })).resolves.toBeUndefined();
+    })).resolves.toBe("No persona or profile is supplied for this server connection.");
   });
 
   it("startMcpServer builds the server with the loaded instructions", async () => {

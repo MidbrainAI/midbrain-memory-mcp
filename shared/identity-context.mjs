@@ -5,12 +5,15 @@
  * Not an MCP tool. Hooks prepend this block; they do not write either field.
  */
 
+import { randomUUID } from "node:crypto";
+
 export const IDENTITY_MARKER_START = "<!-- mb:identity-start -->";
 export const IDENTITY_MARKER_END = "<!-- mb:identity-end -->";
 export const IDENTITY_FIELD_MAX_CHARS = 3_000;
 const TRUNCATION_MARKER = "\n[truncated]";
 const PERSONA_HEADER = "## Agent persona";
 const PROFILE_HEADER = "## User profile";
+const IDENTITY_PROOF_RE = /^<!-- mb:identity-proof nonce=([a-f0-9-]{36}) sig=([a-f0-9]{64}) -->\n([\s\S]*)$/;
 const HTML_COMMENT_START_RE = /<!--/g;
 const HTML_COMMENT_END_RE = /-->/g;
 const IDENTITY_BLOCK_RE = new RegExp(
@@ -42,28 +45,36 @@ function section(header, value) {
  * @param {{persona?: string|null, profile?: string|null}} fields
  * @returns {string}
  */
-export function formatIdentityContext({ persona, profile } = {}) {
+export function formatIdentityContext({ persona, profile } = {}, api) {
   const sections = [section(PERSONA_HEADER, persona), section(PROFILE_HEADER, profile)].filter(Boolean);
   if (sections.length === 0) return "";
-  return `${IDENTITY_MARKER_START}\n${sections.join("\n\n")}\n${IDENTITY_MARKER_END}`;
+  let body = sections.join("\n\n");
+  if (typeof api?.signIdentityContext === "function") {
+    const nonce = randomUUID();
+    const signature = api.signIdentityContext(`${nonce}\n${body}`);
+    body = `<!-- mb:identity-proof nonce=${nonce} sig=${signature} -->\n${body}`;
+  }
+  return `${IDENTITY_MARKER_START}\n${body}\n${IDENTITY_MARKER_END}`;
 }
 
-function isInjectedIdentityBlock(block) {
-  return block.startsWith(IDENTITY_MARKER_START) &&
-    block.endsWith(IDENTITY_MARKER_END) &&
-    (block.includes(PERSONA_HEADER) || block.includes(PROFILE_HEADER));
+function isInjectedIdentityBlock(block, api) {
+  if (typeof api?.verifyIdentityContext !== "function") return false;
+  const body = block.slice(IDENTITY_MARKER_START.length + 1, -IDENTITY_MARKER_END.length - 1);
+  const proof = IDENTITY_PROOF_RE.exec(body);
+  return Boolean(proof && api.verifyIdentityContext(`${proof[1]}\n${proof[3]}`, proof[2]));
 }
 
 /**
  * Remove hook-injected identity blocks before storing assistant text.
- * A marker pair without the persona or profile heading is left alone.
+ * Only authenticated blocks from the same API binding are removed. Unsigned
+ * examples, modified blocks and blocks from another agent/host are preserved.
  *
  * @param {string} text
  * @returns {string}
  */
-export function scrubIdentityContext(text) {
+export function scrubIdentityContext(text, api) {
   return String(text ?? "").replace(IDENTITY_BLOCK_RE, (block) =>
-    isInjectedIdentityBlock(block) ? "" : block
+    isInjectedIdentityBlock(block, api) ? "" : block
   ).trim();
 }
 
@@ -88,5 +99,5 @@ export async function loadIdentityContext(api) {
     readField(api, "getPersona"),
     readField(api, "getProfile"),
   ]);
-  return formatIdentityContext({ persona, profile });
+  return formatIdentityContext({ persona, profile }, api);
 }

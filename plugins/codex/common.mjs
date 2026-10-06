@@ -15,7 +15,7 @@ import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
-import { loadIdentityContext, scrubIdentityContext } from "../../shared/identity-context.mjs";
+import { loadIdentityContext } from "../../shared/identity-context.mjs";
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-assistant-turns");
 const TOOL_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-tool-events");
 const TURN_BUFFER_TTL_MS = 24 * 60 * 60 * 1000;
@@ -170,7 +170,7 @@ async function postEpisodic(text, role, input, deps, api) {
   // deps.client lets the Cursor runtime reuse this capture path with its own label.
   const client = deps.client || "codex";
   try {
-    if (role === "assistant") text = scrubIdentityContext(scrubInjectedPkContext(text));
+    if (role === "assistant") text = scrubInjectedPkContext(text);
     if (!text) return true;
     const cwd = typeof input?.cwd === "string" && input.cwd.trim() ? input.cwd : undefined;
     if (!api) {

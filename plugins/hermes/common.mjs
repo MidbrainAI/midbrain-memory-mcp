@@ -19,7 +19,7 @@ import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
-import { loadIdentityContext, scrubIdentityContext } from "../../shared/identity-context.mjs";
+import { loadIdentityContext } from "../../shared/identity-context.mjs";
 
 export async function createApi(cwd) {
   return MidbrainApi.create(getClient("hermes"), hookProjectDir(cwd));
@@ -111,7 +111,7 @@ export async function captureAssistant(input, deps = makeDefaultDeps()) {
   const raw = payloadText(input, [
     "assistant_response", "response_text", "response", "assistant_message", "text",
   ]);
-  const text = scrubIdentityContext(isPkInjectionEnabled() ? scrubInjectedPkContext(raw) : raw);
+  const text = isPkInjectionEnabled() ? scrubInjectedPkContext(raw) : raw;
   if (!text) return undefined;
 
   const projectDir = payloadCwd(input);

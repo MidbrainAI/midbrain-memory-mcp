@@ -171,12 +171,12 @@ describe("Codex hook capture", () => {
     ]);
   });
 
-  it("captureAssistant scrubs an echoed identity block before storage", async () => {
+  it("captureAssistant preserves unsigned identity examples for the API", async () => {
     const block = formatIdentityContext({ persona: "Be concise." });
 
     await captureAssistant({ last_assistant_message: `${block}\n\nFinal answer`, cwd: "/repo" }, deps);
 
-    expect(firstStore(deps)[0]).toBe("Final answer");
+    expect(firstStore(deps)[0]).toBe(`${block}\n\nFinal answer`);
   });
 
   it("captureAssistant scrubs echoed injected PK blocks before storage", async () => {

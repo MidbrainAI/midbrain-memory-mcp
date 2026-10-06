@@ -843,12 +843,15 @@ Limitations:
   the server restarts, for example after a window reload. The hooks cannot
   carry them: `beforeSubmitPrompt` cannot add context, and Cursor merges
   `sessionStart` output only after the first prompt has gone to the model.
-  Cursor shows them to the model from
-  `~/.cursor/projects/*/mcps/user-midbrain-memory/INSTRUCTIONS.md`; the app
-  often skips writing that file when reconnecting to a server first discovered
-  without instructions, so MidBrain also syncs the file on server start for
-  every existing MidBrain cache folder. The server adds them only when
-  `MIDBRAIN_CLIENT` is `cursor`, so other clients do not get them twice.
+  MidBrain sends native MCP instructions, including an explicit empty-state
+  message when neither field is available. It never copies one project's
+  identity into another project's Cursor cache. On startup it retires complete
+  legacy identity-only cache files from this draft, saving private backups in
+  MidBrain's global config directory under `cursor-identity-backups/`.
+  Mixed or unrecognized files are preserved. If Cursor still shows old
+  instructions, remove and re-add the MidBrain MCP connection and start a new
+  chat. The server adds identity only when `MIDBRAIN_CLIENT` is `cursor`, so
+  other clients do not get it twice.
 - Cursor also runs Claude Code hooks from `~/.claude/settings.json` (its
   Third-Party Imports setting, on by default). When Cursor's MidBrain hooks are
   installed, the MidBrain Claude hooks recognize Cursor's payload and do

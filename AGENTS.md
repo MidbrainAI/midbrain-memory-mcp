@@ -307,6 +307,9 @@ Codex:
   `~/.midbrain/bin/codex-hook` shim, not package-cache capture script paths.
   Codex may require one `/hooks` approval after shim migration; normal package
   and Node updates should not change the hook command after that.
+- When `MIDBRAIN_STATE_DIR` is explicitly set, the Codex shim exports it
+  for env-stripped hooks (including a NanoClaw Codex durable mount). Unset
+  preserves the historical shim body.
 - `Stop` and `PostToolUse` wrappers must write `{}` to stdout on success.
 - Assistant capture stores a clean answer separately from bounded reasoning and
   tool summaries.
@@ -325,10 +328,11 @@ Cursor:
 - Persona and profile reach Cursor through the MCP server `instructions`:
   `startMcpServer` calls `loadServerInstructions()` before readiness, which
   reads them only when `MIDBRAIN_CLIENT` is `cursor` and is fail-open.
-  After a successful read it also calls `syncCursorInstructionCache`, which
-  content-compares
-  `~/.cursor/projects/*/mcps/user-midbrain-memory/INSTRUCTIONS.md` for every
-  existing MidBrain cache folder (Cursor often omits that file on reconnect).
+  Blank/failed reads return explicit neutral instructions. Never populate
+  Cursor's per-project caches: their metadata does not prove an API binding.
+  `retireLegacyCursorInstructionCaches` backs up and removes only complete
+  unsigned legacy identity files under identified MidBrain cache folders;
+  mixed content, signed files, unknown metadata and symlinks are preserved.
   Do not use `sessionStart`: Cursor fires it with the first prompt and merges
   its `additional_context` after that prompt reached the model (measured).
 - Cursor also runs Claude Code hooks (Third-Party Imports) with its own
@@ -522,7 +526,10 @@ Hermes, OpenCode, and OpenClaw paths. They are read-only (`GET /api/v1/persona`
 and `GET /api/v1/profile`), they are not MCP tools, and a failed read is
 skipped. Cursor gets them from the MCP server instructions, read once at
 server start (`loadServerInstructions` in `mcp.mjs`), because no Cursor hook
-can add context in time. Helpers live in `shared/identity-context.mjs`.
+can add context in time. Helpers live in `shared/identity-context.mjs`. Generated blocks carry a nonce
+and an HMAC over their full contents, bound to the API key and host. Only
+verified assistant echoes are removed, centrally in `storeEpisodic` and
+`postEpisodicResult`; unsigned examples and wrong-binding blocks are preserved.
 
 ## Memory-First Agent Rules
 

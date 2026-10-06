@@ -27,7 +27,7 @@
 
 import {
   MidbrainApi, appendToCache, makeLogger, logFile, buildCaptureMetadata, getClient,
-  scrubInjectedPkContext, loadIdentityContext, scrubIdentityContext,
+  scrubInjectedPkContext, loadIdentityContext,
 } from "./midbrain-shared.mjs";
 
 export const CLIENT = "openclaw";
@@ -203,7 +203,7 @@ export function createAgentEndHandler(deps = {}) {
       if (!turn) return;
       const session = ctx.sessionKey || ctx.sessionId || "";
       const prev = session ? lastTurn.get(session) : undefined;
-      const reply = scrubIdentityContext(scrubInjectedPkContext(turn.assistant));
+      const reply = scrubInjectedPkContext(turn.assistant);
       // A model failure is retried as a new success with a fresh timestamp and
       // no reply. The timestamp key would store the prompt again each time.
       const emptyRetry = prev && prev.user === turn.user && !prev.assistant && !reply;

@@ -197,10 +197,10 @@ describe("createAgentEndHandler", () => {
     await expect(onEnd({ success: true, messages: "nope" }, CTX)).resolves.toBeUndefined();
   });
 
-  it("removes an echoed persona and profile block before storing the reply", async () => {
+  it("preserves unsigned persona and profile examples", async () => {
     const block = formatIdentityContext({ persona: "Be concise." });
     await handler()({ success: true, messages: [user("q"), assistant(`${block}\n\nAnswer.`)] }, CTX);
-    expect(stored().map((s) => s.text)).toEqual(["q", "Answer."]);
+    expect(stored().map((s) => s.text)).toEqual(["q", `${block}\n\nAnswer.`]);
   });
 });
 
