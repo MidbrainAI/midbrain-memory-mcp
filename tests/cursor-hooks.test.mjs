@@ -440,6 +440,17 @@ describe("Cursor headless capture from sessionEnd (#97)", () => {
     expect(deps.spawn).toHaveBeenCalledOnce();
   });
 
+  it("live markers untouched for a day are removed when a live hook runs (desktop may never fire sessionEnd)", async () => {
+    const stale = path.join(deps.liveSessionDir, "conv-old");
+    fs.writeFileSync(stale, "");
+    const dayAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(stale, dayAgo, dayAgo);
+
+    await captureAssistant(common("afterAgentResponse", { text: "done" }), deps);
+
+    expect(fs.readdirSync(deps.liveSessionDir)).toEqual(["conv-1"]);
+  });
+
   it("stores the prompt, then the reply and the turn's tool summary, with cursor metadata", async () => {
     await captureToolUse(common("postToolUse", {
       generation_id: "conv-1",

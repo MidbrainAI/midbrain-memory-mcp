@@ -54,6 +54,10 @@ const LIVE_SESSION_DIR = path.join(os.tmpdir(), "midbrain-cursor-live-sessions")
 const CURSOR_PROJECTS_ROOT = path.join(os.homedir(), ".cursor", "projects");
 // Clock slack when comparing a live-capture marker with the session start.
 const LIVE_MARKER_SLACK_MS = 5_000;
+// The desktop app does not always fire sessionEnd (closing the window left the
+// marker in place), so markers untouched for a day are removed. Every live
+// hook refreshes its conversation's marker.
+const LIVE_MARKER_TTL_MS = 24 * 60 * 60 * 1000;
 const TIMED_OUT = "timeout";
 const STORE_ENTRY = fileURLToPath(new URL("./store-user.mjs", import.meta.url));
 // Hard limit for the background user store. On expiry the entry goes to the
@@ -381,10 +385,21 @@ function markLiveCapture(input, deps) {
   const marker = liveMarkerPath(input, deps);
   if (!marker) return;
   try {
-    fs.mkdirSync(path.dirname(marker), { recursive: true, mode: 0o700 });
+    const dir = path.dirname(marker);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(marker, "", { encoding: "utf8", mode: 0o600 });
+    removeStaleMarkers(dir, (deps.now ? deps.now() : Date.now()) - LIVE_MARKER_TTL_MS);
   } catch (err) {
     safeLog(deps.logger, `CURSOR LIVE MARK ERROR: ${errorMessage(err)}`);
+  }
+}
+
+function removeStaleMarkers(dir, cutoff) {
+  for (const name of fs.readdirSync(dir)) {
+    const file = path.join(dir, name);
+    try {
+      if (fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file, { force: true });
+    } catch { /* raced with another hook */ }
   }
 }
 
