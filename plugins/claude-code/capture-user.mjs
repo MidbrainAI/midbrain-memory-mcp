@@ -5,6 +5,8 @@
  * injection is disabled by default and only runs when explicitly opted in.
  *
  * Stdin JSON: { prompt: "...", session_id, cwd, ... }
+ * Cursor also runs this hook (Third-Party Imports) with its own payload; that
+ * run is skipped when the MidBrain Cursor hooks capture the turn (#100).
  * session_id and cwd are forwarded into episodic memory_metadata for scoping.
  * Stdout JSON (on opted-in PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
  * Capture failures are non-fatal. Capture completes before finishHook(), whose
@@ -15,7 +17,10 @@
  * turns within one session. min_score=0.5 limits repetition to relevant entries.
  */
 
-import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
+import {
+  readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook,
+  cursorCapturesTurn,
+} from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
@@ -23,6 +28,10 @@ import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mj
 async function captureUser() {
   const input = await readStdinJSON();
   if (!input?.prompt) return;
+  if (await cursorCapturesTurn(input)) {
+    log.debug("CURSOR HOST: prompt left to the MidBrain Cursor hooks");
+    return;
+  }
 
   const client = await captureClientLabel();
   const metadata = buildCaptureMetadata({
