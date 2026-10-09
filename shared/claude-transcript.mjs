@@ -1,4 +1,7 @@
-/** Guarded, bounded readers for Claude Stop-hook transcript consumers. */
+/**
+ * Guarded, bounded readers for Claude Stop-hook transcript consumers. The
+ * generic reader also serves the Cursor sessionEnd hook (#97).
+ */
 
 import fs from "node:fs";
 import os from "node:os";
@@ -39,11 +42,10 @@ function isContained(root, target) {
     !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-function openTranscript(target) {
+function openTranscript(target, rootPath) {
   let fd;
   try {
     if (typeof target !== "string" || !target.trim() || !path.isAbsolute(target)) return null;
-    const rootPath = projectsRoot();
     const rootBefore = fs.lstatSync(rootPath);
     if (!rootBefore.isDirectory() || rootBefore.isSymbolicLink()) return null;
     const rootReal = fs.realpathSync(rootPath);
@@ -107,7 +109,16 @@ function parseCompleteRows({ raw, offset }) {
 
 /** Read trusted complete NDJSON rows from at most the final 4 MiB. */
 export function readClaudeTranscript(transcriptPath) {
-  const source = openTranscript(transcriptPath);
+  return readTranscriptRows(transcriptPath, projectsRoot());
+}
+
+/**
+ * Read complete NDJSON rows from at most the final 4 MiB of a regular file
+ * contained in rootPath (no symlinks, identity re-checked after the read).
+ * Returns null when the file is not trusted or not readable.
+ */
+export function readTranscriptRows(transcriptPath, rootPath) {
+  const source = openTranscript(transcriptPath, rootPath);
   if (!source) return null;
   try {
     const tail = readTail(source);

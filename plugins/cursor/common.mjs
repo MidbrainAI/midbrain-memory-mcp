@@ -36,6 +36,7 @@ import { fileURLToPath } from "url";
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
 import { hookProjectDir, logProjectFallback } from "../../shared/project-dir.mjs";
 import { appendToCache } from "../../shared/episodic-cache.mjs";
+import { readTranscriptRows } from "../../shared/claude-transcript.mjs";
 import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
@@ -49,8 +50,11 @@ const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-cursor-assistant-t
 const TOOL_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-cursor-tool-events");
 const STORE_JOB_DIR = path.join(os.tmpdir(), "midbrain-cursor-store-jobs");
 const LIVE_SESSION_DIR = path.join(os.tmpdir(), "midbrain-cursor-live-sessions");
+// Cursor writes agent transcripts under ~/.cursor/projects/<slug>/agent-transcripts.
+const CURSOR_PROJECTS_ROOT = path.join(os.homedir(), ".cursor", "projects");
 // Clock slack when comparing a live-capture marker with the session start.
 const LIVE_MARKER_SLACK_MS = 5_000;
+const TIMED_OUT = "timeout";
 const STORE_ENTRY = fileURLToPath(new URL("./store-user.mjs", import.meta.url));
 // Hard limit for the background user store. On expiry the entry goes to the
 // offline cache (boot-time drain) and the background child exits.
@@ -155,6 +159,59 @@ function storeTimeLimitMs() {
   return Number.isInteger(value) && value > 0 ? value : STORE_TIME_LIMIT_MS;
 }
 
+class StoreTimeout extends Error {}
+
+/** Resolve to the work's value, or TIMED_OUT once ms have passed. */
+async function withinLimit(work, ms) {
+  let timer;
+  const expired = new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), Math.max(0, ms)); });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Deps whose key resolution and every store share one hard deadline (the
+ * store time limit, from now). A store still pending at the deadline goes to
+ * the offline cache under the resolved API's cache scope, for the boot drain,
+ * and resolves to TIMED_OUT (truthy: the entry is kept). Key resolution still
+ * pending at the deadline throws StoreTimeout: there is no scope to cache
+ * under, so the entry is dropped. The API is resolved once per cwd.
+ */
+function boundedDeps(deps) {
+  const deadline = Date.now() + (deps.storeTimeLimitMs ?? storeTimeLimitMs());
+  const remaining = () => deadline - Date.now();
+  const apis = new Map();
+  const resolveApi = async (cwd) => {
+    const api = await withinLimit(deps.createApi(cwd), remaining());
+    if (api === TIMED_OUT) {
+      throw new StoreTimeout(`key/host not resolved within ${deps.storeTimeLimitMs ?? storeTimeLimitMs()}ms; entry dropped`);
+    }
+    return {
+      cacheScope: api.cacheScope,
+      projectFallbackNote: api.projectFallbackNote,
+      requestedProjectDir: api.requestedProjectDir,
+      async storeEpisodic(text, role, logger, metadata) {
+        const stored = await withinLimit(Promise.resolve().then(() => api.storeEpisodic(text, role, logger, metadata)), remaining());
+        if (stored !== TIMED_OUT) return stored;
+        appendToCache({ text, role, memory_metadata: metadata }, api.cacheScope);
+        safeLog(deps.logger, `CURSOR CAPTURE TIMEOUT (${role}): no reply before the store time limit; cached for boot-time drain`, "warn");
+        return TIMED_OUT;
+      },
+    };
+  };
+  return {
+    ...deps,
+    createApi(cwd) {
+      const key = cwd ?? "";
+      if (!apis.has(key)) apis.set(key, resolveApi(cwd));
+      return apis.get(key);
+    },
+  };
+}
+
 /**
  * Store one user prompt with the Cursor metadata under a hard time limit.
  * On expiry the entry is appended to the offline cache under the resolved
@@ -163,30 +220,25 @@ function storeTimeLimitMs() {
  * @returns {Promise<"stored"|"failed"|"timeout">}
  */
 export async function storeUserJob(job, deps = makeDefaultDeps()) {
-  const limitMs = deps.storeTimeLimitMs ?? storeTimeLimitMs();
+  return storeUserPrompt(job, boundedDeps(deps));
+}
+
+async function storeUserPrompt(job, bounded) {
   const metadata = buildCaptureMetadata({ client: CLIENT, cwd: job.cwd, sessionId: job.session_id });
-  let api;
-  const work = (async () => {
-    api = await deps.createApi(job.cwd);
-    logProjectFallback(api, deps.logger);
-    const stored = await api.storeEpisodic(job.prompt, "user", deps.logger, metadata);
+  try {
+    const api = await bounded.createApi(job.cwd);
+    logProjectFallback(api, bounded.logger);
+    const stored = await api.storeEpisodic(job.prompt, "user", bounded.logger, metadata);
+    if (stored === TIMED_OUT) return "timeout";
     return stored === false ? "failed" : "stored";
-  })().catch((err) => {
-    safeLog(deps.logger, `CURSOR CAPTURE ERROR (user): ${errorMessage(err)}`);
+  } catch (err) {
+    if (err instanceof StoreTimeout) {
+      safeLog(bounded.logger, `CURSOR CAPTURE TIMEOUT (user): ${err.message}`);
+      return "timeout";
+    }
+    safeLog(bounded.logger, `CURSOR CAPTURE ERROR (user): ${errorMessage(err)}`);
     return "failed";
-  });
-  let timer;
-  const expired = new Promise((resolve) => { timer = setTimeout(() => resolve("timeout"), limitMs); });
-  const outcome = await Promise.race([work, expired]);
-  clearTimeout(timer);
-  if (outcome !== "timeout") return outcome;
-  if (api) {
-    appendToCache({ text: job.prompt, role: "user", memory_metadata: metadata }, api.cacheScope);
-    safeLog(deps.logger, `CURSOR CAPTURE TIMEOUT (user): no reply after ${limitMs}ms; cached for boot-time drain`, "warn");
-  } else {
-    safeLog(deps.logger, `CURSOR CAPTURE TIMEOUT (user): key/host not resolved after ${limitMs}ms; entry dropped`);
   }
-  return "timeout";
 }
 
 /**
@@ -256,51 +308,44 @@ export function transcriptStoreJob(input, env = process.env) {
 /**
  * Store the transcript's last turn: the prompt (same path as the user hook),
  * then the reply plus the buffered tool summary (same path as the response
- * hook). Never throws.
+ * hook). Every store shares the hard time limit; a store still pending at the
+ * limit goes to the offline cache. Never throws.
  */
 export async function storeTranscriptJob(job, deps = makeDefaultDeps()) {
-  let turn;
-  try {
-    turn = lastTranscriptTurn(fs.readFileSync(job.transcript_path, "utf8"));
-  } catch (err) {
-    safeLog(deps.logger, `CURSOR TRANSCRIPT READ ERROR: ${errorMessage(err)}`);
+  const rows = readTranscriptRows(job.transcript_path, deps.transcriptRoot || CURSOR_PROJECTS_ROOT);
+  if (!rows) {
+    safeLog(deps.logger, "CURSOR TRANSCRIPT READ ERROR: transcript missing, unreadable, or outside ~/.cursor/projects");
     return;
   }
-  if (!turn.prompt && !turn.reply) return;
-  if (turn.prompt) await storeUserJob({ prompt: turn.prompt, cwd: job.cwd, session_id: job.session_id }, deps);
+  const turn = lastTranscriptTurn(rows);
+  if (!turn.prompt) return;
+  const bounded = boundedDeps(deps);
+  await storeUserPrompt({ prompt: turn.prompt, cwd: job.cwd, session_id: job.session_id }, bounded);
   try {
     await captureCodexAssistant({
       cwd: job.cwd,
       session_id: job.session_id,
       turn_id: job.turn_id,
       last_assistant_message: turn.reply,
-    }, deps);
+    }, bounded);
   } catch (err) {
     safeLog(deps.logger, `CURSOR CAPTURE ERROR (assistant): ${errorMessage(err)}`);
   }
 }
 
 /**
- * Parse a Cursor agent transcript (JSONL of {role, message: {content}}) and
- * return the last turn: the user query and the last assistant text after it.
+ * Last turn of a Cursor agent transcript ({role, message: {content}} rows):
+ * the latest user query and the last assistant text after it.
  */
-export function lastTranscriptTurn(raw) {
-  const entries = [];
-  for (const line of String(raw).split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try { entries.push(JSON.parse(line)); } catch { /* skip a partial line */ }
+export function lastTranscriptTurn(rows) {
+  let turn = { prompt: "", reply: "" };
+  for (const row of rows) {
+    const value = contentText(row).trim();
+    if (!value) continue;
+    if (row?.role === "user") turn = { prompt: userQuery(value), reply: "" };
+    else if (row?.role === "assistant" && turn.prompt) turn.reply = value;
   }
-  let userIndex = -1;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i]?.role === "user" && contentText(entries[i]).trim()) { userIndex = i; break; }
-  }
-  if (userIndex < 0) return { prompt: "", reply: "" };
-  let reply = "";
-  for (let i = entries.length - 1; i > userIndex; i--) {
-    const value = entries[i]?.role === "assistant" ? contentText(entries[i]).trim() : "";
-    if (value) { reply = value; break; }
-  }
-  return { prompt: userQuery(contentText(entries[userIndex])), reply };
+  return turn;
 }
 
 function contentText(entry) {
@@ -313,11 +358,15 @@ function contentText(entry) {
     .join("\n\n");
 }
 
-/** Cursor wraps the prompt: <timestamp>…</timestamp><user_query>…</user_query>. */
+// Cursor's wrapper around the prompt: an optional leading <timestamp> block,
+// then the whole prompt inside one <user_query> element. Only this outer
+// wrapper is removed; tags the user typed inside the prompt are kept.
+const WRAPPED_QUERY = /^\s*(?:<timestamp>[\s\S]*?<\/timestamp>\s*)?<user_query>\r?\n?([\s\S]*?)\r?\n?<\/user_query>\s*$/;
+const LEADING_TIMESTAMP = /^\s*<timestamp>[\s\S]*?<\/timestamp>/;
+
 function userQuery(value) {
-  const queries = [...value.matchAll(/<user_query>([\s\S]*?)<\/user_query>/g)];
-  if (queries.length > 0) return queries[queries.length - 1][1].trim();
-  return value.replace(/<timestamp>[\s\S]*?<\/timestamp>/g, "").trim();
+  const wrapped = WRAPPED_QUERY.exec(value);
+  return (wrapped ? wrapped[1] : value.replace(LEADING_TIMESTAMP, "")).trim();
 }
 
 function liveMarkerPath(input, deps) {
@@ -406,5 +455,6 @@ export function makeDefaultDeps() {
     assistantBufferDir: ASSISTANT_BUFFER_DIR,
     toolBufferDir: TOOL_BUFFER_DIR,
     liveSessionDir: LIVE_SESSION_DIR,
+    transcriptRoot: CURSOR_PROJECTS_ROOT,
   };
 }

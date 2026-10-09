@@ -90,8 +90,11 @@ function makeDeps() {
     toolBufferDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-tools-")),
     storeJobDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-jobs-")),
     liveSessionDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-live-")),
+    transcriptRoot: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-projects-")),
   };
 }
+
+const parseRows = (raw) => raw.split("\n").filter(Boolean).map((line) => JSON.parse(line));
 
 // Shape of a headless `cursor-agent -p` transcript (cursor-agent 2026.10.01).
 function transcriptLines(prompt = "read notes.txt", reply = "**hl-97**\n\nprobe file hello") {
@@ -151,6 +154,7 @@ describe("Cursor hook capture", () => {
     fs.rmSync(deps.toolBufferDir, { recursive: true, force: true });
     fs.rmSync(deps.storeJobDir, { recursive: true, force: true });
     fs.rmSync(deps.liveSessionDir, { recursive: true, force: true });
+    fs.rmSync(deps.transcriptRoot, { recursive: true, force: true });
   });
 
   it("captureUser hands the store to a detached child and never awaits it", async () => {
@@ -350,17 +354,18 @@ describe("Cursor headless capture from sessionEnd (#97)", () => {
   let transcript;
   beforeEach(() => {
     deps = makeDeps();
-    transcript = path.join(deps.storeJobDir, "conv-1.jsonl");
+    transcript = path.join(deps.transcriptRoot, "repo", "agent-transcripts", "conv-1", "conv-1.jsonl");
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
     fs.writeFileSync(transcript, transcriptLines());
   });
   afterEach(() => {
-    for (const dir of [deps.assistantBufferDir, deps.toolBufferDir, deps.storeJobDir, deps.liveSessionDir]) {
+    for (const dir of [deps.assistantBufferDir, deps.toolBufferDir, deps.storeJobDir, deps.liveSessionDir, deps.transcriptRoot]) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("lastTranscriptTurn returns the unwrapped user query and the final assistant text", () => {
-    expect(lastTranscriptTurn(transcriptLines())).toEqual({
+    expect(lastTranscriptTurn(parseRows(transcriptLines()))).toEqual({
       prompt: "read notes.txt",
       reply: "**hl-97**\n\nprobe file hello",
     });
@@ -368,13 +373,22 @@ describe("Cursor headless capture from sessionEnd (#97)", () => {
 
   it("lastTranscriptTurn returns only the last turn of a resumed conversation", () => {
     const raw = transcriptLines("first", "one") + transcriptLines("second", "two");
-    expect(lastTranscriptTurn(raw)).toEqual({ prompt: "second", reply: "two" });
+    expect(lastTranscriptTurn(parseRows(raw))).toEqual({ prompt: "second", reply: "two" });
   });
 
-  it("lastTranscriptTurn keeps the prompt when the turn ended without a reply, and skips bad lines", () => {
-    const raw = JSON.stringify({ role: "user", message: { content: [{ type: "text", text: "plain prompt" }] } }) + "\n{partial";
-    expect(lastTranscriptTurn(raw)).toEqual({ prompt: "plain prompt", reply: "" });
-    expect(lastTranscriptTurn("")).toEqual({ prompt: "", reply: "" });
+  it("lastTranscriptTurn keeps tags the user typed inside the prompt; only Cursor's wrapper is removed", () => {
+    const prompt = "Explain this literal XML: <user_query>hello</user_query> and its closing tag.";
+    expect(lastTranscriptTurn(parseRows(transcriptLines(prompt))).prompt).toBe(prompt);
+    const unwrapped = "<timestamp>t</timestamp>\nkeep <user_query>x</user_query> tail";
+    expect(lastTranscriptTurn([{ role: "user", message: { content: unwrapped } }]).prompt)
+      .toBe("keep <user_query>x</user_query> tail");
+  });
+
+  it("lastTranscriptTurn keeps the prompt when the turn ended without a reply", () => {
+    const rows = [{ role: "user", message: { content: [{ type: "text", text: "plain prompt" }] } }];
+    expect(lastTranscriptTurn(rows)).toEqual({ prompt: "plain prompt", reply: "" });
+    expect(lastTranscriptTurn([])).toEqual({ prompt: "", reply: "" });
+    expect(lastTranscriptTurn([{ role: "assistant", message: { content: "orphan" } }])).toEqual({ prompt: "", reply: "" });
   });
 
   it("the job carries the transcript path and ids only, never content or user_email", () => {
@@ -459,10 +473,79 @@ describe("Cursor headless capture from sessionEnd (#97)", () => {
     ]);
   });
 
-  it("an unreadable transcript is logged and stores nothing", async () => {
-    await storeTranscriptJob({ kind: "transcript", transcript_path: path.join(deps.storeJobDir, "missing.jsonl") }, deps);
+  it.each([
+    ["missing", (dir) => path.join(dir.transcriptRoot, "missing.jsonl")],
+    ["outside the Cursor projects root", (dir) => {
+      const outside = path.join(dir.storeJobDir, "conv-1.jsonl");
+      fs.writeFileSync(outside, transcriptLines());
+      return outside;
+    }],
+  ])("a %s transcript is logged and stores nothing", async (_label, makePath) => {
+    await storeTranscriptJob({ kind: "transcript", transcript_path: makePath(deps) }, deps);
     expect(deps.api.storeEpisodic).not.toHaveBeenCalled();
     expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("CURSOR TRANSCRIPT READ ERROR"));
+  });
+
+  describe("hard time limit", () => {
+    let cacheDir;
+    const scope = "cd".repeat(32);
+    beforeEach(async () => {
+      cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-cache-"));
+      _setCachePath(cacheDir);
+      deps.api.cacheScope = scope;
+      deps.storeTimeLimitMs = 40;
+      await captureToolUse(common("postToolUse", {
+        generation_id: "conv-1",
+        tool_name: "Read",
+        tool_use_id: "t1",
+        tool_input: { file_path: "/repo/notes.txt" },
+        tool_output: '{"content_length":17}',
+      }), deps);
+    });
+    afterEach(() => {
+      _setCachePath(null);
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    });
+
+    const job = () => transcriptStoreJob(sessionEnd(transcript), {});
+    const cached = () => readAndClearCache(scope).map((entry) => [entry.role, entry.text.split("\n")[0]]);
+
+    it("a stalled reply store is cached and the tool summary still goes out within the limit", async () => {
+      deps.api.storeEpisodic.mockImplementation(async (text, role) => (
+        role === "assistant" && !text.startsWith("Tool activity summary") ? NEVER() : true
+      ));
+      const started = Date.now();
+
+      await storeTranscriptJob(job(), deps);
+
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(cached()).toEqual([["assistant", "**hl-97**"]]);
+      expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("CURSOR CAPTURE TIMEOUT (assistant)"));
+      const texts = deps.api.storeEpisodic.mock.calls.map(([text]) => text.split("\n")[0]);
+      expect(texts).toEqual(["read notes.txt", "**hl-97**", "Tool activity summary"]);
+      expect(fs.existsSync(path.join(deps.toolBufferDir, "conv-1", "conv-1"))).toBe(false);
+    });
+
+    it("a stalled tool-summary store is cached and the job still finishes", async () => {
+      deps.api.storeEpisodic.mockImplementation(async (text) => (
+        text.startsWith("Tool activity summary") ? NEVER() : true
+      ));
+
+      await storeTranscriptJob(job(), deps);
+
+      expect(deps.api.storeEpisodic).toHaveBeenCalledTimes(3);
+      expect(cached()).toEqual([["assistant", "Tool activity summary"]]);
+    });
+
+    it("stalled key resolution drops the turn instead of hanging", async () => {
+      deps.createApi.mockImplementation(NEVER);
+
+      await storeTranscriptJob(job(), deps);
+
+      expect(deps.api.storeEpisodic).not.toHaveBeenCalled();
+      expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("CURSOR CAPTURE TIMEOUT (user)"));
+      expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("CURSOR CAPTURE ERROR (assistant)"));
+    });
   });
 });
 
@@ -744,7 +827,8 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
   });
 
   it("headless postToolUse + sessionEnd posts the prompt, the reply, and the tool summary (#97)", async () => {
-    const transcript = path.join(env.root, "conv-1.jsonl");
+    const transcript = path.join(env.home, ".cursor", "projects", "repo", "agent-transcripts", "conv-1", "conv-1.jsonl");
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
     fs.writeFileSync(transcript, transcriptLines("headless prompt", "headless reply"));
     const tool = run("tool", common("postToolUse", {
       generation_id: "conv-1",

@@ -804,7 +804,7 @@ What is captured:
 | `beforeSubmitPrompt` | `user` | The prompt text. Always answers `{"continue": true}` at once and stores the prompt in a background process, so capture never blocks a prompt. |
 | `postToolUse` | `tool` | One redacted tool event, buffered for the current generation (no API call). |
 | `afterAgentResponse` | `assistant` | The final response text, plus one bounded tool activity summary when tools ran. |
-| `sessionEnd` | `session-end` | Headless runs only. `agent -p` does not fire `beforeSubmitPrompt` or `afterAgentResponse`, so when neither ran during the session, the hook reads the last turn of Cursor's session transcript (`transcript_path`) and stores the prompt, the final response text, and the tool summary in a background process. Sessions where those hooks ran (desktop app, interactive CLI) are skipped, so nothing is stored twice. |
+| `sessionEnd` | `session-end` | Headless runs only. `agent -p` does not fire `beforeSubmitPrompt` or `afterAgentResponse`, so when neither ran during the session, the hook reads the last turn of Cursor's session transcript (`transcript_path`) and stores the prompt, the final response text, and the tool summary in a background process, under the same 20-second limit as prompt capture. Sessions where those hooks ran (desktop app, interactive CLI) are skipped, so nothing is stored twice. |
 
 Each capture sends `client: "cursor"`, `session_id` from Cursor's
 `conversation_id`, and `cwd` from the first `workspace_roots` entry. Cursor's
@@ -829,7 +829,8 @@ Limitations:
   summarized; stale buffers are removed after 24 hours.
 - Headless capture depends on Cursor writing the session transcript. If
   transcripts are disabled (`transcript_path` is null), a headless run is not
-  captured. Headless capture stores at session end, not per turn.
+  captured. Headless capture stores at session end, not per turn, and reads
+  only the final 4 MiB of a transcript under `~/.cursor/projects`.
 - Procedural-knowledge injection is not available: `beforeSubmitPrompt` cannot
   add context. `MIDBRAIN_ENABLE_PK_INJECTION` has no effect for Cursor.
 - Latency: Cursor holds the prompt until the `beforeSubmitPrompt` hook process
