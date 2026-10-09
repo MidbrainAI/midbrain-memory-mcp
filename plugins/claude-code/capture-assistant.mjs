@@ -6,11 +6,15 @@
  * Stdin JSON: { last_assistant_message: "...", transcript_path, stop_hook_active, session_id, cwd, ... }
  * session_id and cwd are forwarded into episodic memory_metadata for scoping.
  * If stop_hook_active, skips capture to prevent loops, then completes the
- * non-fatal hook finish/update path.
+ * non-fatal hook finish/update path. A Cursor-hosted run (Third-Party
+ * Imports) is skipped when the MidBrain Cursor hooks capture the turn (#100).
  * Fails silently on any error.
  */
 
-import { readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook } from "./common.mjs";
+import {
+  readStdinJSON, createApi, captureClientLabel, shouldWaitForKey, isNoKeyError, log, finishHook,
+  cursorCapturesTurn,
+} from "./common.mjs";
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { claimLegacyOpenerRecovery } from "../../shared/claude-opener-recovery.mjs";
 import {
@@ -29,6 +33,10 @@ async function captureAssistant() {
   if (!input) return;
   if (input.stop_hook_active) return;
   if (!input.last_assistant_message) return;
+  if (await cursorCapturesTurn(input)) {
+    log.debug("CURSOR HOST: response left to the MidBrain Cursor hooks");
+    return;
+  }
 
   const client = await captureClientLabel();
   const metadata = buildCaptureMetadata({

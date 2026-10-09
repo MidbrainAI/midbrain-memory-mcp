@@ -266,6 +266,16 @@ describe("Cursor hook ownership, freshness, and repair", () => {
   it("isFresh is true when no MidBrain hooks are installed", async () => {
     await writeJsonFile(env.paths.cursorHooks, { version: 1, hooks: { stop: [{ command: "./a.sh" }] } });
     expect(await cursor.isFresh()).toBe(true);
+    expect(await cursor.hasCaptureHooks()).toBe(false);
+  });
+
+  it("reports installed capture hooks", async () => {
+    expect(await cursor.hasCaptureHooks()).toBe(true);
+  });
+
+  it("hasCaptureHooks is false for an unreadable hooks.json", async () => {
+    await fs.writeFile(env.paths.cursorHooks, "{ broken", "utf8");
+    expect(await cursor.hasCaptureHooks()).toBe(false);
   });
 
   it("repair reinstalls a stale shim without touching hooks.json", async () => {

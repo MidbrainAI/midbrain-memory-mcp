@@ -822,6 +822,11 @@ Limitations:
   Rules.
 - Capture hooks are global only; project setup does not write
   `<project>/.cursor/hooks.json`, which would capture every turn twice.
+- Cursor's Third-Party Imports setting (on by default) also runs the Claude
+  Code hooks in `~/.claude/settings.json`. When the MidBrain Cursor hooks are
+  installed, the MidBrain Claude Code hooks skip those Cursor runs, so each
+  turn is stored once, as `client: "cursor"`. Without the Cursor hooks, the
+  Claude Code hook still stores Cursor prompts.
 - Assistant capture stores the final response text only. MidBrain does not
   capture Cursor reasoning, so there is no reasoning/commentary summary.
 - Tool events run after the last `afterAgentResponse` of a generation are not
