@@ -782,7 +782,7 @@ The installer detects Cursor by `~/.cursor/` and then:
 
 - merges a `midbrain-memory` entry into `~/.cursor/mcp.json` `mcpServers`
   (project setup: `<project>/.cursor/mcp.json` with `MIDBRAIN_PROJECT_DIR`);
-- merges three hooks into `~/.cursor/hooks.json` that call the stable
+- merges four hooks into `~/.cursor/hooks.json` that call the stable
   `~/.midbrain/bin/cursor-hook` shim (10-second timeout each);
 - backs up each file to `<file>.bak` before it changes it. Your other MCP
   servers, hooks, and settings are kept in place and in order. Re-running the
@@ -795,7 +795,7 @@ Supported Cursor surfaces:
 |---|---|---|
 | Cursor desktop app | Yes | Yes |
 | Cursor CLI, interactive (`agent`) | Yes | Yes (validated 2026-09-25) |
-| Cursor CLI, headless (`agent -p`) | Yes, with `--approve-mcps --trust --force` so MCP tools run without a prompt | No: hooks do not run in headless mode |
+| Cursor CLI, headless (`agent -p`) | Yes, with `--approve-mcps --trust --force` so MCP tools run without a prompt | Yes, at session end from the session transcript (validated 2026-10-09, `cursor-agent` 2026.10.01) |
 
 What is captured:
 
@@ -804,6 +804,7 @@ What is captured:
 | `beforeSubmitPrompt` | `user` | The prompt text. Always answers `{"continue": true}` at once and stores the prompt in a background process, so capture never blocks a prompt. |
 | `postToolUse` | `tool` | One redacted tool event, buffered for the current generation (no API call). |
 | `afterAgentResponse` | `assistant` | The final response text, plus one bounded tool activity summary when tools ran. |
+| `sessionEnd` | `session-end` | Headless runs only. `agent -p` does not fire `beforeSubmitPrompt` or `afterAgentResponse`, so when neither ran during the session, the hook reads the last turn of Cursor's session transcript (`transcript_path`) and stores the prompt, the final response text, and the tool summary in a background process. Sessions where those hooks ran (desktop app, interactive CLI) are skipped, so nothing is stored twice. |
 
 Each capture sends `client: "cursor"`, `session_id` from Cursor's
 `conversation_id`, and `cwd` from the first `workspace_roots` entry. Cursor's
@@ -826,6 +827,9 @@ Limitations:
   capture Cursor reasoning, so there is no reasoning/commentary summary.
 - Tool events run after the last `afterAgentResponse` of a generation are not
   summarized; stale buffers are removed after 24 hours.
+- Headless capture depends on Cursor writing the session transcript. If
+  transcripts are disabled (`transcript_path` is null), a headless run is not
+  captured. Headless capture stores at session end, not per turn.
 - Procedural-knowledge injection is not available: `beforeSubmitPrompt` cannot
   add context. `MIDBRAIN_ENABLE_PK_INJECTION` has no effect for Cursor.
 - Latency: Cursor holds the prompt until the `beforeSubmitPrompt` hook process

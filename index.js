@@ -66,8 +66,10 @@ if (isMain) {
       await import("./plugins/cursor/capture-assistant.mjs");
     } else if (client === "cursor" && event === "tool") {
       await import("./plugins/cursor/capture-tool.mjs");
+    } else if (client === "cursor" && event === "session-end") {
+      await import("./plugins/cursor/capture-session-end.mjs");
     } else {
-      console.error("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool OR hook hermes user|assistant OR hook cursor user|assistant|tool");
+      console.error("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool OR hook hermes user|assistant OR hook cursor user|assistant|tool|session-end");
       process.exit(2);
     }
   } else if (process.argv[2] === "capture-user" || process.argv[2] === "capture-assistant") {

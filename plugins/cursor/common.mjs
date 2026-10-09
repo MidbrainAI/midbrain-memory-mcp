@@ -6,6 +6,10 @@
  *   - postToolUse        -> buffer one tool event for the turn
  *   - afterAgentResponse -> capture the assistant text (`text`) plus the
  *                           buffered tool summary
+ *   - sessionEnd         -> headless fallback (#97): `agent -p` never fires
+ *                           beforeSubmitPrompt or afterAgentResponse, so when
+ *                           neither ran during the session the last turn of
+ *                           the session transcript is captured instead
  *
  * Tool buffering and assistant capture reuse the Codex runtime: the Cursor
  * payload is mapped onto the Codex field names (conversation_id -> session_id,
@@ -44,6 +48,9 @@ const CLIENT = "cursor";
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-cursor-assistant-turns");
 const TOOL_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-cursor-tool-events");
 const STORE_JOB_DIR = path.join(os.tmpdir(), "midbrain-cursor-store-jobs");
+const LIVE_SESSION_DIR = path.join(os.tmpdir(), "midbrain-cursor-live-sessions");
+// Clock slack when comparing a live-capture marker with the session start.
+const LIVE_MARKER_SLACK_MS = 5_000;
 const STORE_ENTRY = fileURLToPath(new URL("./store-user.mjs", import.meta.url));
 // Hard limit for the background user store. On expiry the entry goes to the
 // offline cache (boot-time drain) and the background child exits.
@@ -100,6 +107,7 @@ export function userStoreJob(input) {
  * started, store inline under the same hard time limit.
  */
 export async function captureUser(input, deps = makeDefaultDeps()) {
+  markLiveCapture(input, deps);
   const job = userStoreJob(input);
   if (!job) return CONTINUE;
   try {
@@ -194,7 +202,8 @@ export async function runBackgroundStore(jobFile, deps = makeDefaultDeps()) {
   } finally {
     try { fs.rmSync(jobFile, { force: true }); } catch { /* ignore */ }
   }
-  if (job && text(job.prompt)) await storeUserJob(job, deps);
+  if (job?.kind === "transcript") await storeTranscriptJob(job, deps);
+  else if (job && text(job.prompt)) await storeUserJob(job, deps);
 }
 
 /** Buffer one tool event for the current generation (no API call). */
@@ -204,7 +213,147 @@ export async function captureToolUse(input, deps = makeDefaultDeps()) {
 
 /** Capture the assistant response plus this generation's tool summary. */
 export async function captureAssistant(input, deps = makeDefaultDeps()) {
+  markLiveCapture(input, deps);
   await captureCodexAssistant(toCodexInput(input), deps);
+}
+
+/**
+ * sessionEnd: capture the session's last turn from the transcript, but only
+ * when no live prompt/response hook ran during this session. The desktop app
+ * and the interactive CLI fire those hooks (and also fire sessionEnd), so they
+ * are skipped here; headless `agent -p` fires neither. The store runs in the
+ * detached background child, since Cursor exits soon after this hook starts.
+ */
+export async function captureSessionEnd(input, deps = makeDefaultDeps()) {
+  const job = transcriptStoreJob(input);
+  if (!job) return {};
+  if (consumeLiveCapture(input, deps)) return {};
+  try {
+    await (deps.startBackgroundStore || startBackgroundStore)(job, deps);
+  } catch (err) {
+    safeLog(deps.logger, `CURSOR BACKGROUND STORE SPAWN ERROR: ${errorMessage(err)}; storing inline`, "warn");
+    await storeTranscriptJob(job, deps);
+  }
+  return {};
+}
+
+/** The only fields a transcript store needs: a path, never transcript content. */
+export function transcriptStoreJob(input, env = process.env) {
+  const transcriptPath = text(input?.transcript_path) || text(env.CURSOR_TRANSCRIPT_PATH);
+  if (!transcriptPath) return null;
+  const mapped = toCodexInput(input);
+  return {
+    kind: "transcript",
+    transcript_path: transcriptPath,
+    cwd: mapped.cwd,
+    session_id: mapped.session_id,
+    // Headless tool events carry generation_id == conversation_id, the same
+    // id sessionEnd carries, so the buffered tool summary is found under it.
+    turn_id: mapped.turn_id || mapped.session_id,
+  };
+}
+
+/**
+ * Store the transcript's last turn: the prompt (same path as the user hook),
+ * then the reply plus the buffered tool summary (same path as the response
+ * hook). Never throws.
+ */
+export async function storeTranscriptJob(job, deps = makeDefaultDeps()) {
+  let turn;
+  try {
+    turn = lastTranscriptTurn(fs.readFileSync(job.transcript_path, "utf8"));
+  } catch (err) {
+    safeLog(deps.logger, `CURSOR TRANSCRIPT READ ERROR: ${errorMessage(err)}`);
+    return;
+  }
+  if (!turn.prompt && !turn.reply) return;
+  if (turn.prompt) await storeUserJob({ prompt: turn.prompt, cwd: job.cwd, session_id: job.session_id }, deps);
+  try {
+    await captureCodexAssistant({
+      cwd: job.cwd,
+      session_id: job.session_id,
+      turn_id: job.turn_id,
+      last_assistant_message: turn.reply,
+    }, deps);
+  } catch (err) {
+    safeLog(deps.logger, `CURSOR CAPTURE ERROR (assistant): ${errorMessage(err)}`);
+  }
+}
+
+/**
+ * Parse a Cursor agent transcript (JSONL of {role, message: {content}}) and
+ * return the last turn: the user query and the last assistant text after it.
+ */
+export function lastTranscriptTurn(raw) {
+  const entries = [];
+  for (const line of String(raw).split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try { entries.push(JSON.parse(line)); } catch { /* skip a partial line */ }
+  }
+  let userIndex = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i]?.role === "user" && contentText(entries[i]).trim()) { userIndex = i; break; }
+  }
+  if (userIndex < 0) return { prompt: "", reply: "" };
+  let reply = "";
+  for (let i = entries.length - 1; i > userIndex; i--) {
+    const value = entries[i]?.role === "assistant" ? contentText(entries[i]).trim() : "";
+    if (value) { reply = value; break; }
+  }
+  return { prompt: userQuery(contentText(entries[userIndex])), reply };
+}
+
+function contentText(entry) {
+  const content = entry?.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n\n");
+}
+
+/** Cursor wraps the prompt: <timestamp>…</timestamp><user_query>…</user_query>. */
+function userQuery(value) {
+  const queries = [...value.matchAll(/<user_query>([\s\S]*?)<\/user_query>/g)];
+  if (queries.length > 0) return queries[queries.length - 1][1].trim();
+  return value.replace(/<timestamp>[\s\S]*?<\/timestamp>/g, "").trim();
+}
+
+function liveMarkerPath(input, deps) {
+  const id = typeof input?.conversation_id === "string" ? input.conversation_id.replace(/[^A-Za-z0-9_.-]/g, "_") : "";
+  const dir = typeof deps?.liveSessionDir === "string" ? deps.liveSessionDir : "";
+  if (!id || id.startsWith(".") || !dir) return "";
+  return path.join(dir, id);
+}
+
+/** Record that a live prompt/response hook ran for this conversation. */
+function markLiveCapture(input, deps) {
+  const marker = liveMarkerPath(input, deps);
+  if (!marker) return;
+  try {
+    fs.mkdirSync(path.dirname(marker), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(marker, "", { encoding: "utf8", mode: 0o600 });
+  } catch (err) {
+    safeLog(deps.logger, `CURSOR LIVE MARK ERROR: ${errorMessage(err)}`);
+  }
+}
+
+/**
+ * True when a live hook ran during this session (marker newer than the
+ * session start, from sessionEnd's duration_ms). Removes the marker, so a
+ * later headless resume of the same conversation is captured again.
+ */
+function consumeLiveCapture(input, deps) {
+  const marker = liveMarkerPath(input, deps);
+  if (!marker) return false;
+  let stat;
+  try { stat = fs.statSync(marker); } catch { return false; }
+  try { fs.rmSync(marker, { force: true }); } catch { /* ignore */ }
+  const duration = Number(input?.duration_ms);
+  if (!Number.isFinite(duration) || duration < 0) return true;
+  const now = deps.now ? deps.now() : Date.now();
+  return stat.mtimeMs >= now - duration - LIVE_MARKER_SLACK_MS;
 }
 
 /**
@@ -256,5 +405,6 @@ export function makeDefaultDeps() {
     logger: makeLogger(logFile("midbrain-cursor.log")),
     assistantBufferDir: ASSISTANT_BUFFER_DIR,
     toolBufferDir: TOOL_BUFFER_DIR,
+    liveSessionDir: LIVE_SESSION_DIR,
   };
 }

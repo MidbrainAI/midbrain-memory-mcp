@@ -15,7 +15,12 @@ import { Cursor } from "../shared/clients/cursor.mjs";
 import { buildShimBody, stableShimPath } from "../shared/clients/shim.mjs";
 
 const IS_WIN = process.platform === "win32";
-const EVENTS = { beforeSubmitPrompt: "user", postToolUse: "tool", afterAgentResponse: "assistant" };
+const EVENTS = {
+  beforeSubmitPrompt: "user",
+  postToolUse: "tool",
+  afterAgentResponse: "assistant",
+  sessionEnd: "session-end",
+};
 const USER_SERVER = { command: "node", args: ["/opt/other/server.js"], env: { TOKEN: "user-owned" } };
 
 let env;
@@ -261,6 +266,18 @@ describe("Cursor hook ownership, freshness, and repair", () => {
 
     expect(commands(await readJsonFile(env.paths.cursorHooks), "beforeSubmitPrompt"))
       .toEqual([codexShim, shimCommand("user")]);
+  });
+
+  it("an install from before the sessionEnd hook is stale, and repair adds it (#97)", async () => {
+    const data = await readJsonFile(env.paths.cursorHooks);
+    delete data.hooks.sessionEnd;
+    await writeJsonFile(env.paths.cursorHooks, data);
+    expect(await cursor.isFresh()).toBe(false);
+
+    await cursor.repairHooks();
+
+    expect(commands(await readJsonFile(env.paths.cursorHooks), "sessionEnd")).toEqual([shimCommand("session-end")]);
+    expect(await cursor.isFresh()).toBe(true);
   });
 
   it("isFresh is true when no MidBrain hooks are installed", async () => {

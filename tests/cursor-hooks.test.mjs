@@ -19,12 +19,16 @@ import {
   CONTINUE,
   STORE_TIME_LIMIT_MS,
   captureAssistant,
+  captureSessionEnd,
   captureToolUse,
   captureUser,
   finishHook,
+  lastTranscriptTurn,
   runBackgroundStore,
+  storeTranscriptJob,
   storeUserJob,
   toCodexInput,
+  transcriptStoreJob,
 } from "../plugins/cursor/common.mjs";
 import { _setCachePath, readAndClearCache } from "../shared/episodic-cache.mjs";
 import { makeTestEnv } from "./helpers/test-env.mjs";
@@ -85,7 +89,31 @@ function makeDeps() {
     assistantBufferDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-assistant-")),
     toolBufferDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-tools-")),
     storeJobDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-jobs-")),
+    liveSessionDir: fs.mkdtempSync(path.join(os.tmpdir(), "cursor-live-")),
   };
+}
+
+// Shape of a headless `cursor-agent -p` transcript (cursor-agent 2026.10.01).
+function transcriptLines(prompt = "read notes.txt", reply = "**hl-97**\n\nprobe file hello") {
+  return [
+    { role: "user", message: { content: [{ type: "text", text: `<timestamp>Friday, Oct 9, 2026, 12:58 PM (UTC+2)</timestamp>\n<user_query>\n${prompt}\n</user_query>` }] } },
+    { role: "assistant", message: { content: [{ type: "text", text: "I'll read `notes.txt`." }, { type: "tool_use", name: "Read", input: { path: "/repo/notes.txt" } }] } },
+    { role: "assistant", message: { content: [{ type: "text", text: reply }] } },
+    { type: "turn_ended", status: "success" },
+  ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+}
+
+// Headless sessionEnd: generation_id is the conversation id (no per-turn id).
+function sessionEnd(transcriptPath, extra = {}) {
+  return common("sessionEnd", {
+    generation_id: "conv-1",
+    reason: "completed",
+    duration_ms: 19_000,
+    final_status: "completed",
+    is_background_agent: false,
+    transcript_path: transcriptPath,
+    ...extra,
+  });
 }
 
 describe("Cursor payload mapping", () => {
@@ -122,6 +150,7 @@ describe("Cursor hook capture", () => {
     fs.rmSync(deps.assistantBufferDir, { recursive: true, force: true });
     fs.rmSync(deps.toolBufferDir, { recursive: true, force: true });
     fs.rmSync(deps.storeJobDir, { recursive: true, force: true });
+    fs.rmSync(deps.liveSessionDir, { recursive: true, force: true });
   });
 
   it("captureUser hands the store to a detached child and never awaits it", async () => {
@@ -313,6 +342,127 @@ describe("Cursor hook capture", () => {
     await expect(captureAssistant(common("afterAgentResponse", { text: "x" }), deps))
       .resolves.toBeUndefined();
     expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("CURSOR CAPTURE ERROR (assistant)"));
+  });
+});
+
+describe("Cursor headless capture from sessionEnd (#97)", () => {
+  let deps;
+  let transcript;
+  beforeEach(() => {
+    deps = makeDeps();
+    transcript = path.join(deps.storeJobDir, "conv-1.jsonl");
+    fs.writeFileSync(transcript, transcriptLines());
+  });
+  afterEach(() => {
+    for (const dir of [deps.assistantBufferDir, deps.toolBufferDir, deps.storeJobDir, deps.liveSessionDir]) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lastTranscriptTurn returns the unwrapped user query and the final assistant text", () => {
+    expect(lastTranscriptTurn(transcriptLines())).toEqual({
+      prompt: "read notes.txt",
+      reply: "**hl-97**\n\nprobe file hello",
+    });
+  });
+
+  it("lastTranscriptTurn returns only the last turn of a resumed conversation", () => {
+    const raw = transcriptLines("first", "one") + transcriptLines("second", "two");
+    expect(lastTranscriptTurn(raw)).toEqual({ prompt: "second", reply: "two" });
+  });
+
+  it("lastTranscriptTurn keeps the prompt when the turn ended without a reply, and skips bad lines", () => {
+    const raw = JSON.stringify({ role: "user", message: { content: [{ type: "text", text: "plain prompt" }] } }) + "\n{partial";
+    expect(lastTranscriptTurn(raw)).toEqual({ prompt: "plain prompt", reply: "" });
+    expect(lastTranscriptTurn("")).toEqual({ prompt: "", reply: "" });
+  });
+
+  it("the job carries the transcript path and ids only, never content or user_email", () => {
+    const job = transcriptStoreJob(sessionEnd(transcript), {});
+    expect(job).toEqual({ kind: "transcript", transcript_path: transcript, cwd: "/repo", session_id: "conv-1", turn_id: "conv-1" });
+  });
+
+  it("the job falls back to CURSOR_TRANSCRIPT_PATH and is null without any transcript", () => {
+    expect(transcriptStoreJob(sessionEnd(null), { CURSOR_TRANSCRIPT_PATH: transcript }).transcript_path).toBe(transcript);
+    expect(transcriptStoreJob(sessionEnd(null), {})).toBeNull();
+  });
+
+  it("a headless session hands the transcript to the detached child", async () => {
+    deps.spawn = fakeSpawn();
+    await expect(captureSessionEnd(sessionEnd(transcript), deps)).resolves.toEqual({});
+
+    expect(deps.spawn).toHaveBeenCalledOnce();
+    const jobFile = deps.spawn.calls[0].args.at(-1);
+    expect(JSON.parse(fs.readFileSync(jobFile, "utf8"))).toMatchObject({ kind: "transcript", transcript_path: transcript });
+    expect(fs.readFileSync(jobFile, "utf8")).not.toContain(EMAIL);
+    expect(deps.api.storeEpisodic).not.toHaveBeenCalled();
+  });
+
+  it("a session where the live prompt hook ran is skipped (desktop app and interactive CLI)", async () => {
+    deps.spawn = fakeSpawn();
+    await captureUser(common("beforeSubmitPrompt", { prompt: "hi" }), deps);
+    deps.spawn.mockClear();
+
+    await captureSessionEnd(sessionEnd(transcript), deps);
+
+    expect(deps.spawn).not.toHaveBeenCalled();
+    expect(fs.readdirSync(deps.liveSessionDir)).toEqual([]);
+  });
+
+  it("a session where only the live response hook ran is skipped", async () => {
+    deps.spawn = fakeSpawn();
+    await captureAssistant(common("afterAgentResponse", { text: "done" }), deps);
+
+    await captureSessionEnd(sessionEnd(transcript), deps);
+    expect(deps.spawn).not.toHaveBeenCalled();
+  });
+
+  it("a live marker from before this session started does not suppress capture", async () => {
+    deps.spawn = fakeSpawn();
+    await captureAssistant(common("afterAgentResponse", { text: "earlier" }), deps);
+    deps.now = () => Date.now() + 60 * 60 * 1000;
+
+    await captureSessionEnd(sessionEnd(transcript), deps);
+    expect(deps.spawn).toHaveBeenCalledOnce();
+  });
+
+  it("stores the prompt, then the reply and the turn's tool summary, with cursor metadata", async () => {
+    await captureToolUse(common("postToolUse", {
+      generation_id: "conv-1",
+      tool_name: "Read",
+      tool_use_id: "t1",
+      tool_input: { file_path: "/repo/notes.txt" },
+      tool_output: '{"content_length":17}',
+    }), deps);
+
+    await storeTranscriptJob(transcriptStoreJob(sessionEnd(transcript), {}), deps);
+
+    const metadata = { client: "cursor", cwd: "/repo", session_id: "conv-1" };
+    const calls = deps.api.storeEpisodic.mock.calls;
+    expect(calls.map(([text, role, , meta]) => [text, role, meta])).toEqual([
+      ["read notes.txt", "user", metadata],
+      ["**hl-97**\n\nprobe file hello", "assistant", metadata],
+      [expect.stringContaining("Tools: Read x1"), "assistant", metadata],
+    ]);
+  });
+
+  it("the background child runs a transcript job and deletes the job file", async () => {
+    const jobFile = path.join(deps.storeJobDir, "job.json");
+    fs.writeFileSync(jobFile, JSON.stringify(transcriptStoreJob(sessionEnd(transcript), {})));
+
+    await runBackgroundStore(jobFile, deps);
+
+    expect(fs.existsSync(jobFile)).toBe(false);
+    expect(deps.api.storeEpisodic.mock.calls.map(([text, role]) => [text, role])).toEqual([
+      ["read notes.txt", "user"],
+      ["**hl-97**\n\nprobe file hello", "assistant"],
+    ]);
+  });
+
+  it("an unreadable transcript is logged and stores nothing", async () => {
+    await storeTranscriptJob({ kind: "transcript", transcript_path: path.join(deps.storeJobDir, "missing.jsonl") }, deps);
+    expect(deps.api.storeEpisodic).not.toHaveBeenCalled();
+    expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("CURSOR TRANSCRIPT READ ERROR"));
   });
 });
 
@@ -590,6 +740,35 @@ describe("Cursor hook wrappers (spawned, sandboxed)", () => {
     const texts = requests().filter((r) => r.url.includes("/memories/episodic")).map((r) => r.body.text);
     expect(texts[0]).toBe("all green");
     expect(texts[1]).toContain("Shell: npm test -> success");
+    expect(JSON.stringify(requests())).not.toContain(EMAIL);
+  });
+
+  it("headless postToolUse + sessionEnd posts the prompt, the reply, and the tool summary (#97)", async () => {
+    const transcript = path.join(env.root, "conv-1.jsonl");
+    fs.writeFileSync(transcript, transcriptLines("headless prompt", "headless reply"));
+    const tool = run("tool", common("postToolUse", {
+      generation_id: "conv-1",
+      tool_name: "Read",
+      tool_use_id: "t1",
+      tool_input: { file_path: "/repo/notes.txt" },
+      tool_output: '{"content_length":17}',
+    }));
+    expect(tool.status).toBe(0);
+
+    const end = run("session-end", sessionEnd(transcript));
+    expect(end.status).toBe(0);
+    expect(end.stdout).toBe("{}");
+
+    const posts = await waitFor(() => {
+      const found = requests().filter((r) => r.url.includes("/memories/episodic"));
+      return found.length >= 3 && jobFiles().length === 0 ? found : null;
+    });
+    expect(posts.map((r) => [r.body.role, r.body.memory_metadata.client])).toEqual([
+      ["user", "cursor"], ["assistant", "cursor"], ["assistant", "cursor"],
+    ]);
+    expect(posts[0].body.text).toBe("headless prompt");
+    expect(posts[1].body.text).toBe("headless reply");
+    expect(posts[2].body.text).toContain("Tools: Read x1");
     expect(JSON.stringify(requests())).not.toContain(EMAIL);
   });
 });
