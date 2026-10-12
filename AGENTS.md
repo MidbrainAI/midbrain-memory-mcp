@@ -332,10 +332,6 @@ Cursor:
   Cursor's per-project caches: their metadata does not prove an API binding.
   Do not use `sessionStart`: Cursor fires it with the first prompt and merges
   its `additional_context` after that prompt reached the model (measured).
-- Cursor also runs Claude Code hooks (Third-Party Imports) with its own
-  payload, which carries `cursor_version`. The Claude hooks return without
-  capture or injection when they see it and `Cursor.hasCaptureHooks()` is
-  true, so a Cursor turn is not handled twice.
 - Cursor holds the prompt until the `beforeSubmitPrompt` process exits, so the
   user hook does no network work: it writes the mapped fields to a private
   0600 job file and starts a detached `plugins/cursor/store-user.mjs` child

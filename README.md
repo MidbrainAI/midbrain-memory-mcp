@@ -848,10 +848,6 @@ Limitations:
   instructions, remove and re-add the MidBrain MCP connection and start a new
   chat. The server adds identity only when `MIDBRAIN_CLIENT` is `cursor`, so
   other clients do not get it twice.
-- Cursor also runs Claude Code hooks from `~/.claude/settings.json` (its
-  Third-Party Imports setting, on by default). When Cursor's MidBrain hooks are
-  installed, the MidBrain Claude hooks recognize Cursor's payload and do
-  nothing, so a Cursor turn is not stored twice or held for a persona read.
 - Latency: Cursor holds the prompt until the `beforeSubmitPrompt` hook process
   exits. MidBrain code in that hook returns at once and hands the store to a
   detached background process, which stops after 20 seconds and moves an
