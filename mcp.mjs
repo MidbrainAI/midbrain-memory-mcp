@@ -15,7 +15,6 @@ import { z } from "zod";
 import { MidbrainApi } from "./shared/midbrain-api.mjs";
 import { configuredProjectDir } from "./shared/project-dir.mjs";
 import { getClient } from "./shared/clients/registry.mjs";
-import { retireLegacyCursorInstructionCaches } from "./shared/cursor-identity-cache.mjs";
 import { setupProject } from "./install.mjs";
 import {
   readGlobalKeystore,
@@ -60,12 +59,10 @@ export async function createApi() {
 export async function loadServerInstructions({
   clientId = process.env.MIDBRAIN_CLIENT,
   createApiFn = createApi,
-  retireLegacyCacheFn = retireLegacyCursorInstructionCaches,
   log = console.error,
 } = {}) {
   if (!INSTRUCTION_IDENTITY_CLIENTS.has(clientId)) return undefined;
   const empty = "No persona or profile is supplied for this server connection.";
-  try { await retireLegacyCacheFn(); } catch { /* never block readiness */ }
   try {
     const block = await loadIdentityContext(await createApiFn());
     if (!block) {

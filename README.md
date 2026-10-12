@@ -844,11 +844,7 @@ Limitations:
   carry them: `beforeSubmitPrompt` cannot add context, and Cursor merges
   `sessionStart` output only after the first prompt has gone to the model.
   MidBrain sends native MCP instructions, including an explicit empty-state
-  message when neither field is available. It never copies one project's
-  identity into another project's Cursor cache. On startup it retires complete
-  legacy identity-only cache files from this draft, saving private backups in
-  MidBrain's global config directory under `cursor-identity-backups/`.
-  Mixed or unrecognized files are preserved. If Cursor still shows old
+  message when neither field is available. If Cursor still shows old
   instructions, remove and re-add the MidBrain MCP connection and start a new
   chat. The server adds identity only when `MIDBRAIN_CLIENT` is `cursor`, so
   other clients do not get it twice.

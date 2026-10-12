@@ -330,9 +330,6 @@ Cursor:
   reads them only when `MIDBRAIN_CLIENT` is `cursor` and is fail-open.
   Blank/failed reads return explicit neutral instructions. Never populate
   Cursor's per-project caches: their metadata does not prove an API binding.
-  `retireLegacyCursorInstructionCaches` backs up and removes only complete
-  unsigned legacy identity files under identified MidBrain cache folders;
-  mixed content, signed files, unknown metadata and symlinks are preserved.
   Do not use `sessionStart`: Cursor fires it with the first prompt and merges
   its `additional_context` after that prompt reached the model (measured).
 - Cursor also runs Claude Code hooks (Third-Party Imports) with its own
