@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 
 import { makeTestEnv } from "./helpers/test-env.mjs";
 import { installShim, stableShimPath, isDevShimContent } from "../shared/clients/shim.mjs";
+import { cursorCapturesTurn, isCursorPayload } from "../plugins/claude-code/common.mjs";
 
 const IS_WIN = process.platform === "win32";
 
@@ -130,5 +131,101 @@ describe.skipIf(IS_WIN)("AC-9 — claude-hook shim end-to-end (sandboxed)", () =
     // "NO KEY" goes to the log file, not stderr; stderr must stay clean here too
     expect(unexpectedStderrLines(result)).toEqual([]);
     expect(await readFetchLog()).toEqual([]); // no capture without a key
+  });
+});
+
+// Cursor's payload when its Third-Party Imports runs ~/.claude/settings.json
+// hooks (cursor-agent 2026.10.01, probed live for #100).
+function cursorPayload(cwd, extra = {}) {
+  return {
+    conversation_id: "1b926779-37f8-43df-bdbd-e625bed14721",
+    generation_id: "f1a3e70c-83d7-4b77-aab0-504afb464b12",
+    session_id: "1b926779-37f8-43df-bdbd-e625bed14721",
+    model: "default",
+    hook_event_name: "beforeSubmitPrompt",
+    cursor_version: "2026.10.01-e373342",
+    workspace_roots: [cwd],
+    transcript_path: null,
+    attachments: [],
+    ...extra,
+  };
+}
+
+async function episodicPosts() {
+  return (await readFetchLog()).filter((r) => r.url.includes("/memories/episodic"));
+}
+
+async function installCursorHooks() {
+  const hooks = path.join(env.home, ".cursor", "hooks.json");
+  await fs.mkdir(path.dirname(hooks), { recursive: true });
+  await fs.writeFile(hooks, JSON.stringify({
+    version: 1,
+    hooks: { beforeSubmitPrompt: [{ command: `'${stableShimPath("cursor")}' user`, timeout: 10 }] },
+  }));
+}
+
+describe("Cursor-hosted Claude hook payloads (#100)", () => {
+  it("detects Cursor payloads and never a Claude Code payload", () => {
+    expect(isCursorPayload(cursorPayload("/repo"))).toBe(true);
+    expect(isCursorPayload({ hook_event_name: "stop" })).toBe(true);
+    expect(isCursorPayload({ hook_event_name: "UserPromptSubmit", prompt: "x", session_id: "s", cwd: "/repo" })).toBe(false);
+    expect(isCursorPayload({ hook_event_name: "Stop", last_assistant_message: "x" })).toBe(false);
+    expect(isCursorPayload(null)).toBe(false);
+  });
+
+  it("defers only when the MidBrain Cursor hooks are installed, and fails open", async () => {
+    const cursor = cursorPayload("/repo");
+    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => true })).resolves.toBe(true);
+    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => false })).resolves.toBe(false);
+    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => { throw new Error("boom"); } })).resolves.toBe(false);
+    const hasCursorHooks = async () => { throw new Error("never asked for a Claude payload"); };
+    await expect(cursorCapturesTurn({ hook_event_name: "UserPromptSubmit" }, { hasCursorHooks })).resolves.toBe(false);
+  });
+});
+
+describe.skipIf(IS_WIN)("Cursor-hosted runs through the claude-hook shim (#100)", () => {
+  it("user role: a Cursor prompt is left to the installed Cursor hooks; nothing is posted", async () => {
+    await installCursorHooks();
+
+    const result = runShim("user", cursorPayload(projectDir, { prompt: "cursor-hosted prompt #100", cwd: projectDir }));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(await episodicPosts()).toEqual([]);
+  });
+
+  it("assistant role: a Cursor stop payload is left to the installed Cursor hooks", async () => {
+    await installCursorHooks();
+
+    const result = runShim("assistant", cursorPayload(projectDir, {
+      hook_event_name: "stop",
+      status: "completed",
+      loop_count: 0,
+      last_assistant_message: "cursor-hosted reply #100",
+      cwd: projectDir,
+    }));
+
+    expect(result.status).toBe(0);
+    expect(await episodicPosts()).toEqual([]);
+  });
+
+  it("without the MidBrain Cursor hooks, a Cursor prompt is still captured here", async () => {
+    const result = runShim("user", cursorPayload(projectDir, { prompt: "cursor-hosted prompt, no cursor hooks", cwd: projectDir }));
+
+    expect(result.status).toBe(0);
+    const episodic = (await readFetchLog()).filter((r) => r.url.includes("/memories/episodic"));
+    expect(episodic).toHaveLength(1);
+    expect(JSON.stringify(episodic[0].body)).toContain("cursor-hosted prompt, no cursor hooks");
+  });
+
+  it("a Claude Code prompt is still captured when the Cursor hooks are installed", async () => {
+    await installCursorHooks();
+
+    const result = runShim("user", { hook_event_name: "UserPromptSubmit", prompt: "claude prompt #100", session_id: "s1", cwd: projectDir });
+
+    expect(result.status).toBe(0);
+    const episodic = (await readFetchLog()).filter((r) => r.url.includes("/memories/episodic"));
+    expect(episodic).toHaveLength(1);
+    expect(JSON.stringify(episodic[0].body)).toContain("claude prompt #100");
   });
 });
