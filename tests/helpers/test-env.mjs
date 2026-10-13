@@ -43,6 +43,10 @@ const MANAGED_ENV_KEYS = [
   'OPENCLAW_CONFIG_PATH',
   'OPENCLAW_PROFILE',
   'OPENCLAW_WORKSPACE_DIR',
+  'PRIME_AGENT_CODING_AGENT_DIR',
+  'PRIME_AGENT_SESSION_DIR',
+  'PRIME_AGENT_CODING_AGENT_SESSION_DIR',
+  'PRIME_AGENT_KERNEL_OWNER_PID',
   'npm_config_cache',
   'MIDBRAIN_LOG_DIR',
   'MIDBRAIN_PROJECT_DIR',
@@ -66,7 +70,7 @@ const MANAGED_ENV_KEYS = [
  * @param {object} [opts]
  * @param {string[]} [opts.clients] - Client fixtures to seed so detectClients()
  *   finds them: any of 'claude', 'codex', 'cursor', 'hermes', 'opencode',
- *   'nanoclaw'.
+ *   'nanoclaw', 'openclaw', 'prime-agent'.
  * @param {object} [opts.env] - Extra env overrides applied after the managed
  *   set (e.g. { CI: '1' }).
  * @param {boolean} [opts.freshUpdateCache=true] - Pre-seed a fresh update-check
@@ -104,6 +108,10 @@ export async function makeTestEnv(opts = {}) {
     OPENCLAW_CONFIG_PATH: undefined,
     OPENCLAW_PROFILE: undefined,
     OPENCLAW_WORKSPACE_DIR: undefined,
+    PRIME_AGENT_CODING_AGENT_DIR: undefined,
+    PRIME_AGENT_SESSION_DIR: undefined,
+    PRIME_AGENT_CODING_AGENT_SESSION_DIR: undefined,
+    PRIME_AGENT_KERNEL_OWNER_PID: undefined,
     npm_config_cache: path.join(home, '.npm'),
     MIDBRAIN_LOG_DIR: path.join(home, 'logs'),
     MIDBRAIN_PROJECT_DIR: undefined,
@@ -202,6 +210,9 @@ export function sandboxPaths(home) {
     openclawConfig: path.join(home, '.openclaw', 'openclaw.json'),
     openclawAgents: path.join(home, '.openclaw', 'workspace', 'AGENTS.md'),
     openclawPlugin: path.join(home, '.config', 'openclaw', 'midbrain-plugin'),
+    primeAgentDir: path.join(home, '.prime', 'agent'),
+    primeSettings: path.join(home, '.prime', 'agent', 'settings.json'),
+    primeSkill: path.join(home, '.prime', 'agent', 'skills', 'midbrain-memory'),
     hermesConfig: path.join(home, '.hermes', 'config.yaml'),
     opencodeConfig: path.join(home, '.config', 'opencode', 'opencode.json'),
     opencodeConfigJsonc: path.join(home, '.config', 'opencode', 'opencode.jsonc'),
@@ -215,6 +226,7 @@ export function sandboxPaths(home) {
     codexShim: path.join(home, '.midbrain', 'bin', 'codex-hook'),
     hermesShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'hermes-hook.cmd' : 'hermes-hook'),
     cursorShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'cursor-hook.cmd' : 'cursor-hook'),
+    primeShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'prime-agent-hook.cmd' : 'prime-agent-hook'),
     globalKey: path.join(home, '.config', 'midbrain', '.midbrain-key'),
   };
 }
@@ -239,6 +251,9 @@ async function seedClient(paths, client) {
       break;
     case 'openclaw':
       await writeSeed(paths.openclawConfig, '{}\n');
+      break;
+    case 'prime-agent':
+      await fs.mkdir(paths.primeAgentDir, { recursive: true });
       break;
     case 'nanoclaw':
       await writeSeed(path.join(paths.nanoclawRoot, 'container', 'Dockerfile'), '# fixture\n');

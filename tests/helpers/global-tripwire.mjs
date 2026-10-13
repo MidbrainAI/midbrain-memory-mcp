@@ -41,6 +41,11 @@ export function tripwireSurfaces(home = os.homedir()) {
     ? path.resolve(process.env.OPENCLAW_CONFIG_PATH.trim())
     : path.join(openclawState, 'openclaw.json');
   const openclawPlugin = path.join(home, '.config', 'openclaw', 'midbrain-plugin');
+  // Mirrors prime-agent.mjs agent-dir resolution from the ambient env.
+  const primeAgentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR?.trim()
+    ? path.resolve(process.env.PRIME_AGENT_CODING_AGENT_DIR.trim())
+    : path.join(home, '.prime', 'agent');
+  const primeSkill = path.join(primeAgentDir, 'skills', 'midbrain-memory');
   const nanoclawRoots = NANOCLAW_DIRS.map((dir) => path.join(home, dir));
   if (process.env.NANOCLAW_HOME?.trim()) {
     nanoclawRoots.unshift(path.resolve(process.env.NANOCLAW_HOME.trim()));
@@ -57,6 +62,11 @@ export function tripwireSurfaces(home = os.homedir()) {
     openclawPlugin,
     ...['index.js', 'openclaw.plugin.json', 'package.json', 'midbrain-shared.mjs', '.midbrain-repo-root']
       .map((name) => path.join(openclawPlugin, name)),
+    path.join(primeAgentDir, 'settings.json'),
+    path.join(primeAgentDir, 'AGENTS.md'),
+    primeSkill,
+    ...['SKILL.md', 'pyproject.toml', path.join('src', 'midbrain_memory', '__init__.py'), '.midbrain-repo-root']
+      .map((name) => path.join(primeSkill, name)),
     path.join(hermesHome, 'config.yaml'),
     path.join(opencodeDir, 'opencode.json'),
     path.join(opencodeDir, 'opencode.jsonc'),
@@ -76,6 +86,7 @@ export function tripwireSurfaces(home = os.homedir()) {
     path.join(home, '.midbrain', 'bin', 'hermes-hook.cmd'),
     path.join(home, '.midbrain', 'bin', 'cursor-hook'),
     path.join(home, '.midbrain', 'bin', 'cursor-hook.cmd'),
+    path.join(home, '.midbrain', 'bin', 'prime-agent-hook'),
     // NanoClaw installed-skill destinations (AC-15): every root the adapter
     // could resolve.
     ...nanoclawRoots.map((root) => path.join(root, NANOCLAW_SKILL_REL)),
@@ -87,6 +98,7 @@ export function tripwireSurfaces(home = os.homedir()) {
     path.join(home, '.config', 'nanoclaw', '.midbrain-key'),
     path.join(home, '.config', 'cursor', '.midbrain-key'),
     path.join(home, '.config', 'openclaw', '.midbrain-key'),
+    path.join(home, '.config', 'prime-agent', '.midbrain-key'),
   ];
 }
 

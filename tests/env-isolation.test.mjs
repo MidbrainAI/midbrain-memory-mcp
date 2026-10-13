@@ -17,6 +17,7 @@ describe("suite env isolation (AC-15)", () => {
     expect(snapshot).toBeDefined();
     expect(snapshot.HERMES_HOME).toBe("/nonexistent/midbrain-poison/hermes");
     expect(snapshot.NANOCLAW_HOME).toBe("/nonexistent/midbrain-poison/nanoclaw");
+    expect(snapshot.PRIME_AGENT_CODING_AGENT_DIR).toBe("/nonexistent/midbrain-poison/prime-agent");
   });
 
   it("every scrubbed key is absent when tests run", () => {
