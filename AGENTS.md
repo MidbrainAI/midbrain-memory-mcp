@@ -452,6 +452,33 @@ OpenClaw:
 - Per-client key file: `~/.config/openclaw/.midbrain-key`. Detection keys on
   `~/.openclaw/` (or the env-selected state dir / config file).
 
+## History Import
+
+`npx midbrain-memory-mcp@latest import` (issue #75) imports conversations from
+before installation. Code: `shared/history-import/` (`readers.mjs`,
+`plan.mjs`, `cli.mjs`), dispatched from `index.js`.
+
+- Opt-in and preview-first: no upload without `--apply` plus a confirmation
+  or `--yes`. Never run it from install, repair, or the MCP server.
+- Readers (Claude Code transcripts, Codex rollouts) only read the client's
+  own history dirs and skip symlinks. They emit what live capture would have
+  stored: typed prompts and each turn's final reply, with the original time.
+  Tool rows, injected context, harness echoes, subagents, automated (Agent
+  SDK) sessions, and sessions written in the last 10 minutes are skipped.
+- MidBrain is the record of what was imported: `memory_metadata.origin =
+  "import"` and a stable `import_id` (client, session, role, original time).
+  Do not use `memory_metadata.source` for this: search results read it as a
+  semantic document path. Before uploading, `listEpisodicForSession` trims a
+  session to the whole turns before its first live capture and drops entries
+  whose `import_id` is already stored; a failed check skips the session.
+- Uploads use `postEpisodicResult` with `occurredAt` and `X-Skip-Dream: 1`
+  (unless `--dream`), sequentially with back-off, stopping at the first failure
+  so a re-run resumes. They never write the offline cache.
+- Text is passed through `stripInjectedContext` and `shared/redact.mjs`, and
+  capped at the API's 100,000 characters.
+- Each session resolves its key through the client adapter for its `cwd`, so
+  project keys apply.
+
 ## Logging
 
 All file logging goes through `shared/logger.mjs`. Do not call `appendFileSync`
@@ -626,6 +653,7 @@ Vitest tests live in `tests/`.
 | `tests/mcp.test.mjs` | `mcp.mjs` / `index.js` |
 | `tests/docs-regression.test.mjs` | docs regression scripts |
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
+| `tests/history-import.test.mjs` | `shared/history-import/*.mjs`, `shared/redact.mjs` |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.

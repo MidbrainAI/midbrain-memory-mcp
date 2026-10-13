@@ -438,6 +438,23 @@ describe("MidbrainApi.postEpisodicResult", () => {
     expect(JSON.parse(opts.body)).toEqual({ text: "hi", role: "user", memory_metadata: { client: "nanoclaw" } });
   });
 
+  it("sends occurred_at and X-Skip-Dream only when an import asks for them", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: true, status: 201 }));
+    await api.postEpisodicResult("hi", "user", { origin: "import" }, {
+      occurredAt: "2026-09-01T10:00:00.000Z",
+      skipDream: true,
+    });
+    const [, opts] = fetchSpy.mock.calls[0];
+    expect(opts.headers["X-Skip-Dream"]).toBe("1");
+    expect(JSON.parse(opts.body)).toEqual({
+      text: "hi", role: "user", memory_metadata: { origin: "import" }, occurred_at: "2026-09-01T10:00:00.000Z",
+    });
+    await api.postEpisodicResult("hi", "user");
+    const [, plain] = fetchSpy.mock.calls[1];
+    expect(plain.headers["X-Skip-Dream"]).toBeUndefined();
+    expect(JSON.parse(plain.body)).not.toHaveProperty("occurred_at");
+  });
+
   it("returns 'rateLimited' on 429", async () => {
     fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: false, status: 429 }));
     await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("rateLimited");
@@ -1226,5 +1243,41 @@ describe("MidbrainApi account operations", () => {
       if (prev === undefined) delete process.env.MIDBRAIN_API_URL;
       else process.env.MIDBRAIN_API_URL = prev;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listEpisodicForSession — history import dedupe (#75)
+// ---------------------------------------------------------------------------
+
+describe("MidbrainApi.listEpisodicForSession", () => {
+  let fetchSpy;
+
+  afterEach(() => {
+    fetchSpy?.mockRestore();
+  });
+
+  it("filters by session id and follows the cursor", async () => {
+    const pages = [
+      { items: [{ id: 2 }], next_cursor: "c1" },
+      { items: [{ id: 1 }], next_cursor: null },
+    ];
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => ({
+      ok: true, status: 200, json: async () => pages.shift(), text: async () => "",
+    }));
+    const api = new MidbrainApi("test-key", "test-source", { apiBase: "https://example.test" });
+    await expect(api.listEpisodicForSession("s-1")).resolves.toEqual([{ id: 2 }, { id: 1 }]);
+    const first = new URL(fetchSpy.mock.calls[0][0]);
+    expect(first.pathname).toBe("/api/v1/memories/episodic");
+    expect(first.searchParams.get("memory_metadata.session_id")).toBe("s-1");
+    expect(first.searchParams.get("after")).toBeNull();
+    expect(new URL(fetchSpy.mock.calls[1][0]).searchParams.get("after")).toBe("c1");
+    expect(fetchSpy.mock.calls[0][1].method).toBe("GET");
+  });
+
+  it("throws on an error response so the import does not guess", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: false, status: 500, text: async () => "" });
+    const api = new MidbrainApi("test-key", "test-source");
+    await expect(api.listEpisodicForSession("s-1")).rejects.toThrow(/API 500/);
   });
 });

@@ -365,18 +365,27 @@ export class MidbrainApi {
    * JSON (the HTML-bodied edge rejection observed in the #53 incident), is
    * reported as `rateLimited`. Never throws.
    *
+   * History import (issue #75) also passes `occurredAt`, the turn's original
+   * time, and `skipDream`, which sends `X-Skip-Dream: 1` so the API skips the
+   * per-memory dream processing it documents as optional for bulk ingestion.
+   *
    * @param {string} text
    * @param {"user"|"assistant"} role
    * @param {Record<string,string>} [memoryMetadata]
+   * @param {{occurredAt?: string, skipDream?: boolean}} [opts]
    * @returns {Promise<"ok"|"rateLimited"|"failed">}
    */
-  async postEpisodicResult(text, role, memoryMetadata) {
+  async postEpisodicResult(text, role, memoryMetadata, { occurredAt, skipDream = false } = {}) {
     if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") return "failed";
     try {
+      const headers = this.#headers({ json: true });
+      if (skipDream) headers["X-Skip-Dream"] = "1";
+      const body = { text, role, memory_metadata: memoryMetadata };
+      if (occurredAt) body.occurred_at = occurredAt;
       const response = await fetch(this.#endpoints.EPISODIC, {
         method: "POST",
-        headers: this.#headers({ json: true }),
-        body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
+        headers,
+        body: JSON.stringify(body),
       });
       if (response.ok) return "ok";
       if (response.status === 429) {
@@ -395,6 +404,40 @@ export class MidbrainApi {
     } catch {
       return "failed";
     }
+  }
+
+  /**
+   * Every episodic memory stored for one harness session (matched on
+   * `memory_metadata.session_id` through the API's metadata filter), oldest
+   * page last. Used by history import (issue #75) to skip turns that live
+   * capture or an earlier import already stored. Quiet: no request logging.
+   * Throws on a non-2xx response so the caller can stop instead of importing
+   * duplicates.
+   *
+   * @param {string} sessionId
+   * @param {{maxPages?: number}} [opts]
+   * @returns {Promise<Array<{role: string, occurred_at: string, memory_metadata?: Record<string,string>}>>}
+   */
+  async listEpisodicForSession(sessionId, { maxPages = 20 } = {}) {
+    const items = [];
+    let after = null;
+    for (let page = 0; page < maxPages; page += 1) {
+      const url = new URL(this.#endpoints.EPISODIC);
+      url.searchParams.set("memory_metadata.session_id", sessionId);
+      url.searchParams.set("limit", "1000");
+      url.searchParams.set("with_total", "false");
+      if (after) url.searchParams.set("after", after);
+      const response = await fetch(url.toString(), { method: "GET", headers: this.#headers() });
+      if (!response.ok) {
+        await response.text().catch(() => undefined);
+        throw new Error(`API ${response.status} listing session memories (host=${this.#apiBase})`);
+      }
+      const data = await response.json();
+      items.push(...(Array.isArray(data?.items) ? data.items : []));
+      after = data?.next_cursor || null;
+      if (!after) break;
+    }
+    return items;
   }
 
   /**
