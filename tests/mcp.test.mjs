@@ -1712,6 +1712,7 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
     ["user", '{"continue":true}'],
     ["assistant", "{}"],
     ["tool", "{}"],
+    ["session-end", "{}"],
   ])("Cursor hook dispatch: %s exits 0 with its fail-open JSON when stdin is empty", (role, stdout) => {
     const result = spawnServer(["hook", "cursor", role]);
     expect(result.status).toBe(0);
