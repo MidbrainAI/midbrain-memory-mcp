@@ -34,8 +34,10 @@ export function listCodexSessionFiles(dirs = codexSessionDirs()) {
   return files;
 }
 
-// Text Codex adds to the user's message: AGENTS.md and environment context.
-const CODEX_INJECTED_PROMPT = /^\s*(?:# AGENTS\.md instructions|<environment_context>|<user_instructions>|<turn_aborted>)/;
+// Text Codex adds as a user message: AGENTS.md, environment context, and
+// internal context such as goal continuations (`<codex_internal_context
+// source="goal">`). A turn with no typed prompt is not imported.
+const CODEX_INJECTED_PROMPT = /^\s*(?:# AGENTS\.md instructions|<environment_context>|<user_instructions>|<turn_aborted>|<codex_internal_context[\s>])/;
 
 function codexText(content, type) {
   if (!Array.isArray(content)) return "";

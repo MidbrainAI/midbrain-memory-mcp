@@ -87,6 +87,10 @@ function codexRows({ subagent = false } = {}) {
     { type: "event_msg", timestamp: "2026-10-06T07:01:00.100Z", payload: { type: "task_started", turn_id: "t2" } },
     { type: "response_item", timestamp: "2026-10-06T07:01:00.200Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "codex prompt two" }] } },
     { type: "event_msg", timestamp: "2026-10-06T07:01:05.000Z", payload: { type: "task_complete", turn_id: "t2", last_agent_message: "fallback answer two" } },
+    // A goal continuation: Codex writes it as a user message; nobody typed it.
+    { type: "event_msg", timestamp: "2026-10-06T07:02:00.000Z", payload: { type: "task_started", turn_id: "t3" } },
+    { type: "response_item", timestamp: "2026-10-06T07:02:00.100Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<codex_internal_context source=\"goal\">Continue working toward the goal.</codex_internal_context>" }] } },
+    { type: "event_msg", timestamp: "2026-10-06T07:02:09.000Z", payload: { type: "task_complete", turn_id: "t3", last_agent_message: "autonomous work" } },
   ];
 }
 
@@ -116,7 +120,7 @@ describe("readClaudeSession", () => {
 });
 
 describe("readCodexSession", () => {
-  it("keeps the typed prompt and final answer per turn, without injected context", async () => {
+  it("keeps the typed prompt and final answer per turn, without injected context or goal turns", async () => {
     const file = writeJsonl(path.join(dir, "codex", "sessions", "2026", "10", "06", "rollout-a.jsonl"), codexRows());
     const session = await readCodexSession(file);
     expect(session).toMatchObject({ client: "codex", sessionId: "codex-session", cwd: "/work/codex", skip: null });
