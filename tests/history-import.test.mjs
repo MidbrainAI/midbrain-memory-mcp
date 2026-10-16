@@ -272,6 +272,33 @@ describe("trimAgainstServer", () => {
     expect(complete.skip).toBe("already imported");
   });
 
+  it("cuts at a live capture of the same text even when it was stored after the turn", async () => {
+    const planned = session({
+      entries: [
+        { role: "user", text: "first prompt here", occurredAt: "2026-09-01T10:00:00.000Z" },
+        { role: "assistant", text: "first reply", occurredAt: "2026-09-01T10:00:05.000Z" },
+        { role: "user", text: "Wake up, my friend!", occurredAt: "2026-09-02T10:00:00.000Z" },
+        { role: "assistant", text: "Awake and ready to help.", occurredAt: "2026-09-02T10:00:05.000Z" },
+      ],
+    });
+    const [trimmed] = await trimAgainstServer([planned], async () => [
+      // Stored 2 s after the prompt, with the client's envelope added.
+      { role: "user", text: "[Mon 2026-09-02 12:00 GMT+2] Wake up, my friend!", occurred_at: "2026-09-02T10:00:02" },
+    ]);
+    expect(trimmed.entries.map((entry) => entry.text)).toEqual(["first prompt here", "first reply"]);
+    expect(trimmed.capturedLive).toBe(2);
+  });
+
+  it("does not match short or other-role text", async () => {
+    const planned = session();
+    planned.entries[2].text = "a much longer user prompt text";
+    const [trimmed] = await trimAgainstServer([planned], async () => [
+      { role: "user", text: "p1", occurred_at: "2026-12-01T00:00:00" },
+      { role: "assistant", text: "a much longer user prompt text", occurred_at: "2026-12-01T00:00:00" },
+    ]);
+    expect(trimmed.entries).toHaveLength(4);
+  });
+
   it("skips a session it cannot check rather than risk duplicates", async () => {
     const [trimmed] = await trimAgainstServer([session()], async () => { throw new Error("API 500"); });
     expect(trimmed.skip).toBe("could not check MidBrain (API 500)");

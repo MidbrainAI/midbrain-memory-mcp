@@ -125,6 +125,9 @@ export async function planImport({
  *   interrupted or repeated import picks up where it stopped.
  * - When live capture covered part of the session (MidBrain was installed
  *   during it), only the turns from before the first live capture are kept.
+ *   Live capture stores a turn a few seconds after it happened, and some
+ *   clients add an envelope to the stored text, so the cut is also made at
+ *   the first entry whose text a live capture of the same role holds.
  *
  * @param {any[]} sessions planned sessions (mutated)
  * @param {(session: any) => Promise<Array<{occurred_at: string, memory_metadata?: Record<string,string>}>>} listExisting
@@ -141,6 +144,7 @@ export async function trimAgainstServer(sessions, listExisting) {
     }
     if (existing.length === 0) continue;
     const imported = new Set();
+    const live = [];
     let firstCaptured = Infinity;
     for (const memory of existing) {
       if (memory.memory_metadata?.origin === IMPORT_ORIGIN) {
@@ -149,12 +153,15 @@ export async function trimAgainstServer(sessions, listExisting) {
       }
       const time = validTime(memory.occurred_at);
       if (time !== null) firstCaptured = Math.min(firstCaptured, time);
+      const text = comparable(memory.text ?? memory.content);
+      if (text) live.push({ role: memory.role, text });
     }
     const before = session.entries.length;
     // Keep whole turns only: a reply whose prompt was captured live goes too.
     const kept = [];
     for (const entry of session.entries) {
       if (Date.parse(entry.occurredAt) >= firstCaptured) break;
+      if (capturedText(live, entry)) break;
       kept.push(entry);
     }
     if (kept.length && kept[kept.length - 1].role === "user" && session.entries[kept.length]?.role === "assistant") {
@@ -168,6 +175,26 @@ export async function trimAgainstServer(sessions, listExisting) {
     }
   }
   return sessions;
+}
+
+const MIN_MATCH_CHARS = 12;
+
+function comparable(text) {
+  return typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
+}
+
+/**
+ * A live capture of the same role holds this entry's text (or the reverse).
+ * Short texts ("yes", "go on") repeat too often to identify a turn.
+ */
+function capturedText(live, entry) {
+  const text = comparable(entry.text);
+  if (text.length < MIN_MATCH_CHARS) return false;
+  return live.some((memory) => {
+    if (memory.role && memory.role !== entry.role) return false;
+    const [shorter, longer] = memory.text.length < text.length ? [memory.text, text] : [text, memory.text];
+    return shorter.length >= MIN_MATCH_CHARS && longer.includes(shorter);
+  });
 }
 
 function validTime(value) {

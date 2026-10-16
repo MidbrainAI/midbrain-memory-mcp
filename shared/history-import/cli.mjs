@@ -170,7 +170,10 @@ export async function runImportCli(argv, { readers = READERS, out = process.stdo
     await trimAgainstServer(sessions, async (session) => {
       const api = await apiFor(session);
       session.keyScope = api.keyScope;
-      return api.listEpisodicForSession(session.sessionId);
+      // Live capture may have stored the conversation under a linked id too
+      // (e.g. the Claude Code session an OpenClaw session ran on).
+      const ids = [session.sessionId, ...(session.linkedSessionIds ?? [])];
+      return (await Promise.all(ids.map((id) => api.listEpisodicForSession(id)))).flat();
     });
   }
   const summary = summarize(sessions);
