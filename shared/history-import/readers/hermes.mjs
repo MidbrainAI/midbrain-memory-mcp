@@ -24,9 +24,9 @@ import {
 } from "./common.mjs";
 
 const DATABASE_NAME = "state.db";
-const SUBAGENT_SOURCES = new Set(["subagent"]);
+const SUBAGENT_SOURCES = new Set(["subagent", "delegate"]);
 // Runs nobody typed: scheduled jobs, `hermes -z` one-shots, tools and boards.
-const AUTOMATED_SOURCES = new Set(["cron", "oneshot", "tool", "kanban"]);
+const AUTOMATED_SOURCES = new Set(["cron", "oneshot", "tool", "kanban", "api_server", "webhook", "batch"]);
 const JSON_PREFIX = "\u0000json:";
 
 export function hermesHome(env = process.env) {
@@ -94,6 +94,23 @@ function hasToolCalls(value) {
   return Array.isArray(calls) ? calls.length > 0 : Boolean(calls);
 }
 
+/**
+ * A session's live rows, oldest first. Older state.db files lack some
+ * columns; a missing `active` means active, a missing `display_kind` none.
+ */
+function readMessages(db, id) {
+  const columns = new Set(db.prepare("SELECT name FROM pragma_table_info('messages')").all().map((column) => column.name));
+  const pick = (name, fallback) => (columns.has(name) ? name : `${fallback} AS ${name}`);
+  const where = ["session_id = ?"];
+  if (columns.has("active")) where.push("COALESCE(active, 1) = 1");
+  if (columns.has("_compressed_summary")) where.push("COALESCE(_compressed_summary, 0) = 0");
+  return db.prepare(
+    // As a blob: node:sqlite returns text that starts with NUL ("\0json:") as "".
+    `SELECT role, CAST(content AS BLOB) AS content, ${pick("tool_calls", "NULL")}, timestamp, ${pick("display_kind", "NULL")} `
+    + `FROM messages WHERE ${where.join(" AND ")} ORDER BY id`,
+  ).all(id);
+}
+
 function skipReason(row) {
   const config = typeof row.model_config === "string" ? parseJson(row.model_config) : null;
   if (SUBAGENT_SOURCES.has(row.source) || config?._delegate_from) return "subagent session";
@@ -116,11 +133,17 @@ export async function readHermesSession(source) {
     if (session.skip) return;
     session.automated = AUTOMATED_SOURCES.has(row.source);
 
-    const messages = db.prepare(
-      // As a blob: node:sqlite returns text that starts with NUL ("\0json:") as "".
-      "SELECT role, CAST(content AS BLOB) AS content, tool_calls, timestamp, display_kind FROM messages "
-      + "WHERE session_id = ? AND COALESCE(active, 1) = 1 AND COALESCE(_compressed_summary, 0) = 0 ORDER BY id",
-    ).all(id);
+    const messages = readMessages(db, id);
+    // A session continued after compression starts with the parent's
+    // protected tail; those turns belong to (and are imported with) the parent.
+    let parent = null;
+    try {
+      if (row.parent_session_id) parent = db.prepare("SELECT end_reason FROM sessions WHERE id = ?").get(row.parent_session_id);
+    } catch { /* older state.db: no end_reason, no compression chains */ }
+    if (parent?.end_reason === "compression") {
+      const copied = new Set(readMessages(db, row.parent_session_id).map((message) => `${message.role}\0${contentText(message.content)}`));
+      while (messages.length && copied.has(`${messages[0].role}\0${contentText(messages[0].content)}`)) messages.shift();
+    }
     const lastMessage = Math.max(0, ...messages.map((message) => Number(message.timestamp)).filter(Number.isFinite));
     session.lastWrittenMs = 1000 * Math.max(
       ...[row.last_activity_at, row.started_at, row.ended_at, lastMessage].map(Number).filter(Number.isFinite),
@@ -138,11 +161,16 @@ export async function readHermesSession(source) {
     for (const message of messages) {
       const at = secondsToIso(message.timestamp);
       const text = contentText(message.content);
-      if (!at || !text) continue;
       if (message.role === "user" && !message.display_kind) {
+        // Every typed row ends the turn, even one with no text (an image).
         closeTurn();
-        turn = { prompt: text, at, reply: "", replyAt: null };
-      } else if (message.role === "assistant" && turn && !message.display_kind && !hasToolCalls(message.tool_calls)) {
+        if (at && text) turn = { prompt: text, at, reply: "", replyAt: null, closed: false };
+      } else if (message.role === "user" && turn) {
+        // Steering, auto-continue and notices: what follows answers them,
+        // not the typed prompt, whose reply is the one before.
+        turn.closed = true;
+      } else if (message.role === "assistant" && turn && !turn.closed && at && text
+        && !message.display_kind && !hasToolCalls(message.tool_calls)) {
         turn.reply = text;
         turn.replyAt = at;
       }
