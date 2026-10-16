@@ -1726,7 +1726,7 @@ describe("index.js CLI — install subcommand (PRD-011)", () => {
   it("NanoClaw hook dispatch: unknown hook exits 2 with usage", () => {
     const result = spawnServer(["hook", "claude", "bogus"]);
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool");
+    expect(result.stderr).toContain("Usage: midbrain-memory-mcp hook claude user|assistant|session OR hook codex user|assistant|tool|session");
     expect(result.stderr).not.toMatch(/MCP server running/);
   });
 

@@ -20,8 +20,7 @@
  * Node 20 + Bun compatible. No npm deps (uses native fetch).
  */
 
-import { createHash, createHmac, timingSafeEqual } from "crypto";
-import { scrubIdentityContext } from "./identity-context.mjs";
+import { createHash } from "crypto";
 import { effectiveProjectDir } from "./project-dir.mjs";
 
 import { appendToCache } from "./episodic-cache.mjs";
@@ -347,8 +346,6 @@ export class MidbrainApi {
    * @param {Record<string, string>} [memoryMetadata] - Optional metadata (e.g. { client: "codex" }).
    */
   async storeEpisodic(text, role, logger, memoryMetadata) {
-    if (role === "assistant") text = scrubIdentityContext(text, this);
-    if (!text) return true;
     logger.info(`STORE: role=${role} textLen=${text.length}`);
     const ok = await this.#postEpisodic(text, role, memoryMetadata, logger);
     if (!ok) {
@@ -376,8 +373,6 @@ export class MidbrainApi {
    * @returns {Promise<"ok"|"rateLimited"|"failed">}
    */
   async postEpisodicResult(text, role, memoryMetadata) {
-    if (role === "assistant") text = scrubIdentityContext(text, this);
-    if (!text) return "ok";
     if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") return "failed";
     try {
       const response = await fetch(this.#endpoints.EPISODIC, {
@@ -467,18 +462,6 @@ export class MidbrainApi {
     } catch {
       return [];
     }
-  }
-
-  /** Authenticate a context proof without exposing the credential. */
-  signIdentityContext(text) {
-    return createHmac("sha256", this.#key)
-      .update(`midbrain-identity-v1\0${this.#apiBase}\0${text}`)
-      .digest("hex");
-  }
-
-  verifyIdentityContext(text, signature) {
-    if (typeof signature !== "string" || !/^[a-f0-9]{64}$/.test(signature)) return false;
-    return timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(this.signIdentityContext(text), "hex"));
   }
 
   /** Read the persona description; blank/failed reads return null. */

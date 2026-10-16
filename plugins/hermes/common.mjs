@@ -78,17 +78,30 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
 
   await postEpisodic(prompt, "user", input, deps, api);
 
-  const context = await sessionContext(api, prompt, deps);
+  const context = await sessionContext(api, prompt, isFirstTurn(input), deps);
   return context ? { context } : undefined;
 }
 
-async function sessionContext(api, prompt, deps) {
+/**
+ * Hermes sends `is_first_turn` in `extra`. Hermes replays each turn's injected
+ * context with its history, so persona/profile added on the first turn stays
+ * for the session; repeating it every turn would pile up copies (#61). An
+ * older Hermes without the field keeps the per-turn behavior.
+ */
+function isFirstTurn(input) {
+  const value = input?.extra?.is_first_turn ?? input?.is_first_turn;
+  return typeof value === "boolean" ? value : true;
+}
+
+async function sessionContext(api, prompt, firstTurn, deps) {
   const sections = [];
-  try {
-    const identity = await loadIdentityContext(api);
-    if (identity) sections.push(identity);
-  } catch (err) {
-    safeLog(deps.logger, `IDENTITY INJECT ERROR: ${errorMessage(err)}`);
+  if (firstTurn) {
+    try {
+      const identity = await loadIdentityContext(api);
+      if (identity) sections.push(identity);
+    } catch (err) {
+      safeLog(deps.logger, `IDENTITY INJECT ERROR: ${errorMessage(err)}`);
+    }
   }
 
   if (!isPkInjectionEnabled()) return sections.join("\n\n");

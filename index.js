@@ -56,12 +56,16 @@ if (isMain) {
       await import("./plugins/claude-code/capture-user.mjs");
     } else if (client === "claude" && event === "assistant") {
       await import("./plugins/claude-code/capture-assistant.mjs");
+    } else if (client === "claude" && event === "session") {
+      await import("./plugins/claude-code/session-context.mjs");
     } else if (client === "codex" && event === "user") {
       await import("./plugins/codex/capture-user.mjs");
     } else if (client === "codex" && event === "assistant") {
       await import("./plugins/codex/capture-assistant.mjs");
     } else if (client === "codex" && event === "tool") {
       await import("./plugins/codex/capture-tool.mjs");
+    } else if (client === "codex" && event === "session") {
+      await import("./plugins/codex/session-context.mjs");
     } else if (client === "hermes" && event === "user") {
       await import("./plugins/hermes/capture-user.mjs");
     } else if (client === "hermes" && event === "assistant") {
@@ -78,7 +82,7 @@ if (isMain) {
       const { runCaptureCli } = await import("./plugins/prime-agent/common.mjs");
       await runCaptureCli(event);
     } else {
-      console.error("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool OR hook hermes user|assistant OR hook cursor user|assistant|tool|session-end OR hook prime-agent watch|sync");
+      console.error("Usage: midbrain-memory-mcp hook claude user|assistant|session OR hook codex user|assistant|tool|session OR hook hermes user|assistant OR hook cursor user|assistant|tool|session-end OR hook prime-agent watch|sync");
       process.exit(2);
     }
   } else if (process.argv[2] === "capture-user" || process.argv[2] === "capture-assistant") {

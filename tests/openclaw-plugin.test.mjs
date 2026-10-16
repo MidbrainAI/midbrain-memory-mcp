@@ -241,12 +241,34 @@ describe("createPromptBuildHandler", () => {
     expect(createApi).not.toHaveBeenCalled();
   });
 
-  it("reuses one API per workspace across turns", async () => {
+  it("reads once per session and keeps the system text identical across turns (#61)", async () => {
     const onBuild = handler();
-    await onBuild({ prompt: "a" }, CTX);
-    await onBuild({ prompt: "b" }, CTX);
+    const first = await onBuild({ prompt: "a" }, CTX);
+    api.getProfile.mockResolvedValue("Changed mid-session.");
+    const second = await onBuild({ prompt: "b" }, CTX);
+    expect(second).toEqual(first);
     expect(createApi).toHaveBeenCalledTimes(1);
-    expect(api.getPersona).toHaveBeenCalledTimes(2);
+    expect(api.getPersona).toHaveBeenCalledTimes(1);
+
+    const otherSession = await onBuild({ prompt: "c" }, { ...CTX, sessionId: "other-session" });
+    expect(otherSession.appendSystemContext).toContain("Changed mid-session.");
+    expect(createApi).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries the read on the next turn after a failure", async () => {
+    const onBuild = handler();
+    api.getPersona.mockRejectedValueOnce(new Error("down"));
+    api.getProfile.mockRejectedValueOnce(new Error("down"));
+    await expect(onBuild({ prompt: "a" }, CTX)).resolves.toBeUndefined();
+    await expect(onBuild({ prompt: "b" }, CTX)).resolves.toEqual({
+      appendSystemContext: formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }),
+    });
+    createApi.mockRejectedValueOnce(new Error("No API key configured"));
+    const fresh = handler();
+    await expect(fresh({ prompt: "c" }, CTX)).resolves.toBeUndefined();
+    await expect(fresh({ prompt: "d" }, CTX)).resolves.toEqual({
+      appendSystemContext: formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }),
+    });
   });
 
   it("adds nothing, with a log line, when the API cannot be created", async () => {

@@ -61,38 +61,50 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
 
   await postEpisodic(prompt, "user", input, deps, api);
 
-  const context = await sessionContext(api, prompt, deps);
-  if (!context) return undefined;
-  return {
-    hookSpecificOutput: {
-      hookEventName: "UserPromptSubmit",
-      additionalContext: context,
-    },
-  };
-}
-
-async function sessionContext(api, prompt, deps) {
-  const sections = [];
-  try {
-    const identity = await loadIdentityContext(api);
-    if (identity) sections.push(identity);
-  } catch (err) {
-    safeLog(deps.logger, `IDENTITY INJECT ERROR: ${errorMessage(err)}`);
-  }
-
-  if (!isPkInjectionEnabled()) return sections.join("\n\n");
+  if (!isPkInjectionEnabled()) return undefined;
 
   // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
   try {
     const entries = await api.searchProcedural({ query: prompt, excludeIds: [] });
     if (entries.length > 0) {
       safeLog(deps.logger, `PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`, "debug");
-      sections.push(formatPkContext(entries));
+      return {
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: formatPkContext(entries),
+        },
+      };
     }
   } catch (err) {
     safeLog(deps.logger, `PK INJECT ERROR: ${errorMessage(err)}`);
   }
-  return sections.join("\n\n");
+  return undefined;
+}
+
+/**
+ * SessionStart: add the MidBrain persona and user profile once per session
+ * (issue #61), instead of repeating them on every prompt. Codex fires
+ * SessionStart for new and resumed threads. Never throws.
+ *
+ * @returns {Promise<object|undefined>} Stdout payload, or undefined.
+ */
+export async function sessionStartContext(input, deps = makeDefaultDeps()) {
+  const projectDir = typeof input?.cwd === "string" && input.cwd.trim() ? input.cwd : undefined;
+  try {
+    const api = await deps.createApi(projectDir);
+    const context = await loadIdentityContext(api);
+    if (!context) return undefined;
+    safeLog(deps.logger, `IDENTITY: session=${input?.session_id || "-"} source=${input?.source || "-"} len=${context.length}`, "info");
+    return {
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: context,
+      },
+    };
+  } catch (err) {
+    safeLog(deps.logger, `IDENTITY ERROR: ${errorMessage(err)}`);
+    return undefined;
+  }
 }
 
 export async function captureAssistant(input, deps = makeDefaultDeps()) {

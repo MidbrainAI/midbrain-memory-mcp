@@ -84,19 +84,43 @@ describe("captureUser", () => {
     expect(deps.createApi).not.toHaveBeenCalled();
   });
 
-  it("injects persona and profile while PK injection is off", async () => {
+  function identityDeps() {
     const { deps } = makeDeps();
-    deps.createApi = vi.fn(async () => ({
+    const api = {
       storeEpisodic: vi.fn(async () => true),
       searchProcedural: vi.fn(async () => []),
       getPersona: vi.fn(async () => "Be concise."),
       getProfile: vi.fn(async () => "Works at CX2."),
-    }));
+    };
+    deps.createApi = vi.fn(async () => api);
+    return { deps, api };
+  }
+
+  it("adds persona and profile on the session's first turn", async () => {
+    const { deps } = identityDeps();
+
+    const out = await captureUser({ extra: { user_message: "hi", is_first_turn: true } }, deps);
+
+    expect(out.context).toContain("## Agent persona\nBe concise.");
+    expect(out.context).toContain("## User profile\nWorks at CX2.");
+  });
+
+  it("does not repeat persona and profile on later turns (#61)", async () => {
+    const { deps, api } = identityDeps();
+
+    const out = await captureUser({ extra: { user_message: "again", is_first_turn: false } }, deps);
+
+    expect(out).toBeUndefined();
+    expect(api.getPersona).not.toHaveBeenCalled();
+    expect(api.storeEpisodic).toHaveBeenCalled();
+  });
+
+  it("keeps per-turn identity for a Hermes that does not send is_first_turn", async () => {
+    const { deps } = identityDeps();
 
     const out = await captureUser({ extra: { user_message: "hi" } }, deps);
 
     expect(out.context).toContain("## Agent persona\nBe concise.");
-    expect(out.context).toContain("## User profile\nWorks at CX2.");
   });
 
   it("does not inject PK context by default", async () => {

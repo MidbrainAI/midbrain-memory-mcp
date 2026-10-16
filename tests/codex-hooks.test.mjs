@@ -13,6 +13,7 @@ import {
   captureAssistant,
   captureToolUse,
   captureUser,
+  sessionStartContext,
 } from "../plugins/codex/common.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
 import { formatIdentityContext } from "../shared/identity-context.mjs";
@@ -114,32 +115,37 @@ describe("Codex hook capture", () => {
     expect(result.hookSpecificOutput.additionalContext).toContain("<!-- mb:pk 2 -->");
   });
 
-  it("captureUser injects persona and profile while PK injection is off", async () => {
+  it("captureUser never repeats persona and profile on a prompt (#61)", async () => {
     deps.api.getPersona = vi.fn().mockResolvedValue("Be concise.");
     deps.api.getProfile = vi.fn().mockResolvedValue("Works at CX2.");
 
     const result = await captureUser({ prompt: "hello", cwd: "/repo" }, deps);
 
-    expect(result.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
-    expect(result.hookSpecificOutput.additionalContext).toContain("## Agent persona\nBe concise.");
-    expect(result.hookSpecificOutput.additionalContext).toContain("## User profile\nWorks at CX2.");
-    expect(deps.api.searchProcedural).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
+    expect(deps.api.getPersona).not.toHaveBeenCalled();
     expect(firstStore(deps)[0]).toBe("hello");
   });
 
-  it("captureUser places identity ahead of opted-in procedural context", async () => {
-    process.env[PK_ENV] = "1";
+  it("sessionStartContext adds persona and profile once at SessionStart", async () => {
     deps.api.getPersona = vi.fn().mockResolvedValue("Be concise.");
+    deps.api.getProfile = vi.fn().mockResolvedValue("Works at CX2.");
+
+    const result = await sessionStartContext({ session_id: "s1", source: "startup", cwd: "/repo" }, deps);
+
+    expect(result.hookSpecificOutput.hookEventName).toBe("SessionStart");
+    expect(result.hookSpecificOutput.additionalContext).toBe(
+      formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }),
+    );
+    expect(deps.api.storeEpisodic).not.toHaveBeenCalled();
+  });
+
+  it("sessionStartContext adds nothing when blank or when the API cannot be created", async () => {
+    deps.api.getPersona = vi.fn().mockResolvedValue(null);
     deps.api.getProfile = vi.fn().mockResolvedValue(null);
-    deps.api.searchProcedural.mockResolvedValueOnce([
-      { id: 2, title: "Python", content: "use ruff" },
-    ]);
+    await expect(sessionStartContext({ cwd: "/repo" }, deps)).resolves.toBeUndefined();
 
-    const result = await captureUser({ prompt: "python linting", cwd: "/repo" }, deps);
-    const context = result.hookSpecificOutput.additionalContext;
-
-    expect(context.indexOf("Be concise.")).toBeGreaterThan(-1);
-    expect(context.indexOf("Be concise.")).toBeLessThan(context.indexOf("<!-- mb:pk 2 -->"));
+    deps.createApi = vi.fn().mockRejectedValue(new Error("no key"));
+    await expect(sessionStartContext({ cwd: "/repo" }, deps)).resolves.toBeUndefined();
   });
 
   it("captureUser returns undefined when no PK entries match", async () => {
@@ -171,7 +177,7 @@ describe("Codex hook capture", () => {
     ]);
   });
 
-  it("captureAssistant preserves unsigned identity examples for the API", async () => {
+  it("captureAssistant stores quoted identity text unchanged", async () => {
     const block = formatIdentityContext({ persona: "Be concise." });
 
     await captureAssistant({ last_assistant_message: `${block}\n\nFinal answer`, cwd: "/repo" }, deps);

@@ -1012,6 +1012,7 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
+          SessionStart: [{ hooks: [{ command: `'${PATHS.codexShim}' session` }] }],
           UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
           PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
           Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],

@@ -304,7 +304,8 @@ Offline episodic cache discipline (issue #53):
 Codex:
 
 - `plugins/codex/*.mjs` run in Node 20.
-- Hooks capture `UserPromptSubmit`, `PostToolUse`, and `Stop`.
+- Hooks capture `UserPromptSubmit`, `PostToolUse`, and `Stop`; `SessionStart`
+  adds persona/profile once per session.
 - Installer-written Codex hooks call the stable
   `~/.midbrain/bin/codex-hook` shim, not package-cache capture script paths.
   Codex may require one `/hooks` approval after shim migration; normal package
@@ -428,8 +429,8 @@ OpenClaw:
 - `plugins/openclaw/index.js` runs in-process in the OpenClaw gateway and
   imports runtime helpers from `./midbrain-shared.mjs` (the installed copy
   receives the built bundle). It registers a `before_prompt_build` handler
-  (persona/profile as `appendSystemContext`, user or no trigger only, 5 s
-  limit, fail-open) and an `agent_end` capture handler; `memory_search`
+  (persona/profile as `appendSystemContext`, read once per session, user or
+  no trigger only, 5 s limit, fail-open) and an `agent_end` capture handler; `memory_search`
   stays in the MCP server.
 - `agent_end` carries the whole session history: the handler stores only the
   newest user message and the final assistant text after it, once per session
@@ -564,15 +565,27 @@ Rules:
   per entry, and 6,000 characters total. Marker-like text is escaped.
 - Use helpers in `shared/pk-inject.mjs`; do not duplicate marker parsing.
 
-Persona and profile are injected on the user turn by the Claude Code, Codex,
-Hermes, OpenCode, and OpenClaw paths. They are read-only (`GET /api/v1/persona`
-and `GET /api/v1/profile`), they are not MCP tools, and a failed read is
-skipped. Cursor gets them from the MCP server instructions, read once at
-server start (`loadServerInstructions` in `mcp.mjs`), because no Cursor hook
-can add context in time. Helpers live in `shared/identity-context.mjs`. Generated blocks carry a nonce
-and an HMAC over their full contents, bound to the API key and host. Only
-verified assistant echoes are removed, centrally in `storeEpisodic` and
-`postEpisodicResult`; unsigned examples and wrong-binding blocks are preserved.
+Persona and profile (`GET /api/v1/persona`, `GET /api/v1/profile`) are
+read-only, not MCP tools, and added **once per session**, never per turn, so
+the text costs its tokens once and the session prefix stays cache-stable:
+
+- Claude Code / NanoClaw: `SessionStart` hook (`hook claude session`,
+  `plugins/claude-code/session-context.mjs`); Claude Code re-runs it after
+  `/clear` and compaction. Cursor-hosted runs are skipped.
+- Codex: `SessionStart` hook (`hook codex session`, `sessionStartContext`).
+- OpenCode: `experimental.chat.system.transform`, cached per session id.
+- OpenClaw: `before_prompt_build` `appendSystemContext`, cached per session.
+- Hermes: `pre_llm_call` only when `extra.is_first_turn` is true (Hermes
+  replays it with the history); a Hermes without the field keeps per-turn.
+- Cursor: MCP server instructions at server start (`loadServerInstructions`
+  in `mcp.mjs`).
+
+Rules: do not move identity back onto the per-turn prompt hooks. Session
+caches keep only a non-empty result (a blank or failed read is retried). The
+text is plain (no markers, nonces or signatures) and nothing strips it from
+captures; length is the API's, with only the `IDENTITY_MAX_CHARS` (50,000)
+safety ceiling in `shared/identity-context.mjs`. Adding a hook event to
+`HOOK_EVENTS` makes installs without it stale, so repair adds it.
 
 ## Memory-First Agent Rules
 

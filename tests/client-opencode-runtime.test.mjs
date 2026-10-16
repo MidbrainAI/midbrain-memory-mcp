@@ -235,15 +235,17 @@ describe("OpenCode plugin PK delivery helpers", () => {
     expect(initLine).not.toContain("test-key");
   });
 
-  it("prepends persona and profile and stores the original user text", async () => {
+  it("adds persona and profile to the system prompt once per session, not to messages", async () => {
+    let profile = "Works at CX2.";
+    let persona = "Be concise.";
     fetchSpy.mockImplementation(async (url) => {
       const text = String(url);
       if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
       if (text.includes("/api/v1/persona")) {
-        return { ok: true, status: 200, json: async () => ({ description: "Be concise." }) };
+        return { ok: true, status: 200, json: async () => ({ description: persona }) };
       }
       if (text.includes("/api/v1/profile")) {
-        return { ok: true, status: 200, json: async () => ({ description: "Works at CX2." }) };
+        return { ok: true, status: 200, json: async () => ({ description: profile }) };
       }
       return { ok: false, status: 404, text: async () => "not found" };
     });
@@ -259,15 +261,43 @@ describe("OpenCode plugin PK delivery helpers", () => {
     };
 
     await hooks["chat.message"]({ sessionID: "session-1" }, output);
-
-    expect(output.parts[0].text.startsWith("<!-- mb:identity-start -->")).toBe(true);
-    expect(output.parts[0].text).toContain("## Agent persona\nBe concise.");
-    expect(output.parts[0].text).toContain("## User profile\nWorks at CX2.");
-    expect(output.parts[0].text.endsWith("How does OpenCode deliver context?")).toBe(true);
+    expect(output.parts[0].text).toBe("How does OpenCode deliver context?");
     await vi.waitFor(() => {
       const episodicCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/memories/episodic"));
       expect(JSON.parse(episodicCall[1].body).text).toBe("How does OpenCode deliver context?");
     });
+
+    const first = { system: ["base"] };
+    await hooks["experimental.chat.system.transform"]({ sessionID: "session-1" }, first);
+    expect(first.system).toHaveLength(2);
+    expect(first.system[1]).toContain("## Agent persona\nBe concise.");
+    expect(first.system[1]).toContain("## User profile\nWorks at CX2.");
+
+    // Same session: identical text without another read, even if the profile changed.
+    profile = "Changed mid-session.";
+    const reads = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/v1/profile")).length;
+    const second = { system: ["base"] };
+    await hooks["experimental.chat.system.transform"]({ sessionID: "session-1" }, second);
+    expect(second.system[1]).toBe(first.system[1]);
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/v1/profile"))).toHaveLength(reads);
+
+    // A new session reads again; a request without a session adds nothing.
+    const next = { system: ["base"] };
+    await hooks["experimental.chat.system.transform"]({ sessionID: "session-2" }, next);
+    expect(next.system[1]).toContain("Changed mid-session.");
+    // A blank read is not cached: the next request reads again.
+    profile = "";
+    persona = "";
+    const blank = { system: ["base"] };
+    await hooks["experimental.chat.system.transform"]({ sessionID: "session-3" }, blank);
+    expect(blank.system).toEqual(["base"]);
+    profile = "Now set.";
+    const retried = { system: ["base"] };
+    await hooks["experimental.chat.system.transform"]({ sessionID: "session-3" }, retried);
+    expect(retried.system[1]).toContain("Now set.");
+    const unscoped = { system: ["base"] };
+    await hooks["experimental.chat.system.transform"]({}, unscoped);
+    expect(unscoped.system).toEqual(["base"]);
   });
 
   it("stores user text without procedural search or message mutation by default", async () => {

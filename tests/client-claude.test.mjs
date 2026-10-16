@@ -276,6 +276,7 @@ describe("Claude.installGlobal", () => {
     const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeSettings);
     expect(writeCall).toBeDefined();
     const written = JSON.parse(writeCall[1]);
+    expect(written.hooks.SessionStart[0].hooks[0]).toEqual({ type: "command", command: `'${CLAUDE_SHIM}' session`, timeout: 30 });
     expect(written.hooks.UserPromptSubmit).toBeDefined();
     expect(written.hooks.Stop).toBeDefined();
     expect(written.permissions.allow).toContain("mcp__midbrain-memory__memory_search");
@@ -393,13 +394,13 @@ describe("Claude capture-user hook wrapper", () => {
     return { dir, file };
   }
 
-  function runHook(input, { mode = "empty", home = tempHomeWithKey(), extraEnv = {} } = {}) {
+  function runHook(input, { mode = "empty", home = tempHomeWithKey(), extraEnv = {}, script = "capture-user.mjs" } = {}) {
     const loaded = preload(mode);
     const result = spawnSync(process.execPath, [
       // --import requires a file:// URL on Windows (absolute C:\ paths are
       // rejected by the ESM loader); pathToFileURL is a no-op-safe on POSIX.
       "--import", pathToFileURL(loaded.file).href,
-      path.join(REPO_ROOT, "plugins", "claude-code", "capture-user.mjs"),
+      path.join(REPO_ROOT, "plugins", "claude-code", script),
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
@@ -441,15 +442,46 @@ describe("Claude capture-user hook wrapper", () => {
     fsSync.rmSync(home, { recursive: true, force: true });
   });
 
-  it("emits persona and profile as additionalContext while PK injection is off", () => {
+  it("never repeats persona and profile on a prompt (#61: once per session)", () => {
     const result = runHook({ prompt: "hello", cwd: "/repo" }, { mode: "identity" });
 
     expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
+  it("SessionStart adds persona and profile once as additionalContext", () => {
+    const result = runHook(
+      { hook_event_name: "SessionStart", source: "startup", session_id: "s1", cwd: "/repo" },
+      { mode: "identity", script: "session-context.mjs" },
+    );
+
+    expect(result.status).toBe(0);
     const payload = JSON.parse(result.stdout);
-    expect(payload.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    expect(payload.hookSpecificOutput.hookEventName).toBe("SessionStart");
     expect(payload.hookSpecificOutput.additionalContext).toContain("## Agent persona\nBe concise.");
     expect(payload.hookSpecificOutput.additionalContext).toContain("## User profile\nWorks at CX2.");
-    expect(payload.hookSpecificOutput.additionalContext).not.toContain("<!-- mb:ctx-start -->");
+    expect(payload.hookSpecificOutput.additionalContext).not.toMatch(/<!--/);
+  });
+
+  it("SessionStart adds nothing when persona and profile are blank or unreadable", () => {
+    for (const mode of ["empty", "throw"]) {
+      const result = runHook(
+        { hook_event_name: "SessionStart", source: "startup", cwd: "/repo" },
+        { mode, script: "session-context.mjs" },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("");
+    }
+  });
+
+  it("SessionStart skips Cursor-hosted runs (Cursor gets identity from the MCP server)", () => {
+    const result = runHook(
+      { hook_event_name: "sessionStart", cursor_version: "2.0.0", cwd: "/repo" },
+      { mode: "identity", script: "session-context.mjs" },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
   });
 
   it("emits hookSpecificOutput.additionalContext when PK matches and injection is opted in", () => {

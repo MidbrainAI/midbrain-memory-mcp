@@ -1,81 +1,42 @@
 /**
  * shared/identity-context.mjs
  *
- * Read-only persona and profile injection for session context.
- * Not an MCP tool. Hooks prepend this block; they do not write either field.
+ * Read-only persona and profile context for a session (issue #61).
+ * Not an MCP tool, and never written by MidBrain clients.
+ *
+ * Each client adds this text ONCE per session at its session-level surface
+ * (Claude Code / Codex SessionStart, OpenCode system prompt, OpenClaw system
+ * context, Hermes first turn, Cursor MCP server instructions), never on every
+ * turn: the text stays stable for the session, so it costs its tokens once
+ * and never disturbs the client's prompt cache.
+ *
+ * Persona and profile length is owned by the API. IDENTITY_MAX_CHARS is only a
+ * safety ceiling for a malformed response, far above any normal value.
  */
 
-import { randomUUID } from "node:crypto";
-
-export const IDENTITY_MARKER_START = "<!-- mb:identity-start -->";
-export const IDENTITY_MARKER_END = "<!-- mb:identity-end -->";
-export const IDENTITY_FIELD_MAX_CHARS = 3_000;
-const TRUNCATION_MARKER = "\n[truncated]";
+export const IDENTITY_MAX_CHARS = 50_000;
+const INTRO = "MidBrain persona and user profile for this session (read-only):";
 const PERSONA_HEADER = "## Agent persona";
 const PROFILE_HEADER = "## User profile";
-const IDENTITY_PROOF_RE = /^<!-- mb:identity-proof nonce=([a-f0-9-]{36}) sig=([a-f0-9]{64}) -->\n([\s\S]*)$/;
-const HTML_COMMENT_START_RE = /<!--/g;
-const HTML_COMMENT_END_RE = /-->/g;
-const IDENTITY_BLOCK_RE = new RegExp(
-  `${IDENTITY_MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${IDENTITY_MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
-  "g",
-);
-
-function escapeContextText(value) {
-  return String(value ?? "")
-    .replace(HTML_COMMENT_START_RE, "&lt;!--")
-    .replace(HTML_COMMENT_END_RE, "--&gt;");
-}
-
-function capField(value) {
-  const text = escapeContextText(String(value).trim());
-  if (text.length <= IDENTITY_FIELD_MAX_CHARS) return text;
-  const keep = Math.max(0, IDENTITY_FIELD_MAX_CHARS - TRUNCATION_MARKER.length);
-  return `${text.slice(0, keep)}${TRUNCATION_MARKER}`;
-}
+const TRUNCATION_MARKER = "\n[truncated]";
 
 function section(header, value) {
   if (typeof value !== "string" || !value.trim()) return "";
-  return `${header}\n${capField(value)}`;
+  return `${header}\n${value.trim()}`;
 }
 
 /**
- * Build the identity block for one turn. Empty when both sides are blank.
+ * Build the session identity text. Empty when both fields are blank.
  *
  * @param {{persona?: string|null, profile?: string|null}} fields
  * @returns {string}
  */
-export function formatIdentityContext({ persona, profile } = {}, api) {
+export function formatIdentityContext({ persona, profile } = {}) {
   const sections = [section(PERSONA_HEADER, persona), section(PROFILE_HEADER, profile)].filter(Boolean);
   if (sections.length === 0) return "";
-  let body = sections.join("\n\n");
-  if (typeof api?.signIdentityContext === "function") {
-    const nonce = randomUUID();
-    const signature = api.signIdentityContext(`${nonce}\n${body}`);
-    body = `<!-- mb:identity-proof nonce=${nonce} sig=${signature} -->\n${body}`;
-  }
-  return `${IDENTITY_MARKER_START}\n${body}\n${IDENTITY_MARKER_END}`;
-}
-
-function isInjectedIdentityBlock(block, api) {
-  if (typeof api?.verifyIdentityContext !== "function") return false;
-  const body = block.slice(IDENTITY_MARKER_START.length + 1, -IDENTITY_MARKER_END.length - 1);
-  const proof = IDENTITY_PROOF_RE.exec(body);
-  return Boolean(proof && api.verifyIdentityContext(`${proof[1]}\n${proof[3]}`, proof[2]));
-}
-
-/**
- * Remove hook-injected identity blocks before storing assistant text.
- * Only authenticated blocks from the same API binding are removed. Unsigned
- * examples, modified blocks and blocks from another agent/host are preserved.
- *
- * @param {string} text
- * @returns {string}
- */
-export function scrubIdentityContext(text, api) {
-  return String(text ?? "").replace(IDENTITY_BLOCK_RE, (block) =>
-    isInjectedIdentityBlock(block, api) ? "" : block
-  ).trim();
+  const text = `${INTRO}\n\n${sections.join("\n\n")}`;
+  if (text.length <= IDENTITY_MAX_CHARS) return text;
+  return `${text.slice(0, IDENTITY_MAX_CHARS - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
 async function readField(api, method) {
@@ -99,5 +60,5 @@ export async function loadIdentityContext(api) {
     readField(api, "getPersona"),
     readField(api, "getProfile"),
   ]);
-  return formatIdentityContext({ persona, profile }, api);
+  return formatIdentityContext({ persona, profile });
 }

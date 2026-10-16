@@ -8,7 +8,9 @@
  * Cursor also runs this hook (Third-Party Imports) with its own payload; that
  * run is skipped when the MidBrain Cursor hooks capture the turn (#100).
  * session_id and cwd are forwarded into episodic memory_metadata for scoping.
- * Stdout JSON (persona, profile, or an opted-in PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
+ * Stdout JSON (on opted-in PK match): { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "..." } }
+ * Persona and profile are added once per session by the SessionStart hook
+ * (session-context.mjs), not here.
  * Capture failures are non-fatal. Capture completes before finishHook(), whose
  * throttled self-update check may delay hook exit by up to UPDATE_FETCH_TIMEOUT_MS.
  *
@@ -24,7 +26,6 @@ import {
 import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
-import { loadIdentityContext } from "../../shared/identity-context.mjs";
 
 async function captureUser() {
   const input = await readStdinJSON();
@@ -62,26 +63,17 @@ async function captureUser() {
   // Episodic capture must complete before default-off exits.
   await api.storeEpisodic(input.prompt, "user", log, metadata);
 
-  const sections = [];
-  try {
-    const identity = await loadIdentityContext(api);
-    if (identity) sections.push(identity);
-  } catch { /* fail open */ }
+  if (!isPkInjectionEnabled()) return;
 
-  if (isPkInjectionEnabled()) {
-    // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
-    const entries = await api.searchProcedural({ query: input.prompt, excludeIds: [] });
-    if (entries.length > 0) {
-      sections.push(formatPkContext(entries));
-      log.debug(`PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`);
-    }
-  }
-
-  if (sections.length > 0) {
+  // Opt-in legacy PK injection — 2s timeout inside searchProcedural.
+  const entries = await api.searchProcedural({ query: input.prompt, excludeIds: [] });
+  if (entries.length > 0) {
+    const ctx = formatPkContext(entries);
+    log.debug(`PK: injected ${entries.length} entries ids=${entries.map((e) => e.id).join(",")}`);
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
-        additionalContext: sections.join("\n\n"),
+        additionalContext: ctx,
       },
     }));
   }

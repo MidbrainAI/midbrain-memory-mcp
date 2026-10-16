@@ -17,9 +17,12 @@
  *   because OpenClaw can finish the turn first. Nothing is cached twice. The
  *   handler never throws.
  *
- * `before_prompt_build` reads the agent persona and user profile and appends
- * them to the system prompt (`appendSystemContext`) on user-triggered runs.
- * A blank field or a failed read adds nothing; it never throws.
+ * `before_prompt_build` appends the agent persona and user profile to the
+ * system prompt (`appendSystemContext`) on user-triggered runs. They are read
+ * once per session and reused, so the system text stays identical for the
+ * whole session (#61): no repeated copies, no prompt-cache churn, and a later
+ * profile edit applies from the next session. A blank field or a failed read
+ * adds nothing; it never throws.
  *
  * The installer copies this file, its manifest, package.json and the bundled
  * dist/midbrain-shared.mjs to a stable directory and links it in openclaw.json.
@@ -239,6 +242,7 @@ export function createPromptBuildHandler(deps = {}) {
   const log = deps.logger || makeLogger(logFile("midbrain-openclaw.log"));
   const limitMs = deps.timeLimitMs ?? IDENTITY_TIME_LIMIT_MS;
   const apis = new Map();
+  const identities = new Map();
 
   function apiFor(cwd) {
     const key = cwd || "";
@@ -250,12 +254,29 @@ export function createPromptBuildHandler(deps = {}) {
     return apis.get(key);
   }
 
+  /**
+   * One read per session (and workspace). Only a non-empty result is kept: a
+   * blank or failed read adds no system text, so retrying it next turn keeps
+   * the prompt stable and picks the identity up once the API answers.
+   */
+  function identityFor(ctx, cwd) {
+    const session = ctx?.sessionId || ctx?.sessionKey || "";
+    const key = `${session}\0${cwd || ""}`;
+    if (!session) return apiFor(cwd).then((api) => loadIdentityContext(api));
+    if (!identities.has(key)) {
+      const loaded = apiFor(cwd).then((api) => loadIdentityContext(api));
+      loaded.then((text) => { if (!text) identities.delete(key); }, () => identities.delete(key));
+      remember(identities, key, loaded);
+    }
+    return identities.get(key);
+  }
+
   return async function onPromptBuild(_event, ctx = {}) {
     if (ctx?.trigger !== undefined && !CAPTURED_TRIGGERS.has(ctx.trigger)) return undefined;
     const cwd = typeof ctx?.workspaceDir === "string" ? ctx.workspaceDir : undefined;
     const timer = expireAfter(limitMs);
     try {
-      const work = apiFor(cwd).then((api) => loadIdentityContext(api));
+      const work = identityFor(ctx, cwd);
       const block = await Promise.race([work, timer.promise]);
       if (block === "timeout") {
         log.error(`OPENCLAW IDENTITY TIMEOUT: persona/profile not loaded after ${limitMs}ms`);
@@ -276,7 +297,7 @@ export function createPromptBuildHandler(deps = {}) {
 export default {
   id: PLUGIN_ID,
   name: "MidBrain Memory",
-  description: "Adds the MidBrain persona and profile to each turn and stores each prompt and final reply in episodic memory.",
+  description: "Adds the MidBrain persona and profile to each session and stores each prompt and final reply in episodic memory.",
   register(api) {
     api.on("before_prompt_build", createPromptBuildHandler());
     api.on("agent_end", createAgentEndHandler());

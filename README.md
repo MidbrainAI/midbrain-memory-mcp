@@ -101,15 +101,24 @@ call `/api/v1/memories/search/procedural` or prepend procedural context unless
 There is no manual MCP tool for procedural knowledge; agents should use the
 normal memory tools for explicit recall.
 
-**Persona and profile**: Claude Code, Codex, Hermes, OpenCode, and OpenClaw
-read `GET /api/v1/persona` and `GET /api/v1/profile` on each user turn and
-inject the descriptions into that turn's context (OpenClaw appends them to the
-system prompt). They are not MCP tools, and the
-hooks do not write either field. Each description is capped at 3,000
-characters. A blank field or a failed read is skipped. Cursor gets them from
-the MidBrain MCP server's instructions instead, read once when the server
-starts, because no Cursor hook can add context in time. The stored user prompt
-stays the original text.
+**Persona and profile**: MidBrain reads `GET /api/v1/persona` and
+`GET /api/v1/profile` and adds them **once per session**, never on every turn,
+so they cost their tokens once and keep the client's prompt cache stable:
+
+| Client | Where they go |
+|---|---|
+| Claude Code (and NanoClaw) | `SessionStart` hook context; Claude Code runs it again after `/clear` and compaction |
+| Codex | `SessionStart` hook context |
+| OpenCode | the system prompt (`experimental.chat.system.transform`), read once per session |
+| OpenClaw | the system prompt (`appendSystemContext`), read once per session |
+| Hermes | the first turn of the session (`pre_llm_call` with `is_first_turn`); Hermes keeps it in the session history |
+| Cursor | the MidBrain MCP server's instructions, read once when the server starts |
+
+They are not MCP tools, and nothing writes either field. Their length is set
+by the API; MidBrain only cuts a malformed response above 50,000 characters. A
+blank field or a failed read adds nothing (OpenCode and OpenClaw retry on the
+next turn). A change to the persona or profile applies from the next session.
+Captured prompts and replies are stored as written.
 
 Over time, captured memory can consolidate into procedural knowledge: the
 experience layer that helps agents adapt how they work, not just recall what
@@ -603,10 +612,12 @@ Non-interactive installs always use the single shared (global) key.
 ```
 
 Claude Code global install also writes `UserPromptSubmit` and `Stop` capture
-hooks into `~/.claude/settings.json`. The hooks call a stable local shim
+hooks, plus a `SessionStart` hook that adds the persona and profile once per
+session, into `~/.claude/settings.json`. The hooks call a stable local shim
 (30-second timeout; the `Stop` hook is async):
 
 ```text
+~/.midbrain/bin/claude-hook session
 ~/.midbrain/bin/claude-hook user
 ~/.midbrain/bin/claude-hook assistant
 ```
@@ -628,7 +639,8 @@ MIDBRAIN_CLIENT = "codex"
 ```
 
 Codex global install also writes `~/.codex/hooks.json` with
-`UserPromptSubmit`, `PostToolUse`, and `Stop` capture hooks. Project setup
+`UserPromptSubmit`, `PostToolUse`, and `Stop` capture hooks and a
+`SessionStart` hook for the persona and profile. Project setup
 writes only `.codex/config.toml`; it does not write project-local hooks to
 avoid duplicate captures from multiple matching hook layers. Use `/hooks` in
 Codex to review and trust hook changes if prompted.
@@ -964,9 +976,11 @@ turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
 triggers; it captures runs with trigger `user` or no trigger.
 
 The same plugin also listens on `before_prompt_build`. On user-triggered runs
-it reads the persona and profile and returns them as `appendSystemContext`, so
-OpenClaw appends them to the system prompt. It waits at most 5 seconds, a
-blank field or failed read adds nothing, and setting
+it returns the persona and profile as `appendSystemContext`, so OpenClaw
+appends them to the system prompt. They are read once per session and reused,
+so the system text stays the same for the whole session. It waits at most 5
+seconds, a blank field or failed read adds nothing (and is retried next turn),
+and setting
 `plugins.entries["midbrain-memory"].hooks.allowPromptInjection` to `false`
 turns it off.
 
