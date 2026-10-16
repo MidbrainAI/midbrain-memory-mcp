@@ -717,6 +717,7 @@ Vitest tests live in `tests/`.
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
 | `tests/history-import.test.mjs` | `shared/history-import/*.mjs`, `shared/history-import/readers/{claude,codex,common}.mjs`, `shared/redact.mjs` |
 | `tests/history-import-prime-agent.test.mjs` | `shared/history-import/readers/prime-agent.mjs` |
+| `tests/history-import-opencode.test.mjs` | `shared/history-import/readers/opencode.mjs` |
 | `tests/history-import-openclaw.test.mjs` | `shared/history-import/readers/openclaw.mjs`, SQLite helpers in `readers/common.mjs` |
 
 Unit tests mock filesystem and network access where practical. MCP integration

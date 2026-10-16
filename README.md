@@ -308,6 +308,7 @@ Supported sources (`--client` takes the id):
 | Codex | `codex` | `~/.codex/sessions` and `archived_sessions` (or `CODEX_HOME`) |
 | Prime Agent | `prime-agent` | `~/.prime/agent/sessions/*.jsonl` (or `PRIME_AGENT_SESSION_DIR`, the `sessionDir` setting); subagent sessions and a fork's copied parent history are skipped |
 | OpenClaw | `openclaw` | `~/.openclaw/agents/*/agent/openclaw-agent.sqlite` (or `OPENCLAW_STATE_DIR`, `OPENCLAW_PROFILE`), read-only; cron, hook, plugin and spawned sessions, and heartbeat turns, are skipped. A session on the claude-cli backend is imported once, as the OpenClaw session. Needs Node 22.15+ (`node:sqlite` and zstd) |
+| OpenCode | `opencode` | `~/.local/share/opencode/opencode.db` (or `XDG_DATA_HOME`), read-only; subagent sessions are skipped, and `opencode run` sessions count as automated. Needs Node 22.13+ |
 
 - **Preview by default.** The preview counts sessions, prompts and replies per
   client with their date range, says why sessions are skipped, and which key
@@ -321,7 +322,8 @@ Supported sources (`--client` takes the id):
   `import_id`, `imported_at`.
 - **What is left out:** tool calls and output, injected context, slash-command
   echoes, notifications, subagent threads, sessions a program started (Agent
-  SDK and `claude -p` runs, `codex exec` runs, orchestrators; add
+  SDK and `claude -p` runs, `codex exec` and `opencode run` runs,
+  orchestrators; add
   `--include-automated` to import them), and
   sessions written to in the last 10 minutes.
 - **No duplicates.** Turns MidBrain already captured live are skipped (a
