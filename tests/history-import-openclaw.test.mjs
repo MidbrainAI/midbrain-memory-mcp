@@ -90,6 +90,38 @@ describe.skipIf(!sqlite || typeof zlib.zstdCompressSync !== "function")("readOpe
     ]);
   });
 
+  it("drops heartbeat turns, and a NO_REPLY turn keeps no reply", async () => {
+    const db = makeDb();
+    addSession(db, "main", {
+      key: "agent:main:main",
+      events: [
+        header(),
+        msg("2026-10-05T09:00:01.000Z", "user", "Read HEARTBEAT.md and follow it."),
+        msg("2026-10-05T09:00:02.000Z", "assistant", "HEARTBEAT_OK"),
+        msg("2026-10-05T09:01:00.000Z", "user", "real prompt here"),
+        msg("2026-10-05T09:01:01.000Z", "assistant", "Interim text."),
+        msg("2026-10-05T09:01:02.000Z", "assistant", "NO_REPLY"),
+      ],
+    });
+    db.close();
+
+    const session = await readOpenClawSession(`${dbFile}#main`);
+    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([["user", "real prompt here"]]);
+  });
+
+  it("reports a session unreadable on a Node without zstd instead of dropping events", async () => {
+    const db = makeDb();
+    addSession(db, "z", { events: [header(), { ...msg("2026-10-05T09:00:01.000Z", "user", "compressed prompt"), compress: true }] });
+    db.close();
+    const decompress = zlib.zstdDecompressSync;
+    delete zlib.zstdDecompressSync;
+    try {
+      await expect(readOpenClawSession(`${dbFile}#z`)).rejects.toMatchObject({ code: "NO_ZSTD" });
+    } finally {
+      zlib.zstdDecompressSync = decompress;
+    }
+  });
+
   it("skips cron, hook and spawned sessions", async () => {
     const db = makeDb();
     const events = [header(), msg("2026-10-05T09:00:01.000Z", "user", "tick")];
@@ -160,6 +192,9 @@ describe.skipIf(!sqlite || typeof zlib.zstdCompressSync !== "function")("readOpe
 
     expect(listOpenClawDatabases(stateDir)).toEqual([dbFile]);
     expect(listOpenClawSessions([dbFile])).toEqual([`${dbFile}#a`, `${dbFile}#b`]);
-    expect(listOpenClawSessions([path.join(stateDir, "missing.sqlite")])).toEqual([]);
+    // An unreadable database is listed as is, so the preview reports it.
+    const corrupt = path.join(stateDir, "corrupt.sqlite");
+    fs.writeFileSync(corrupt, "not a database");
+    expect(listOpenClawSessions([corrupt])).toEqual([corrupt]);
   });
 });

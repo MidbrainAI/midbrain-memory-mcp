@@ -545,3 +545,18 @@ describe("import CLI", () => {
     expect(err.text).toContain("drop --offline");
   });
 });
+
+describe("planImport linked sessions", () => {
+  it("imports a conversation two clients recorded once, as the linking session", async () => {
+    const now = Date.parse("2026-10-13T00:00:00Z");
+    const readers = {
+      openclaw: { list: () => ["oc"], read: async () => session({ client: "openclaw", file: "oc", sessionId: "oc-1", linkedSessionIds: ["claude-1"] }) },
+      claude: { list: () => ["cl"], read: async () => session({ client: "claude", file: "cl", sessionId: "claude-1" }) },
+    };
+    const planned = await planImport({ readers, clients: ["openclaw", "claude"], now, mtimeMs: () => now - ACTIVE_SESSION_MS - 1 });
+    expect(planned.map((item) => [item.sessionId, item.skip])).toEqual([
+      ["oc-1", null],
+      ["claude-1", "imported with its linked session"],
+    ]);
+  });
+});

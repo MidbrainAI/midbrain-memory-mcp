@@ -116,6 +116,13 @@ export async function planImport({
       sessions.push(session);
     }
   }
+  // A conversation two clients recorded (OpenClaw on the claude-cli backend
+  // is also a Claude Code session) is imported once, as the session that
+  // links the other.
+  const linked = new Set(sessions.filter((session) => !session.skip).flatMap((session) => session.linkedSessionIds ?? []));
+  for (const session of sessions) {
+    if (!session.skip && linked.has(session.sessionId)) session.skip = "imported with its linked session";
+  }
   return sessions;
 }
 

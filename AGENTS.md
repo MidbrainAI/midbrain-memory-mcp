@@ -511,8 +511,11 @@ reader module in `readers/` (`list()` and `read(source)`), registered in
 `readers/index.mjs`; shared helpers are in `readers/common.mjs`. Readers
 of SQLite stores open the client's database read-only, in place
 (`withReadOnlyDatabase`; never copy it, never write), use `<db>#<id>`
-sources, and give each session's `lastWrittenMs`. `node:sqlite` needs Node
-22.5+; on older Node the preview lists those databases as unreadable
+sources, and give each session's `lastWrittenMs`. Opening a WAL database
+read-only makes SQLite create its `-wal`/`-shm` side files when they are
+missing; no data is written. An unreadable database is listed as is, so the
+preview reports it instead of finding nothing. `node:sqlite` needs Node
+22.13+ (OpenClaw's zstd events need 22.15+); on older Node the preview lists those databases as unreadable
 (`NO_SQLITE`).
 
 - Opt-in and preview-first: no upload without `--apply` plus a confirmation

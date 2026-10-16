@@ -80,8 +80,8 @@ export function validTimestamp(value) {
 let sqliteModule;
 
 /**
- * Node's built-in SQLite (`node:sqlite`, Node 22.5+), or null when this Node
- * has none. Its one-time "experimental" warning is not shown.
+ * Node's built-in SQLite (`node:sqlite`, without a flag from Node 22.13), or
+ * null when this Node has none. Its one-time "experimental" warning is not shown.
  */
 export function loadSqlite() {
   if (sqliteModule !== undefined) return sqliteModule;
@@ -108,7 +108,7 @@ export function loadSqlite() {
  */
 export function withReadOnlyDatabase(file, fn) {
   const sqlite = loadSqlite();
-  if (!sqlite) throw Object.assign(new Error("needs Node 22.5 or later (node:sqlite)"), { code: "NO_SQLITE" });
+  if (!sqlite) throw Object.assign(new Error("needs Node 22.13 or later (node:sqlite)"), { code: "NO_SQLITE" });
   const db = new sqlite.DatabaseSync(file, { readOnly: true });
   try {
     return fn(db);
