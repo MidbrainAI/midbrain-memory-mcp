@@ -28,8 +28,10 @@ const DATABASE_NAME = "openclaw-agent.sqlite";
 const AUTOMATED_CREATORS = new Set(["cron", "internal", "plugin"]);
 const AUTOMATED_KEY = /:(?:cron|heartbeat|hook)(?::|$)/i;
 const SUBAGENT_KEY = /:(?:subagent|acp)(?::|$)/i;
-// Replies OpenClaw writes for turns that need no answer.
-const SILENT_REPLIES = new Set(["HEARTBEAT_OK", "NO_REPLY"]);
+// A heartbeat run's reply: the whole turn was a heartbeat, not a person.
+const HEARTBEAT_REPLY = "HEARTBEAT_OK";
+// The reply to a turn that needs no answer.
+const NO_REPLY = "NO_REPLY";
 // OpenClaw's inbound envelope: "[Mon 2026-10-05 09:00 ...] text".
 const TIMESTAMP_ENVELOPE = /^\[[^\]\n]*\d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]\n]*\]\s*/;
 
@@ -61,12 +63,17 @@ export function listOpenClawSessions(databases = listOpenClawDatabases()) {
         .all()
         .map((row) => databaseSource(file, row.session_id)));
     } catch {
-      return [];
+      // Unreadable: list it as is, so the preview reports it unreadable.
+      return [file];
     }
   });
 }
 
 function decodeEvent(row) {
+  if (!row.event_json && row.event_zstd && typeof zlib.zstdDecompressSync !== "function") {
+    // Dropping compressed events would mispair turns; report the session.
+    throw Object.assign(new Error("needs Node 22.15 or later (zstd)"), { code: "NO_ZSTD" });
+  }
   try {
     if (typeof row.event_json === "string") return JSON.parse(row.event_json);
     if (row.event_zstd) return JSON.parse(zlib.zstdDecompressSync(Buffer.from(row.event_zstd)).toString("utf8"));
@@ -139,7 +146,7 @@ async function claudeBackendSessions(cwd, projectsDir) {
  * does not always record the link (`cliSessionIds`).
  */
 async function linkClaudeBackend(session, projectsDir) {
-  if (!session.cwd || session.entries.length === 0) return;
+  if (!session.cwd || session.entries.length === 0 || session.linkedSessionIds?.length) return;
   const prompts = session.entries.filter((entry) => entry.role === "user" && entry.text.length >= 12);
   for (const backend of await claudeBackendSessions(session.cwd, projectsDir)) {
     const match = backend.entries.some((entry) => entry.role === "user" && prompts.some((prompt) => (
@@ -185,7 +192,10 @@ export async function readOpenClawSession(source, { claudeProjects = claudeProje
     let turn = null;
     const seenPrompts = new Set();
     const closeTurn = () => {
-      if (!turn) return;
+      if (!turn || turn.heartbeat) {
+        turn = null;
+        return;
+      }
       session.entries.push({ role: "user", text: turn.prompt, occurredAt: turn.at, cwd: session.cwd ?? undefined });
       if (turn.reply) {
         session.entries.push({ role: "assistant", text: turn.reply, occurredAt: turn.replyAt, cwd: session.cwd ?? undefined });
@@ -215,9 +225,16 @@ export async function readOpenClawSession(source, { claudeProjects = claudeProje
         closeTurn();
         turn = { prompt: text.replace(TIMESTAMP_ENVELOPE, "").trim(), at, reply: "", replyAt: null };
         if (!turn.prompt) turn = null;
-      } else if (message?.role === "assistant" && text && turn && !SILENT_REPLIES.has(text)) {
-        turn.reply = text;
-        turn.replyAt = at;
+      } else if (message?.role === "assistant" && text && turn) {
+        if (text === HEARTBEAT_REPLY) {
+          turn.heartbeat = true; // live capture skips heartbeat runs
+        } else if (text === NO_REPLY) {
+          turn.reply = "";
+          turn.replyAt = null;
+        } else {
+          turn.reply = text;
+          turn.replyAt = at;
+        }
       }
     }
     closeTurn();
