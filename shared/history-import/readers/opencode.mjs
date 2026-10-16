@@ -12,7 +12,9 @@
  * and the text of the last finished assistant message that answers it. A
  * step that ended in tool calls carries no reply. `opencode run` stores a
  * session permission that denies the `question` tool; those sessions are
- * marked automated, like Claude Code's `-p` runs.
+ * marked automated, like Claude Code's `-p` runs. The permission is set per
+ * session, so a run session later continued in the TUI counts as automated
+ * too. Archived sessions are history like any other and are read.
  */
 
 import os from "node:os";
@@ -34,11 +36,11 @@ export function listOpenCodeSessions(file = openCodeDatabase()) {
   if (!loadSqlite()) return [database];
   try {
     return withReadOnlyDatabase(database, (db) => db
-      .prepare("SELECT id FROM session WHERE time_archived IS NULL ORDER BY time_created, id")
+      .prepare("SELECT id FROM session ORDER BY time_created, id")
       .all()
       .map((row) => databaseSource(database, row.id)));
   } catch {
-    return [];
+    return [database]; // unreadable: the preview reports it
   }
 }
 
@@ -105,23 +107,40 @@ export async function readOpenCodeSession(source) {
     );
 
     // The reply to each user message: its last finished assistant message with text.
+    // Each user message belongs to the typed prompt it continues: a
+    // compaction or synthetic continuation (no typed text) belongs to the
+    // last typed prompt before it, so the reply after it ends that turn.
+    const typedText = new Map();
+    const owner = new Map();
+    let currentPrompt = null;
+    for (const message of messages) {
+      if (message.data.role !== "user") continue;
+      const own = parts.get(message.id) ?? [];
+      const text = own.some((part) => part.type === "compaction") ? "" : partsText(own);
+      if (text) {
+        typedText.set(message.id, text);
+        currentPrompt = message.id;
+      }
+      owner.set(message.id, text ? message.id : currentPrompt);
+    }
+
     const replies = new Map();
     for (const message of messages) {
       const data = message.data;
-      if (data.role !== "assistant" || !data.parentID || data.error || data.summary === true) continue;
+      // A reply the user interrupted keeps its text, as live capture stored it.
+      const failed = data.error && data.error.name !== "MessageAbortedError";
+      if (data.role !== "assistant" || !data.parentID || failed || data.summary === true) continue;
       if (data.mode === "compaction" || data.agent === "compaction") continue;
-      if (data.finish === "tool-calls" || !data.time?.completed) continue;
+      if (data.finish === "tool-calls" || !(data.time?.completed ?? data.error)) continue;
       const text = partsText(parts.get(message.id) ?? [], { finalOnly: true });
-      if (!text) continue;
-      replies.set(data.parentID, { text, at: msToIso(data.time.completed), cwd: data.path?.cwd });
+      const prompt = owner.get(data.parentID) ?? data.parentID;
+      if (!text || !prompt) continue;
+      replies.set(prompt, { text, at: msToIso(data.time.completed ?? data.time.created), cwd: data.path?.cwd });
     }
 
     for (const message of messages) {
       const data = message.data;
-      if (data.role !== "user") continue;
-      const own = parts.get(message.id) ?? [];
-      if (own.some((part) => part.type === "compaction")) continue;
-      const text = partsText(own);
+      const text = typedText.get(message.id);
       const at = msToIso(data.time?.created ?? message.time_created);
       if (!text || !at) continue;
       const reply = replies.get(message.id);
