@@ -6,10 +6,12 @@
 
 import { listClaudeSessionFiles, readClaudeSession } from "./claude.mjs";
 import { listCodexSessionFiles, readCodexSession } from "./codex.mjs";
+import { listOpenClawSessions, readOpenClawSession } from "./openclaw.mjs";
 import { listPrimeAgentSessionFiles, readPrimeAgentSession } from "./prime-agent.mjs";
 
 export const READERS = {
   claude: { list: () => listClaudeSessionFiles(), read: readClaudeSession },
   codex: { list: () => listCodexSessionFiles(), read: readCodexSession },
   "prime-agent": { list: () => listPrimeAgentSessionFiles(), read: readPrimeAgentSession },
+  openclaw: { list: () => listOpenClawSessions(), read: readOpenClawSession },
 };

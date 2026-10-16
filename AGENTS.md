@@ -508,7 +508,12 @@ Prime Agent:
 before installation. Code: `shared/history-import/` (`readers/`,
 `plan.mjs`, `cli.mjs`), dispatched from `index.js`. Each client has one
 reader module in `readers/` (`list()` and `read(source)`), registered in
-`readers/index.mjs`; shared helpers are in `readers/common.mjs`.
+`readers/index.mjs`; shared helpers are in `readers/common.mjs`. Readers
+of SQLite stores open the client's database read-only, in place
+(`withReadOnlyDatabase`; never copy it, never write), use `<db>#<id>`
+sources, and give each session's `lastWrittenMs`. `node:sqlite` needs Node
+22.5+; on older Node the preview lists those databases as unreadable
+(`NO_SQLITE`).
 
 - Opt-in and preview-first: no upload without `--apply` plus a confirmation
   or `--yes`. Never run it from install, repair, or the MCP server.
@@ -709,6 +714,7 @@ Vitest tests live in `tests/`.
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
 | `tests/history-import.test.mjs` | `shared/history-import/*.mjs`, `shared/history-import/readers/{claude,codex,common}.mjs`, `shared/redact.mjs` |
 | `tests/history-import-prime-agent.test.mjs` | `shared/history-import/readers/prime-agent.mjs` |
+| `tests/history-import-openclaw.test.mjs` | `shared/history-import/readers/openclaw.mjs`, SQLite helpers in `readers/common.mjs` |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.
