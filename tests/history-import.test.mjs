@@ -332,6 +332,19 @@ describe("uploadImport", () => {
     expect(posts[0].metadata).not.toHaveProperty("source");
   });
 
+  it("stops at once when the account is out of credits", async () => {
+    const results = ["ok", "outOfCredits"];
+    let calls = 0;
+    const totals = await uploadImport({
+      sessions: [session()],
+      post: async () => { calls += 1; return results.shift() ?? "ok"; },
+      spacingMs: 0,
+      wait: async () => {},
+    });
+    expect(calls).toBe(2);
+    expect(totals).toMatchObject({ sent: 1, stopped: "out of MidBrain credits" });
+  });
+
   it("backs off on rate limits, retries a failed store, and stops when it keeps failing", async () => {
     const waits = [];
     const results = ["rateLimited", "ok", "failed", "ok", "failed", "failed", "failed"];

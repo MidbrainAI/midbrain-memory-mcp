@@ -231,12 +231,12 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * Upload planned sessions. Sequential, spaced, with exponential back-off on
  * rate limits. A failed store (a 5xx or a dropped connection is usually
- * brief) is retried twice. Stops at the first entry that still fails, so a
+ * brief) is retried twice; running out of credits (402) stops at once. Stops at the first entry that still fails, so a
  * re-run resumes from there (see trimAgainstServer).
  *
  * @param {object} opts
  * @param {any[]} opts.sessions
- * @param {(session: any, entry: any, metadata: Record<string,string>) => Promise<"ok"|"rateLimited"|"failed">} opts.post
+ * @param {(session: any, entry: any, metadata: Record<string,string>) => Promise<"ok"|"rateLimited"|"outOfCredits"|"failed">} opts.post
  * @param {number} [opts.spacingMs]
  * @param {number} [opts.maxRetries]
  * @param {(event: object) => void} [opts.onProgress]
@@ -282,7 +282,8 @@ export async function uploadImport({
         }
       }
       if (result !== "ok") {
-        totals.stopped = result === "rateLimited" ? "rate limited" : "store failed";
+        totals.stopped = result === "rateLimited" ? "rate limited"
+          : result === "outOfCredits" ? "out of MidBrain credits" : "store failed";
         onProgress({ type: "stopped", session: key, reason: totals.stopped, totals });
         return totals;
       }

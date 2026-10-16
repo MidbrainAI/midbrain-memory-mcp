@@ -331,6 +331,11 @@ Supported sources (`--client` takes the id):
   Review the preview's sources if your history holds other sensitive text.
 - **Keys.** Each session is stored with the key live capture would use for its
   directory, so per-project keys apply.
+- **Credits.** Each imported entry uses one MidBrain credit, like a live
+  capture; the preview shows how many the import needs. If the account runs
+  out of credits, the import stops at once (live capture and search need
+  credits too) and resumes when you run it again. Narrow a large import with
+  `--since`, `--until`, `--project` or `--client`.
 - **Load.** Uploads are sequential and back off on rate limits. They are sent
   with `X-Skip-Dream: 1`, so MidBrain skips its per-memory processing for the
   bulk load; `--dream` turns that processing on.

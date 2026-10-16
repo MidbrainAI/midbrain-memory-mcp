@@ -187,6 +187,8 @@ export async function runImportCli(argv, { readers = READERS, out = process.stdo
 
   const pending = sessions.filter((session) => !session.skip && session.entries.length);
   const total = pending.reduce((sum, session) => sum + session.entries.length, 0);
+  // Each stored memory uses one MidBrain credit, as a live capture does.
+  if (total) err.write(`Each entry uses one MidBrain credit: this import needs ${total} credits.\n`);
   if (!options.apply) {
     if (total) err.write(`Preview only. To import these ${total} entries, re-run with --apply.\n`);
     return 0;
@@ -227,6 +229,12 @@ export async function runImportCli(argv, { readers = READERS, out = process.stdo
   err.write(totals.redactions ? `, ${totals.redactions} secret(s) redacted` : "");
   err.write(totals.truncated ? `, ${totals.truncated} long entr${totals.truncated === 1 ? "y" : "ies"} truncated` : "");
   err.write(".\n");
+  if (totals.stopped === "out of MidBrain credits") {
+    err.write("Stopped early: your MidBrain account is out of credits. Live capture and search need them too.\n"
+      + "Add credits or wait for the next cycle, then run the same command again to continue; entries already stored are skipped.\n"
+      + "To import less, narrow it with --since, --until, --project or --client.\n");
+    return 1;
+  }
   if (totals.stopped) {
     err.write(`Stopped early: ${totals.stopped}. Run the same command again to continue; entries already stored are skipped.\n`);
     return 1;

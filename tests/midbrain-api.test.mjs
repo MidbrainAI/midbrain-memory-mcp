@@ -438,6 +438,11 @@ describe("MidbrainApi.postEpisodicResult", () => {
     expect(JSON.parse(opts.body)).toEqual({ text: "hi", role: "user", memory_metadata: { client: "nanoclaw" } });
   });
 
+  it("returns 'outOfCredits' on 402", async () => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: false, status: 402, contentType: "application/json" }));
+    await expect(api.postEpisodicResult("hi", "user")).resolves.toBe("outOfCredits");
+  });
+
   it("sends occurred_at and X-Skip-Dream only when an import asks for them", async () => {
     fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ ok: true, status: 201 }));
     await api.postEpisodicResult("hi", "user", { origin: "import" }, {

@@ -373,7 +373,8 @@ export class MidbrainApi {
    * @param {"user"|"assistant"} role
    * @param {Record<string,string>} [memoryMetadata]
    * @param {{occurredAt?: string, skipDream?: boolean}} [opts]
-   * @returns {Promise<"ok"|"rateLimited"|"failed">}
+   * @returns {Promise<"ok"|"rateLimited"|"outOfCredits"|"failed">} `outOfCredits`
+   *   is a 402: the account has no credits left for another memory.
    */
   async postEpisodicResult(text, role, memoryMetadata, { occurredAt, skipDream = false } = {}) {
     if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") return "failed";
@@ -391,6 +392,10 @@ export class MidbrainApi {
       if (response.status === 429) {
         await response.text().catch(() => undefined);
         return "rateLimited";
+      }
+      if (response.status === 402) {
+        await response.text().catch(() => undefined);
+        return "outOfCredits";
       }
       if (response.status === 403) {
         const contentType = (response.headers.get("content-type") || "").toLowerCase();
