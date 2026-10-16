@@ -19,7 +19,6 @@ import { pathToFileURL } from "node:url";
 
 import { makeTestEnv } from "./helpers/test-env.mjs";
 import { installShim, stableShimPath, isDevShimContent } from "../shared/clients/shim.mjs";
-import { cursorCapturesTurn, isCursorPayload } from "../plugins/claude-code/common.mjs";
 
 const IS_WIN = process.platform === "win32";
 
@@ -163,25 +162,6 @@ async function installCursorHooks() {
     hooks: { beforeSubmitPrompt: [{ command: `'${stableShimPath("cursor")}' user`, timeout: 10 }] },
   }));
 }
-
-describe("Cursor-hosted Claude hook payloads (#100)", () => {
-  it("detects Cursor payloads and never a Claude Code payload", () => {
-    expect(isCursorPayload(cursorPayload("/repo"))).toBe(true);
-    expect(isCursorPayload({ hook_event_name: "stop" })).toBe(true);
-    expect(isCursorPayload({ hook_event_name: "UserPromptSubmit", prompt: "x", session_id: "s", cwd: "/repo" })).toBe(false);
-    expect(isCursorPayload({ hook_event_name: "Stop", last_assistant_message: "x" })).toBe(false);
-    expect(isCursorPayload(null)).toBe(false);
-  });
-
-  it("defers only when the MidBrain Cursor hooks are installed, and fails open", async () => {
-    const cursor = cursorPayload("/repo");
-    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => true })).resolves.toBe(true);
-    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => false })).resolves.toBe(false);
-    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => { throw new Error("boom"); } })).resolves.toBe(false);
-    const hasCursorHooks = async () => { throw new Error("never asked for a Claude payload"); };
-    await expect(cursorCapturesTurn({ hook_event_name: "UserPromptSubmit" }, { hasCursorHooks })).resolves.toBe(false);
-  });
-});
 
 describe.skipIf(IS_WIN)("Cursor-hosted runs through the claude-hook shim (#100)", () => {
   it("user role: a Cursor prompt is left to the installed Cursor hooks; nothing is posted", async () => {

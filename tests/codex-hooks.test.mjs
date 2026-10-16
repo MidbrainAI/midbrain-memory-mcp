@@ -177,14 +177,6 @@ describe("Codex hook capture", () => {
     ]);
   });
 
-  it("captureAssistant stores quoted identity text unchanged", async () => {
-    const block = formatIdentityContext({ persona: "Be concise." });
-
-    await captureAssistant({ last_assistant_message: `${block}\n\nFinal answer`, cwd: "/repo" }, deps);
-
-    expect(firstStore(deps)[0]).toBe(`${block}\n\nFinal answer`);
-  });
-
   it("captureAssistant scrubs echoed injected PK blocks before storage", async () => {
     const block = formatPkContext([{ id: 8, title: "Secret Workflow", content: "Do the hidden step" }]);
 

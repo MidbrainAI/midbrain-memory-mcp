@@ -235,26 +235,36 @@ describe("OpenCode plugin PK delivery helpers", () => {
     expect(initLine).not.toContain("test-key");
   });
 
-  it("adds persona and profile to the system prompt once per session, not to messages", async () => {
-    let profile = "Works at CX2.";
-    let persona = "Be concise.";
+  // Persona/profile fixture: fields can change between reads (#61).
+  async function identityPlugin(fields) {
     fetchSpy.mockImplementation(async (url) => {
       const text = String(url);
       if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
       if (text.includes("/api/v1/persona")) {
-        return { ok: true, status: 200, json: async () => ({ description: persona }) };
+        return { ok: true, status: 200, json: async () => ({ description: fields.persona }) };
       }
       if (text.includes("/api/v1/profile")) {
-        return { ok: true, status: 200, json: async () => ({ description: profile }) };
+        return { ok: true, status: 200, json: async () => ({ description: fields.profile }) };
       }
       return { ok: false, status: 404, text: async () => "not found" };
     });
-
     const { MidBrainMemoryPlugin } = await import(pathToFileURL(PLUGIN_PATH).href);
-    const hooks = await MidBrainMemoryPlugin({
+    return MidBrainMemoryPlugin({
       client: { session: { messages: vi.fn().mockResolvedValue([]) } },
       directory: "/repo",
     });
+  }
+
+  async function systemFor(hooks, input) {
+    const output = { system: ["base"] };
+    await hooks["experimental.chat.system.transform"](input, output);
+    return output.system;
+  }
+
+  const profileReads = () => fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/v1/profile")).length;
+
+  it("adds persona and profile to the system prompt, not to the user message", async () => {
+    const hooks = await identityPlugin({ persona: "Be concise.", profile: "Works at CX2." });
     const output = {
       message: { id: "m-identity" },
       parts: [{ type: "text", text: "How does OpenCode deliver context?" }],
@@ -267,37 +277,42 @@ describe("OpenCode plugin PK delivery helpers", () => {
       expect(JSON.parse(episodicCall[1].body).text).toBe("How does OpenCode deliver context?");
     });
 
-    const first = { system: ["base"] };
-    await hooks["experimental.chat.system.transform"]({ sessionID: "session-1" }, first);
-    expect(first.system).toHaveLength(2);
-    expect(first.system[1]).toContain("## Agent persona\nBe concise.");
-    expect(first.system[1]).toContain("## User profile\nWorks at CX2.");
+    const system = await systemFor(hooks, { sessionID: "session-1" });
+    expect(system).toHaveLength(2);
+    expect(system[1]).toContain("## Agent persona\nBe concise.");
+    expect(system[1]).toContain("## User profile\nWorks at CX2.");
+  });
 
-    // Same session: identical text without another read, even if the profile changed.
-    profile = "Changed mid-session.";
-    const reads = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/v1/profile")).length;
-    const second = { system: ["base"] };
-    await hooks["experimental.chat.system.transform"]({ sessionID: "session-1" }, second);
-    expect(second.system[1]).toBe(first.system[1]);
-    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/v1/profile"))).toHaveLength(reads);
+  it("reads once per session and keeps the system text identical", async () => {
+    const fields = { persona: "Be concise.", profile: "Works at CX2." };
+    const hooks = await identityPlugin(fields);
+    const first = await systemFor(hooks, { sessionID: "session-1" });
+    const reads = profileReads();
 
-    // A new session reads again; a request without a session adds nothing.
-    const next = { system: ["base"] };
-    await hooks["experimental.chat.system.transform"]({ sessionID: "session-2" }, next);
-    expect(next.system[1]).toContain("Changed mid-session.");
-    // A blank read is not cached: the next request reads again.
-    profile = "";
-    persona = "";
-    const blank = { system: ["base"] };
-    await hooks["experimental.chat.system.transform"]({ sessionID: "session-3" }, blank);
-    expect(blank.system).toEqual(["base"]);
-    profile = "Now set.";
-    const retried = { system: ["base"] };
-    await hooks["experimental.chat.system.transform"]({ sessionID: "session-3" }, retried);
-    expect(retried.system[1]).toContain("Now set.");
-    const unscoped = { system: ["base"] };
-    await hooks["experimental.chat.system.transform"]({}, unscoped);
-    expect(unscoped.system).toEqual(["base"]);
+    fields.profile = "Changed mid-session.";
+    const second = await systemFor(hooks, { sessionID: "session-1" });
+
+    expect(second[1]).toBe(first[1]);
+    expect(profileReads()).toBe(reads);
+  });
+
+  it("reads again for a new session, and adds nothing without a session", async () => {
+    const fields = { persona: "Be concise.", profile: "Works at CX2." };
+    const hooks = await identityPlugin(fields);
+    await systemFor(hooks, { sessionID: "session-1" });
+
+    fields.profile = "Changed mid-session.";
+    expect((await systemFor(hooks, { sessionID: "session-2" }))[1]).toContain("Changed mid-session.");
+    expect(await systemFor(hooks, {})).toEqual(["base"]);
+  });
+
+  it("does not cache a blank read: the next request reads again", async () => {
+    const fields = { persona: "", profile: "" };
+    const hooks = await identityPlugin(fields);
+    expect(await systemFor(hooks, { sessionID: "session-3" })).toEqual(["base"]);
+
+    fields.profile = "Now set.";
+    expect((await systemFor(hooks, { sessionID: "session-3" }))[1]).toContain("Now set.");
   });
 
   it("stores user text without procedural search or message mutation by default", async () => {

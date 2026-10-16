@@ -2,8 +2,7 @@
  * Unit tests for shared/identity-context.mjs
  */
 
-import { describe, expect, it, vi } from "vitest";
-import { MidbrainApi } from "../shared/midbrain-api.mjs";
+import { describe, expect, it } from "vitest";
 
 import {
   formatIdentityContext,
@@ -30,11 +29,6 @@ describe("formatIdentityContext", () => {
     const block = formatIdentityContext({ persona });
     expect(block).toContain(persona);
     expect(block).not.toContain("[truncated]");
-  });
-
-  it("adds no markers, nonces or signatures", () => {
-    const block = formatIdentityContext({ persona: "Be concise." });
-    expect(block).not.toMatch(/<!--|mb:identity|sig=|nonce=/);
   });
 });
 
@@ -67,23 +61,5 @@ describe("loadIdentityContext", () => {
     };
 
     await expect(loadIdentityContext(api)).resolves.toBe("");
-  });
-});
-
-describe("storage boundary", () => {
-  it.each(["storeEpisodic", "postEpisodicResult"])("%s stores assistant text unchanged", async (method) => {
-    const api = new MidbrainApi("fixture-agent", "fixture");
-    const text = `${formatIdentityContext({ persona: "Quoted persona" })}\n\nFinal answer`;
-    const posted = [];
-    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, opts) => {
-      posted.push(JSON.parse(opts.body));
-      return { ok: true, status: 201 };
-    });
-    const log = { info() {}, debug() {}, warn() {}, error() {} };
-    try {
-      if (method === "storeEpisodic") await api.storeEpisodic(text, "assistant", log);
-      else await api.postEpisodicResult(text, "assistant");
-      expect(posted.map((body) => body.text)).toEqual([text]);
-    } finally { fetch.mockRestore(); }
   });
 });

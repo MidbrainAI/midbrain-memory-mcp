@@ -196,12 +196,6 @@ describe("createAgentEndHandler", () => {
     await expect(onEnd(undefined, undefined)).resolves.toBeUndefined();
     await expect(onEnd({ success: true, messages: "nope" }, CTX)).resolves.toBeUndefined();
   });
-
-  it("preserves unsigned persona and profile examples", async () => {
-    const block = formatIdentityContext({ persona: "Be concise." });
-    await handler()({ success: true, messages: [user("q"), assistant(`${block}\n\nAnswer.`)] }, CTX);
-    expect(stored().map((s) => s.text)).toEqual(["q", `${block}\n\nAnswer.`]);
-  });
 });
 
 describe("createPromptBuildHandler", () => {

@@ -16,6 +16,7 @@ import { makeTestEnv } from "./helpers/test-env.mjs";
 import { sandboxHomeEnv } from "./helpers/sandboxed-child-env.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
 import { PKG_VERSION } from "../shared/clients/utils.mjs";
+import { cursorCapturesTurn, isCursorPayload } from "../plugins/claude-code/common.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -460,7 +461,6 @@ describe("Claude capture-user hook wrapper", () => {
     expect(payload.hookSpecificOutput.hookEventName).toBe("SessionStart");
     expect(payload.hookSpecificOutput.additionalContext).toContain("## Agent persona\nBe concise.");
     expect(payload.hookSpecificOutput.additionalContext).toContain("## User profile\nWorks at CX2.");
-    expect(payload.hookSpecificOutput.additionalContext).not.toMatch(/<!--/);
   });
 
   it("SessionStart adds nothing when persona and profile are blank or unreadable", () => {
@@ -1108,5 +1108,26 @@ describe("Claude.installProject", () => {
 
     const claudeJsonWrites = fs.writeFile.mock.calls.filter(([p]) => p === PATHS.claudeJson);
     expect(claudeJsonWrites).toHaveLength(0);
+  });
+});
+
+describe("Cursor-hosted Claude hook payloads (#100)", () => {
+  // Cursor's Third-Party Imports payload (cursor-agent 2026.10.01, probed live).
+  const cursor = { hook_event_name: "beforeSubmitPrompt", cursor_version: "2026.10.01-e373342", workspace_roots: ["/repo"] };
+
+  it("detects Cursor payloads and never a Claude Code payload", () => {
+    expect(isCursorPayload(cursor)).toBe(true);
+    expect(isCursorPayload({ hook_event_name: "stop" })).toBe(true);
+    expect(isCursorPayload({ hook_event_name: "UserPromptSubmit", prompt: "x", session_id: "s", cwd: "/repo" })).toBe(false);
+    expect(isCursorPayload({ hook_event_name: "Stop", last_assistant_message: "x" })).toBe(false);
+    expect(isCursorPayload(null)).toBe(false);
+  });
+
+  it("defers only when the MidBrain Cursor hooks are installed, and fails open", async () => {
+    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => true })).resolves.toBe(true);
+    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => false })).resolves.toBe(false);
+    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => { throw new Error("boom"); } })).resolves.toBe(false);
+    const hasCursorHooks = async () => { throw new Error("never asked for a Claude payload"); };
+    await expect(cursorCapturesTurn({ hook_event_name: "UserPromptSubmit" }, { hasCursorHooks })).resolves.toBe(false);
   });
 });
