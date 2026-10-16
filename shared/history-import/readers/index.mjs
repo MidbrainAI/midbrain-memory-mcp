@@ -6,6 +6,7 @@
 
 import { listClaudeSessionFiles, readClaudeSession } from "./claude.mjs";
 import { listCodexSessionFiles, readCodexSession } from "./codex.mjs";
+import { listCursorSessions, readCursorSession } from "./cursor.mjs";
 import { listHermesSessions, readHermesSession } from "./hermes.mjs";
 import { listOpenClawSessions, readOpenClawSession } from "./openclaw.mjs";
 import { listOpenCodeSessions, readOpenCodeSession } from "./opencode.mjs";
@@ -18,4 +19,5 @@ export const READERS = {
   openclaw: { list: () => listOpenClawSessions(), read: readOpenClawSession },
   opencode: { list: () => listOpenCodeSessions(), read: readOpenCodeSession },
   hermes: { list: () => listHermesSessions(), read: readHermesSession },
+  cursor: { list: () => listCursorSessions(), read: (source) => readCursorSession(source) },
 };

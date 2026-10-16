@@ -516,7 +516,9 @@ read-only makes SQLite create its `-wal`/`-shm` side files when they are
 missing; no data is written. An unreadable database is listed as is, so the
 preview reports it instead of finding nothing. `node:sqlite` returns
 text that starts with a NUL byte as "" (Hermes stores `\0json:` content):
-select such columns `CAST(... AS BLOB)` and decode them. `node:sqlite` needs Node
+select such columns `CAST(... AS BLOB)` and decode them. Cursor's global
+`state.vscdb` can be several GB: query `cursorDiskKV` by key range on its
+index (`key >= 'prefix' AND key < 'prefix\uffff'`), never with `LIKE`. `node:sqlite` needs Node
 22.13+ (OpenClaw's zstd events need 22.15+); on older Node the preview lists those databases as unreadable
 (`NO_SQLITE`).
 
@@ -719,6 +721,7 @@ Vitest tests live in `tests/`.
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
 | `tests/history-import.test.mjs` | `shared/history-import/*.mjs`, `shared/history-import/readers/{claude,codex,common}.mjs`, `shared/redact.mjs` |
 | `tests/history-import-prime-agent.test.mjs` | `shared/history-import/readers/prime-agent.mjs` |
+| `tests/history-import-cursor.test.mjs` | `shared/history-import/readers/cursor.mjs` |
 | `tests/history-import-hermes.test.mjs` | `shared/history-import/readers/hermes.mjs` |
 | `tests/history-import-opencode.test.mjs` | `shared/history-import/readers/opencode.mjs` |
 | `tests/history-import-openclaw.test.mjs` | `shared/history-import/readers/openclaw.mjs`, SQLite helpers in `readers/common.mjs` |
