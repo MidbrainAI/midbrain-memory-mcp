@@ -133,5 +133,6 @@ export function databaseSource(file, id) {
 /** Split a source made by `databaseSource`. */
 export function parseDatabaseSource(source) {
   const at = source.lastIndexOf("#");
+  if (at < 0) return { file: source, id: "" };
   return { file: source.slice(0, at), id: source.slice(at + 1) };
 }
