@@ -319,7 +319,8 @@ Supported sources (`--client` takes the id):
   `import_id`, `imported_at`.
 - **What is left out:** tool calls and output, injected context, slash-command
   echoes, notifications, subagent threads, sessions a program started (Agent
-  SDK runs, orchestrators; add `--include-automated` to import them), and
+  SDK and `claude -p` runs, `codex exec` runs, orchestrators; add
+  `--include-automated` to import them), and
   sessions written to in the last 10 minutes.
 - **No duplicates.** Turns MidBrain already captured live are skipped (a
   session captured from partway through keeps only the earlier turns), and so

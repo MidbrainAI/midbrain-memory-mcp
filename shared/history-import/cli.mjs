@@ -25,8 +25,8 @@ Options:
   --until <date>    Only turns before this date (YYYY-MM-DD)
   --project <dir>   Only sessions started in this directory or below it
   --include-automated
-                    Also import sessions a program started (Agent SDK runs,
-                    orchestrators), where no prompt was typed by a person
+                    Also import sessions a program started (Agent SDK,
+                    headless and exec runs), where no prompt was typed
   --apply           Upload after showing the preview
   --yes             With --apply: do not ask for confirmation
   --dream           Let MidBrain run its per-memory processing on imported

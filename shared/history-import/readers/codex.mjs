@@ -56,6 +56,7 @@ export async function readCodexSession(file) {
     cwd: null,
     entries: [],
     skip: null,
+    automated: false,
   };
   let turn = null;
   let cwd = null;
@@ -85,6 +86,8 @@ export async function readCodexSession(file) {
         session.skip = "subagent session";
         return session;
       }
+      // `codex exec` runs are scripted, like Claude Code's Agent SDK runs.
+      session.automated = payload.source === "exec";
     } else if (row.type === "turn_context") {
       if (typeof payload.cwd === "string") {
         cwd = payload.cwd;

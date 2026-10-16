@@ -72,9 +72,9 @@ function writeClaude(rows, name = `${SID}.jsonl`) {
   return file;
 }
 
-function codexRows({ subagent = false } = {}) {
+function codexRows({ subagent = false, source = "vscode" } = {}) {
   return [
-    { type: "session_meta", timestamp: "2026-10-06T07:00:00.000Z", payload: { id: "codex-session", cwd: "/work/codex", source: subagent ? { subagent: { thread_spawn: {} } } : "vscode" } },
+    { type: "session_meta", timestamp: "2026-10-06T07:00:00.000Z", payload: { id: "codex-session", cwd: "/work/codex", source: subagent ? { subagent: { thread_spawn: {} } } : source } },
     { type: "response_item", timestamp: "2026-10-06T07:00:00.100Z", payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "dev" }] } },
     { type: "event_msg", timestamp: "2026-10-06T07:00:01.000Z", payload: { type: "task_started", turn_id: "t1" } },
     { type: "response_item", timestamp: "2026-10-06T07:00:01.100Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions for /work/codex\n..." }] } },
@@ -120,10 +120,15 @@ describe("readClaudeSession", () => {
 });
 
 describe("readCodexSession", () => {
+  it("marks codex exec runs as automated", async () => {
+    const file = writeJsonl(path.join(dir, "codex", "sessions", "rollout-exec.jsonl"), codexRows({ source: "exec" }));
+    expect((await readCodexSession(file)).automated).toBe(true);
+  });
+
   it("keeps the typed prompt and final answer per turn, without injected context or goal turns", async () => {
     const file = writeJsonl(path.join(dir, "codex", "sessions", "2026", "10", "06", "rollout-a.jsonl"), codexRows());
     const session = await readCodexSession(file);
-    expect(session).toMatchObject({ client: "codex", sessionId: "codex-session", cwd: "/work/codex", skip: null });
+    expect(session).toMatchObject({ client: "codex", sessionId: "codex-session", cwd: "/work/codex", skip: null, automated: false });
     expect(session.entries).toEqual([
       { role: "user", text: "codex prompt one", occurredAt: "2026-10-06T07:00:01.300Z", cwd: "/work/codex" },
       { role: "assistant", text: "codex answer one", occurredAt: "2026-10-06T07:00:03.000Z", cwd: "/work/codex" },
