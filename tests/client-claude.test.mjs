@@ -16,6 +16,7 @@ import { makeTestEnv } from "./helpers/test-env.mjs";
 import { sandboxHomeEnv } from "./helpers/sandboxed-child-env.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
 import { PKG_VERSION } from "../shared/clients/utils.mjs";
+import { cursorCapturesTurn, isCursorPayload } from "../plugins/claude-code/common.mjs";
 
 const mocks = vi.hoisted(() => ({
   readFile:   vi.fn(),
@@ -276,6 +277,7 @@ describe("Claude.installGlobal", () => {
     const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeSettings);
     expect(writeCall).toBeDefined();
     const written = JSON.parse(writeCall[1]);
+    expect(written.hooks.SessionStart[0].hooks[0]).toEqual({ type: "command", command: `'${CLAUDE_SHIM}' session`, timeout: 30 });
     expect(written.hooks.UserPromptSubmit).toBeDefined();
     expect(written.hooks.Stop).toBeDefined();
     expect(written.permissions.allow).toContain("mcp__midbrain-memory__memory_search");
@@ -373,6 +375,14 @@ describe("Claude capture-user hook wrapper", () => {
           });
         }
         if (text.includes("/memories/episodic")) return { ok: true, status: 201 };
+        if (text.includes("/api/v1/persona")) {
+          const description = ${JSON.stringify(mode)} === "identity" ? "Be concise." : null;
+          return { ok: true, status: 200, json: async () => ({ description }) };
+        }
+        if (text.includes("/api/v1/profile")) {
+          const description = ${JSON.stringify(mode)} === "identity" ? "Works at CX2." : null;
+          return { ok: true, status: 200, json: async () => ({ description }) };
+        }
         if (text.includes("/memories/search/procedural")) {
           const body = ${JSON.stringify(mode)} === "match"
             ? [{ id: 42, title: "Workflow", content: "Use the checklist" }]
@@ -385,13 +395,13 @@ describe("Claude capture-user hook wrapper", () => {
     return { dir, file };
   }
 
-  function runHook(input, { mode = "empty", home = tempHomeWithKey(), extraEnv = {} } = {}) {
+  function runHook(input, { mode = "empty", home = tempHomeWithKey(), extraEnv = {}, script = "capture-user.mjs" } = {}) {
     const loaded = preload(mode);
     const result = spawnSync(process.execPath, [
       // --import requires a file:// URL on Windows (absolute C:\ paths are
       // rejected by the ESM loader); pathToFileURL is a no-op-safe on POSIX.
       "--import", pathToFileURL(loaded.file).href,
-      path.join(REPO_ROOT, "plugins", "claude-code", "capture-user.mjs"),
+      path.join(REPO_ROOT, "plugins", "claude-code", script),
     ], {
       input: JSON.stringify(input),
       encoding: "utf8",
@@ -431,6 +441,47 @@ describe("Claude capture-user hook wrapper", () => {
     const log = fsSync.readFileSync(path.join(home, "logs", "midbrain-claude.log"), "utf8");
     expect(log).toMatch(/SCOPE: no project key covers the project directory; captures from it use the (client|global) key \(project directory: /);
     fsSync.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("never repeats persona and profile on a prompt (#61: once per session)", () => {
+    const result = runHook({ prompt: "hello", cwd: "/repo" }, { mode: "identity" });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+  });
+
+  it("SessionStart adds persona and profile once as additionalContext", () => {
+    const result = runHook(
+      { hook_event_name: "SessionStart", source: "startup", session_id: "s1", cwd: "/repo" },
+      { mode: "identity", script: "session-context.mjs" },
+    );
+
+    expect(result.status).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.hookSpecificOutput.hookEventName).toBe("SessionStart");
+    expect(payload.hookSpecificOutput.additionalContext).toContain("## Agent persona\nBe concise.");
+    expect(payload.hookSpecificOutput.additionalContext).toContain("## User profile\nWorks at CX2.");
+  });
+
+  it("SessionStart adds nothing when persona and profile are blank or unreadable", () => {
+    for (const mode of ["empty", "throw"]) {
+      const result = runHook(
+        { hook_event_name: "SessionStart", source: "startup", cwd: "/repo" },
+        { mode, script: "session-context.mjs" },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("");
+    }
+  });
+
+  it("SessionStart skips Cursor-hosted runs (Cursor gets identity from the MCP server)", () => {
+    const result = runHook(
+      { hook_event_name: "sessionStart", cursor_version: "2.0.0", cwd: "/repo" },
+      { mode: "identity", script: "session-context.mjs" },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
   });
 
   it("emits hookSpecificOutput.additionalContext when PK matches and injection is opted in", () => {
@@ -1057,5 +1108,26 @@ describe("Claude.installProject", () => {
 
     const claudeJsonWrites = fs.writeFile.mock.calls.filter(([p]) => p === PATHS.claudeJson);
     expect(claudeJsonWrites).toHaveLength(0);
+  });
+});
+
+describe("Cursor-hosted Claude hook payloads (#100)", () => {
+  // Cursor's Third-Party Imports payload (cursor-agent 2026.10.01, probed live).
+  const cursor = { hook_event_name: "beforeSubmitPrompt", cursor_version: "2026.10.01-e373342", workspace_roots: ["/repo"] };
+
+  it("detects Cursor payloads and never a Claude Code payload", () => {
+    expect(isCursorPayload(cursor)).toBe(true);
+    expect(isCursorPayload({ hook_event_name: "stop" })).toBe(true);
+    expect(isCursorPayload({ hook_event_name: "UserPromptSubmit", prompt: "x", session_id: "s", cwd: "/repo" })).toBe(false);
+    expect(isCursorPayload({ hook_event_name: "Stop", last_assistant_message: "x" })).toBe(false);
+    expect(isCursorPayload(null)).toBe(false);
+  });
+
+  it("defers only when the MidBrain Cursor hooks are installed, and fails open", async () => {
+    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => true })).resolves.toBe(true);
+    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => false })).resolves.toBe(false);
+    await expect(cursorCapturesTurn(cursor, { hasCursorHooks: async () => { throw new Error("boom"); } })).resolves.toBe(false);
+    const hasCursorHooks = async () => { throw new Error("never asked for a Claude payload"); };
+    await expect(cursorCapturesTurn({ hook_event_name: "UserPromptSubmit" }, { hasCursorHooks })).resolves.toBe(false);
   });
 });

@@ -100,3 +100,36 @@ describe.each(CLIENTS)("$id — shim freshness (AC-11)", ({ id, make, configFile
     expect(await client.isFresh()).toBe(true);
   });
 });
+
+// #61: persona/profile moved to a SessionStart hook. An install written before
+// that has the capture hooks but not SessionStart; repair must add it.
+describe.each(CLIENTS.filter(({ id }) => id !== "hermes"))("$id — SessionStart upgrade (#61)", ({ id, make, configFile }) => {
+  let env;
+  let client;
+
+  beforeEach(async () => {
+    env = await makeTestEnv({ clients: [id] });
+    client = make();
+    await client.installGlobal();
+  });
+
+  afterEach(async () => {
+    await env.restore();
+  });
+
+  it("an install without SessionStart is stale and repair adds it", async () => {
+    const configPath = configFile(env.paths);
+    const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+    delete config.hooks.SessionStart;
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+
+    expect(await client.isFresh()).toBe(false);
+    await client.repairHooks();
+
+    const repaired = JSON.parse(await fs.readFile(configPath, "utf8"));
+    const commands = repaired.hooks.SessionStart.flatMap((group) => group.hooks).map((hook) => hook.command);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatch(/ session$/);
+    expect(await client.isFresh()).toBe(true);
+  });
+});

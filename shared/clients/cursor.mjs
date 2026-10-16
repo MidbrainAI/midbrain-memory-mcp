@@ -190,6 +190,15 @@ export class Cursor extends BaseClient {
     return ['.cursor/mcp.json'];
   }
 
+  /** True when ~/.cursor/hooks.json carries a MidBrain hook. Never throws. */
+  async hasCaptureHooks() {
+    try {
+      const data = (await readJson(hooksPath())) || {};
+      return Object.keys(HOOK_EVENTS).some((event) =>
+        Array.isArray(data.hooks?.[event]) && data.hooks[event].some((hook) => isMidbrainHook(hook)));
+    } catch { return false; }
+  }
+
   /**
    * Fresh when no MidBrain hook is installed, or when every event carries
    * exactly the canonical shim command and the shim body/mode is canonical

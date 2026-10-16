@@ -102,7 +102,7 @@ export function buildShimBody(client, opts = {}) {
     platform = process.platform,
     execPath = process.execPath,
     repoRoot = REPO_ROOT,
-    stateDir = client === 'claude' ? stateBaseDir() : null,
+    stateDir = (client === 'claude' || client === 'codex') ? stateBaseDir() : null,
   } = opts;
   // Join with the TARGET platform's separator so injected win32 fixtures
   // build win32 bodies even when the test host is POSIX.
@@ -129,7 +129,7 @@ export function buildShimBody(client, opts = {}) {
     // Byte-parity with the PRD-017 codex shim: Codex's protocol requires {}
     // on stdout when an assistant/tool hook fails.
     return `#!/bin/sh
-${marker}set +e
+${marker}${stateDir ? `MIDBRAIN_STATE_DIR=${shellQuote(stateDir)}\nexport MIDBRAIN_STATE_DIR\n` : ''}set +e
 ${command} hook codex "$@"
 status=$?
 case "$1" in
@@ -310,7 +310,7 @@ export function validateShimPaths(client, {
   isDev = false,
   platform = process.platform,
   targetPath = stableShimPath(client, platform),
-  stateDir = client === 'claude' ? stateBaseDir() : null,
+  stateDir = (client === 'claude' || client === 'codex') ? stateBaseDir() : null,
 } = {}) {
   windowsPathGuard(targetPath, `${client} hook shim path`, platform);
   if (client === 'claude' && stateDir) windowsPathGuard(stateDir, 'MIDBRAIN_STATE_DIR', platform);
@@ -337,7 +337,7 @@ export async function installShim(client, {
   isDev = false,
   mode = 'install',
   targetPath = stableShimPath(client),
-  stateDir = client === 'claude' ? stateBaseDir() : null,
+  stateDir = (client === 'claude' || client === 'codex') ? stateBaseDir() : null,
 } = {}) {
   validateShimPaths(client, { isDev, targetPath, stateDir });
   const shimPath = targetPath;
@@ -346,7 +346,8 @@ export async function installShim(client, {
     try {
       const current = await fs.readFile(shimPath, 'utf8');
       if (isDevShimContent(current)) {
-        const updated = client === 'claude' ? statefulDevBody(current, stateDir, process.platform) : current;
+        const updated = (client === 'claude' || client === 'codex')
+          ? statefulDevBody(current, stateDir, client === 'codex' ? 'linux' : process.platform) : current;
         const written = updated !== current ? await writeFileIfChanged(shimPath, updated) : false;
         // Dev command/marker bytes are preserved, but the shim must still run.
         await restoreExecBit(shimPath);
