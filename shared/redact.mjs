@@ -9,26 +9,40 @@
 
 export const REDACTED = "[redacted]";
 
+// Each pattern replaces the whole match, or keeps the named `keep` prefix
+// (a variable name, a URL's scheme and user) and drops only the secret.
 const SECRET_PATTERNS = [
   // Private key blocks (PEM / OpenSSH), whole block.
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+  { re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g },
   // OpenAI / Anthropic / MidBrain style keys (sk-..., sk-ant-..., sk-proj-...).
-  /\bsk-[A-Za-z0-9_-]{8,}/g,
-  // Bearer tokens in pasted headers or curl commands.
-  /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+  { re: /\bsk-[A-Za-z0-9_-]{8,}/g },
+  // Stripe secret and restricted keys.
+  { re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}/g },
+  // Bearer and Basic credentials in pasted headers or curl commands.
+  { re: /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi },
+  { re: /\bBasic\s+[A-Za-z0-9+/]{12,}={0,2}/g },
+  // JSON Web Tokens.
+  { re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
   // GitHub tokens.
-  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g,
+  { re: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g },
   // Slack tokens.
-  /\bxox[abposr]-[A-Za-z0-9-]{10,}/g,
+  { re: /\bxox[abposr]-[A-Za-z0-9-]{10,}/g },
   // AWS access key ids.
-  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
+  { re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
   // Google API keys.
-  /\bAIza[0-9A-Za-z_-]{35}\b/g,
+  { re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
   // npm tokens.
-  /\bnpm_[A-Za-z0-9]{36}\b/g,
+  { re: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  // Passwords in URLs: scheme://user:PASSWORD@host (database URLs, DSNs).
+  { re: /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)([^\s/@]{3,})(?=@)/gi, keep: 1 },
   // `password=...`, `api_key: ...`, `SECRET_TOKEN="..."` style assignments:
-  // keep the name, drop the value.
-  /\b([A-Za-z0-9_]*(?:api[_-]?key|secret|password|passwd|token)[A-Za-z0-9_]*)(\s*[:=]\s*)(["']?)[^\s"']{6,}\3/gi,
+  // keep the name, drop the value. The keyword must be a whole name part,
+  // so `max_tokens=4096` or `tokenizer: ...` are left alone, and an
+  // all-digit value (a count) is not a secret.
+  {
+    re: /\b((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|secret|password|passwd|token)(?:[_-][A-Za-z0-9]+)*\s*[:=]\s*)(["']?)(?!\d+\2(?:[\s,;]|$))[^\s"']{6,}\2/gi,
+    keep: 1,
+  },
 ];
 
 /**
@@ -39,14 +53,10 @@ const SECRET_PATTERNS = [
 export function redactSecrets(text) {
   let count = 0;
   let result = String(text ?? "");
-  for (const pattern of SECRET_PATTERNS) {
-    result = result.replace(pattern, (...match) => {
+  for (const { re, keep } of SECRET_PATTERNS) {
+    result = result.replace(re, (...match) => {
       count += 1;
-      // The assignment pattern keeps the variable name and separator.
-      if (match.length > 5 && typeof match[1] === "string" && typeof match[2] === "string") {
-        return `${match[1]}${match[2]}${REDACTED}`;
-      }
-      return REDACTED;
+      return keep ? `${match[keep]}${REDACTED}` : REDACTED;
     });
   }
   return { text: result, count };

@@ -43,12 +43,36 @@ tokens, private keys, password=... values) are replaced with [redacted].
 Each session is stored with the key that live capture would use for its
 directory, so project keys apply.`;
 
+const VALUE_FLAGS = new Set(["--client", "--since", "--until", "--project"]);
+const BOOLEAN_FLAGS = new Set(["--help", "-h", "--include-automated", "--apply", "--yes", "--dream", "--offline", "--json"]);
+
+/**
+ * Split `--flag=value` and reject anything unknown, so a typo or an
+ * unsupported form never drops a filter and widens the import.
+ */
+function normalizeArgs(argv) {
+  const args = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = String(argv[i]);
+    const eq = arg.startsWith("--") ? arg.indexOf("=") : -1;
+    const flag = eq > 0 ? arg.slice(0, eq) : arg;
+    if (VALUE_FLAGS.has(flag)) {
+      const value = eq > 0 ? arg.slice(eq + 1) : argv[i + 1];
+      if (!value || String(value).startsWith("--")) throw new Error(`${flag} requires a value`);
+      args.push(flag, String(value));
+      if (eq < 0) i += 1;
+    } else if (BOOLEAN_FLAGS.has(arg)) {
+      args.push(arg);
+    } else {
+      throw new Error(`unknown argument: ${arg}`);
+    }
+  }
+  return args;
+}
+
 function flagValue(argv, flag) {
   const index = argv.indexOf(flag);
-  if (index === -1) return null;
-  const value = argv[index + 1];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
+  return index === -1 ? null : argv[index + 1];
 }
 
 function isoDate(value, flag) {
@@ -59,7 +83,8 @@ function isoDate(value, flag) {
   return new Date(`${value}T00:00:00Z`).toISOString();
 }
 
-export function parseImportArgs(argv) {
+export function parseImportArgs(rawArgv) {
+  const argv = normalizeArgs(rawArgv);
   const clientList = flagValue(argv, "--client");
   const clients = clientList ? clientList.split(",").map((name) => name.trim()).filter(Boolean) : Object.keys(READERS);
   const unknown = clients.filter((name) => !READERS[name]);
@@ -145,7 +170,35 @@ function formatKeyScopes(sessions) {
   return parts.length ? `Keys: ${parts.join(", ")}.` : "";
 }
 
-export async function runImportCli(argv, { readers = READERS, out = process.stdout, err = process.stderr, isTTY = process.stdin.isTTY } = {}) {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * One session's check, retried twice on a rate limit, a server error or a
+ * dropped connection; any other error (or a third failure) is thrown, and
+ * the planner skips that session rather than risk duplicates.
+ */
+async function withRetry(fn, wait) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      const status = /\bAPI (\d{3})\b/.exec(error?.message ?? "")?.[1];
+      const transient = !status || status === "429" || status === "403" || status.startsWith("5");
+      if (!transient || attempt >= 2) throw error;
+      await wait(2_000 * 2 ** attempt);
+    }
+  }
+}
+
+export async function runImportCli(argv, {
+  readers = READERS,
+  out = process.stdout,
+  err = process.stderr,
+  isTTY = process.stdin.isTTY,
+  apiFor = apiResolver(),
+  wait = sleep,
+  confirmFn = confirm,
+} = {}) {
   let options;
   try {
     options = parseImportArgs(argv);
@@ -164,7 +217,6 @@ export async function runImportCli(argv, { readers = READERS, out = process.stdo
 
   err.write("Reading local history (nothing is uploaded yet)...\n");
   const sessions = await planImport({ ...options, readers });
-  const apiFor = apiResolver();
   if (!options.offline) {
     err.write("Checking which sessions MidBrain already has (sends session ids only)...\n");
     await trimAgainstServer(sessions, async (session) => {
@@ -173,7 +225,7 @@ export async function runImportCli(argv, { readers = READERS, out = process.stdo
       // Live capture may have stored the conversation under a linked id too
       // (e.g. the Claude Code session an OpenClaw session ran on).
       const ids = [session.sessionId, ...(session.linkedSessionIds ?? [])];
-      return (await Promise.all(ids.map((id) => api.listEpisodicForSession(id)))).flat();
+      return (await Promise.all(ids.map((id) => withRetry(() => api.listEpisodicForSession(id), wait)))).flat();
     });
   }
   const summary = summarize(sessions);
@@ -202,7 +254,7 @@ export async function runImportCli(argv, { readers = READERS, out = process.stdo
       err.write("Error: --apply needs confirmation; run it in a terminal or add --yes.\n");
       return 2;
     }
-    if (!(await confirm(`Import ${total} entries from ${pending.length} session(s) into MidBrain? [y/N] `))) {
+    if (!(await confirmFn(`Import ${total} entries from ${pending.length} session(s) into MidBrain? [y/N] `))) {
       err.write("Cancelled. Nothing was uploaded.\n");
       return 1;
     }
@@ -211,6 +263,7 @@ export async function runImportCli(argv, { readers = READERS, out = process.stdo
   let lastReport = 0;
   const totals = await uploadImport({
     sessions: pending,
+    wait,
     post: async (session, entry, metadata) => {
       const api = await apiFor(session);
       return api.postEpisodicResult(entry.text, entry.role, metadata, {

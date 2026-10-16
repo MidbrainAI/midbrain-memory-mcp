@@ -58,6 +58,11 @@ function claudePrompt(row) {
   return text;
 }
 
+function isToolResult(row) {
+  const content = row.message?.content;
+  return Array.isArray(content) && content.length > 0 && content.every((block) => block?.type === "tool_result");
+}
+
 /** @returns {Promise<ImportSession>} */
 export async function readClaudeSession(file) {
   const session = {
@@ -86,7 +91,13 @@ export async function readClaudeSession(file) {
     if (row.isSidechain) continue;
     if (row.type === "user") {
       const prompt = claudePrompt(row);
-      if (!prompt) continue;
+      if (!prompt) {
+        // A slash command, notification or meta row starts a turn nobody
+        // typed: what answers it is not the earlier prompt's reply. A tool
+        // result stays inside the current turn.
+        if (!isToolResult(row)) closeTurn();
+        continue;
+      }
       const at = validTimestamp(row.timestamp);
       if (!at) continue;
       closeTurn();

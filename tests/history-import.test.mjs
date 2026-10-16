@@ -106,6 +106,25 @@ describe("readClaudeSession", () => {
     ]);
   });
 
+  it("does not give a slash command's or notification's reply to the prompt before it", async () => {
+    const base = { sessionId: SID, cwd: "/work/proj" };
+    const human = { entrypoint: "cli", promptSource: "typed", origin: { kind: "human" } };
+    const rows = [
+      { ...base, ...human, type: "user", timestamp: "2026-09-01T10:00:00.000Z", message: { role: "user", content: "explain the parser" } },
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:01.000Z", message: { id: "m1", role: "assistant", content: [{ type: "text", text: "Reply A." }] } },
+      { ...base, ...human, type: "user", timestamp: "2026-09-01T10:01:00.000Z", message: { role: "user", content: "<command-name>/review</command-name>" } },
+      { ...base, type: "user", isMeta: true, timestamp: "2026-09-01T10:01:00.100Z", message: { role: "user", content: "Review the branch." } },
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:01:05.000Z", message: { id: "m2", role: "assistant", content: [{ type: "text", text: "Reply B." }] } },
+      { ...base, type: "user", origin: { kind: "task-notification" }, timestamp: "2026-09-01T10:02:00.000Z", message: { role: "user", content: "<task-notification>done</task-notification>" } },
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:02:01.000Z", message: { id: "m3", role: "assistant", content: [{ type: "text", text: "Noted." }] } },
+    ];
+    const session = await readClaudeSession(writeClaude(rows));
+    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["user", "explain the parser"],
+      ["assistant", "Reply A."],
+    ]);
+  });
+
   it("marks a session no person typed in as automated", async () => {
     const session = await readClaudeSession(writeClaude(claudeRows({ promptSource: "sdk", entrypoint: "sdk-py" })));
     expect(session.automated).toBe(true);
@@ -289,6 +308,21 @@ describe("trimAgainstServer", () => {
     expect(trimmed.capturedLive).toBe(2);
   });
 
+  it("keeps an earlier turn that repeats a live-captured prompt", async () => {
+    const planned = session({
+      entries: [
+        { role: "user", text: "commit and push the branch", occurredAt: "2026-09-01T10:00:00.000Z" },
+        { role: "assistant", text: "Pushed.", occurredAt: "2026-09-01T10:00:05.000Z" },
+        { role: "user", text: "run the tests again", occurredAt: "2026-09-01T11:00:00.000Z" },
+        { role: "assistant", text: "All pass.", occurredAt: "2026-09-01T11:00:05.000Z" },
+      ],
+    });
+    const [trimmed] = await trimAgainstServer([planned], async () => [
+      { role: "user", text: "commit and push the branch", occurred_at: "2026-09-01T14:00:00" },
+    ]);
+    expect(trimmed.entries).toHaveLength(4);
+  });
+
   it("does not match short or other-role text", async () => {
     const planned = session();
     planned.entries[2].text = "a much longer user prompt text";
@@ -376,6 +410,22 @@ describe("prepareText and redaction", () => {
     expect(text).not.toMatch(/abcdefghijkl|hunter2|AKIAABCD|BEGIN OPENSSH/);
   });
 
+  it("redacts URL passwords, Stripe keys, JWTs and Basic credentials, but not counts", () => {
+    const input = [
+      "postgres://app:s3cretpass@db:5432/main",
+      "sk_live_abcdefghij1234",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop",
+      "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+    ].join("\n");
+    const { text, count } = redactSecrets(input);
+    expect(count).toBe(4);
+    expect(text).toContain("postgres://app:[redacted]@db:5432/main");
+    expect(text).not.toMatch(/s3cretpass|abcdefghij1234|eyJzdWIi|dXNlcjpw/);
+    for (const plain of ["max_tokens=4096", "token_count: 1234567", "tokenizer: cl100k_base_x", "https://example.com/a:b@c"]) {
+      expect(redactSecrets(plain)).toEqual({ text: plain, count: 0 });
+    }
+  });
+
   it("strips injected MidBrain context and caps length", () => {
     const long = prepareText("x".repeat(MAX_TEXT_CHARS + 10));
     expect(long.truncated).toBe(true);
@@ -404,6 +454,15 @@ describe("import CLI", () => {
     expect(() => parseImportArgs(["--since", "yesterday"])).toThrow(/--since/);
   });
 
+  it("accepts --flag=value and rejects unknown arguments, so no filter is dropped", () => {
+    expect(parseImportArgs(["--since=2026-09-01", "--client=claude", "--apply"])).toMatchObject({
+      clients: ["claude"], since: "2026-09-01T00:00:00.000Z", apply: true,
+    });
+    expect(() => parseImportArgs(["--sinse", "2026-09-01", "--apply"])).toThrow(/unknown argument: --sinse/);
+    expect(() => parseImportArgs(["--since"])).toThrow(/--since requires a value/);
+    expect(() => parseImportArgs(["--client=", "--apply"])).toThrow(/--client requires a value/);
+  });
+
   it("previews offline without uploading", async () => {
     const err = capture();
     const out = capture();
@@ -416,6 +475,68 @@ describe("import CLI", () => {
     expect(err.text).toContain("claude: 1 session(s), 2 prompt(s) + 2 reply(ies) = 4 entries");
     expect(err.text).toContain("Preview only");
     expect(out.text).toBe("");
+  });
+
+  function applyFixture() {
+    const file = writeClaude(claudeRows());
+    const old = new Date(Date.now() - ACTIVE_SESSION_MS * 2);
+    fs.utimesSync(file, old, old);
+    return { claude: { list: () => [file], read: readClaudeSession } };
+  }
+
+  function fakeApi(results) {
+    const posts = [];
+    const api = {
+      keyScope: "client",
+      listEpisodicForSession: async () => [],
+      postEpisodicResult: async (text, role) => { posts.push({ text, role }); return results.shift() ?? "ok"; },
+    };
+    return { apiFor: async () => api, posts, api };
+  }
+
+  it("refuses --apply without a terminal or --yes, and stops when declined", async () => {
+    const { apiFor, posts } = fakeApi([]);
+    const err = capture();
+    expect(await runImportCli(["--client", "claude", "--apply"], { readers: applyFixture(), err, out: capture(), apiFor, isTTY: false })).toBe(2);
+    expect(err.text).toContain("needs confirmation");
+    const declined = capture();
+    expect(await runImportCli(["--client", "claude", "--apply"], {
+      readers: applyFixture(), err: declined, out: capture(), apiFor, isTTY: true, confirmFn: async () => false,
+    })).toBe(1);
+    expect(declined.text).toContain("Nothing was uploaded");
+    expect(posts).toEqual([]);
+  });
+
+  it("uploads with --yes and reports the credits it needs", async () => {
+    const { apiFor, posts } = fakeApi([]);
+    const err = capture();
+    const code = await runImportCli(["--client", "claude", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
+    expect(code).toBe(0);
+    expect(err.text).toContain("this import needs 4 credits");
+    expect(err.text).toContain("Imported 4 entries from 1 session(s)");
+    expect(posts.map((post) => post.role)).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
+  it("stops at once with exit 1 and how to resume when credits run out", async () => {
+    const { apiFor, posts } = fakeApi(["ok", "outOfCredits"]);
+    const err = capture();
+    const code = await runImportCli(["--client", "claude", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
+    expect(code).toBe(1);
+    expect(posts).toHaveLength(2);
+    expect(err.text).toContain("out of credits");
+    expect(err.text).toContain("run the same command again to continue");
+  });
+
+  it("retries a rate-limited check, and skips a session it still cannot check", async () => {
+    const { apiFor, api } = fakeApi([]);
+    const waits = [];
+    let calls = 0;
+    api.listEpisodicForSession = async () => { calls += 1; throw new Error("API 429 listing session memories"); };
+    const err = capture();
+    await runImportCli(["--client", "claude"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async (ms) => { waits.push(ms); } });
+    expect(calls).toBe(3);
+    expect(waits).toEqual([2000, 4000]);
+    expect(err.text).toContain("could not check MidBrain (API 429");
   });
 
   it("refuses --apply with --offline", async () => {

@@ -127,7 +127,8 @@ export async function planImport({
  *   during it), only the turns from before the first live capture are kept.
  *   Live capture stores a turn a few seconds after it happened, and some
  *   clients add an envelope to the stored text, so the cut is also made at
- *   the first entry whose text a live capture of the same role holds.
+ *   the first entry, within CAPTURE_LAG_MS before that capture, whose text a
+ *   live capture of the same role holds.
  *
  * @param {any[]} sessions planned sessions (mutated)
  * @param {(session: any) => Promise<Array<{occurred_at: string, memory_metadata?: Record<string,string>}>>} listExisting
@@ -160,8 +161,12 @@ export async function trimAgainstServer(sessions, listExisting) {
     // Keep whole turns only: a reply whose prompt was captured live goes too.
     const kept = [];
     for (const entry of session.entries) {
-      if (Date.parse(entry.occurredAt) >= firstCaptured) break;
-      if (capturedText(live, entry)) break;
+      const at = Date.parse(entry.occurredAt);
+      if (at >= firstCaptured) break;
+      // Only the capture lag before the first live capture can hold the
+      // captured turn itself; an earlier repeat of the same text is a
+      // different turn.
+      if (at >= firstCaptured - CAPTURE_LAG_MS && capturedText(live, entry)) break;
       kept.push(entry);
     }
     if (kept.length && kept[kept.length - 1].role === "user" && session.entries[kept.length]?.role === "assistant") {
@@ -178,6 +183,8 @@ export async function trimAgainstServer(sessions, listExisting) {
 }
 
 const MIN_MATCH_CHARS = 12;
+// How long after a turn live capture can store it (hooks, watchers, agent_end).
+export const CAPTURE_LAG_MS = 5 * 60_000;
 
 function comparable(text) {
   return typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
