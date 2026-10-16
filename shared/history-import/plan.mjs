@@ -101,7 +101,8 @@ export async function planImport({
       }
       if (!session.skip) {
         try {
-          if (now - mtimeMs(file) < ACTIVE_SESSION_MS) session.skip = "active (written in the last 10 minutes)";
+          const lastWritten = Number.isFinite(session.lastWrittenMs) ? session.lastWrittenMs : mtimeMs(file);
+          if (now - lastWritten < ACTIVE_SESSION_MS) session.skip = "active (written in the last 10 minutes)";
         } catch { /* deleted while reading: keep what was read */ }
       }
       if (!session.skip && session.automated && !includeAutomated) session.skip = "automated (started by a program, not typed)";

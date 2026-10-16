@@ -505,8 +505,10 @@ Prime Agent:
 ## History Import
 
 `npx midbrain-memory-mcp@latest import` (issue #75) imports conversations from
-before installation. Code: `shared/history-import/` (`readers.mjs`,
-`plan.mjs`, `cli.mjs`), dispatched from `index.js`.
+before installation. Code: `shared/history-import/` (`readers/`,
+`plan.mjs`, `cli.mjs`), dispatched from `index.js`. Each client has one
+reader module in `readers/` (`list()` and `read(source)`), registered in
+`readers/index.mjs`; shared helpers are in `readers/common.mjs`.
 
 - Opt-in and preview-first: no upload without `--apply` plus a confirmation
   or `--yes`. Never run it from install, repair, or the MCP server.

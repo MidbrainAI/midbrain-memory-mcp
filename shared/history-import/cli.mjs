@@ -11,7 +11,7 @@ import readline from "node:readline";
 
 import { allClients } from "../clients/registry.mjs";
 import { MidbrainApi } from "../midbrain-api.mjs";
-import { READERS } from "./readers.mjs";
+import { READERS } from "./readers/index.mjs";
 import { planImport, summarize, trimAgainstServer, uploadImport } from "./plan.mjs";
 
 const HELP = `Usage: npx midbrain-memory-mcp@latest import [options]

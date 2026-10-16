@@ -9,12 +9,8 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-  listClaudeSessionFiles,
-  listCodexSessionFiles,
-  readClaudeSession,
-  readCodexSession,
-} from "../shared/history-import/readers.mjs";
+import { listClaudeSessionFiles, readClaudeSession } from "../shared/history-import/readers/claude.mjs";
+import { listCodexSessionFiles, readCodexSession } from "../shared/history-import/readers/codex.mjs";
 import {
   ACTIVE_SESSION_MS,
   IMPORT_ORIGIN,
@@ -183,6 +179,22 @@ describe("planImport", () => {
       since: "2026-09-02T00:00:00.000Z",
     });
     expect(planned.entries.map((entry) => entry.text)).toEqual(["p2", "r2"]);
+  });
+
+  it("uses a session's own last-written time when the reader gives one", async () => {
+    const planned = await planImport({
+      readers: fakeReaders([
+        session({ sessionId: "db-active", lastWrittenMs: now - 1000 }),
+        session({ sessionId: "db-old", lastWrittenMs: old() }),
+      ]),
+      clients: ["fake"],
+      now,
+      mtimeMs: () => { throw new Error("not a file"); },
+    });
+    expect(planned.map((item) => [item.sessionId, item.skip])).toEqual([
+      ["db-active", "active (written in the last 10 minutes)"],
+      ["db-old", null],
+    ]);
   });
 
   it("skips active, automated, out-of-project and empty sessions", async () => {
