@@ -528,7 +528,9 @@ of SQLite stores open the client's database read-only, in place
 sources, and give each session's `lastWrittenMs`. Opening a WAL database
 read-only makes SQLite create its `-wal`/`-shm` side files when they are
 missing; no data is written. An unreadable database is listed as is, so the
-preview reports it instead of finding nothing. `node:sqlite` needs Node
+preview reports it instead of finding nothing. `node:sqlite` returns
+text that starts with a NUL byte as "" (Hermes stores `\0json:` content):
+select such columns `CAST(... AS BLOB)` and decode them. `node:sqlite` needs Node
 22.13+ (OpenClaw's zstd events need 22.15+); on older Node the preview lists those databases as unreadable
 (`NO_SQLITE`).
 
@@ -756,6 +758,7 @@ Vitest tests live in `tests/`.
 | `tests/history-import-claude.test.mjs` | `shared/history-import/readers/claude.mjs` |
 | `tests/history-import-codex.test.mjs` | `shared/history-import/readers/codex.mjs` |
 | `tests/history-import-prime-agent.test.mjs` | `shared/history-import/readers/prime-agent.mjs` |
+| `tests/history-import-hermes.test.mjs` | `shared/history-import/readers/hermes.mjs` |
 | `tests/history-import-opencode.test.mjs` | `shared/history-import/readers/opencode.mjs` |
 | `tests/history-import-openclaw.test.mjs` | `shared/history-import/readers/openclaw.mjs`, SQLite helpers in `readers/common.mjs` |
 
