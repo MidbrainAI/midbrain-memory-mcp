@@ -45,6 +45,8 @@ import { stripInjectedContext } from "../pk-inject.mjs";
  * @property {string|null} skip   Why the whole session is skipped, if it is.
  * @property {boolean} [automated] Every prompt came from a program (an SDK
  *   or orchestrator), none from a person at the client's own interface.
+ * @property {string[]} [linkedSessionIds] Other ids live capture may have
+ *   stored this conversation under (checked for live captures too).
  * @property {number} [lastWrittenMs] When the session was last written, for
  *   sessions that are not one file (the planner uses the file's mtime
  *   otherwise).
