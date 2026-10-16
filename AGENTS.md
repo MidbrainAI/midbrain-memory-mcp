@@ -502,6 +502,45 @@ Prime Agent:
 - Per-client key file: `~/.config/prime-agent/.midbrain-key`. Detection keys on
   the agent dir.
 
+## History Import
+
+`npx midbrain-memory-mcp@latest import` (issue #75) imports conversations from
+before installation. Code: `shared/history-import/` (`readers/`,
+`plan.mjs`, `cli.mjs`), dispatched from `index.js`. Each client has one
+reader module in `readers/` (`list()` and `read(source)`), registered in
+`readers/index.mjs`; shared helpers are in `readers/common.mjs`. Readers
+of SQLite stores open the client's database read-only, in place
+(`withReadOnlyDatabase`; never copy it, never write), use `<db>#<id>`
+sources, and give each session's `lastWrittenMs`. Opening a WAL database
+read-only makes SQLite create its `-wal`/`-shm` side files when they are
+missing; no data is written. An unreadable database is listed as is, so the
+preview reports it instead of finding nothing. `node:sqlite` returns
+text that starts with a NUL byte as "" (Hermes stores `\0json:` content):
+select such columns `CAST(... AS BLOB)` and decode them. `node:sqlite` needs Node
+22.13+ (OpenClaw's zstd events need 22.15+); on older Node the preview lists those databases as unreadable
+(`NO_SQLITE`).
+
+- Opt-in and preview-first: no upload without `--apply` plus a confirmation
+  or `--yes`. Never run it from install, repair, or the MCP server.
+- Readers (see the README table of sources) only read the client's
+  own history dirs and skip symlinks. They emit what live capture would have
+  stored: typed prompts and each turn's final reply, with the original time.
+  Tool rows, injected context, harness echoes, subagents, automated (Agent
+  SDK) sessions, and sessions written in the last 10 minutes are skipped.
+- MidBrain is the record of what was imported: `memory_metadata.origin =
+  "import"` and a stable `import_id` (client, session, role, original time).
+  Do not use `memory_metadata.source` for this: search results read it as a
+  semantic document path. Before uploading, `listEpisodicForSession` trims a
+  session to the whole turns before its first live capture and drops entries
+  whose `import_id` is already stored; a failed check skips the session.
+- Uploads use `postEpisodicResult` with `occurredAt` and `X-Skip-Dream: 1`
+  (unless `--dream`), sequentially with back-off, stopping at the first failure
+  so a re-run resumes. They never write the offline cache.
+- Text is passed through `stripInjectedContext` and `shared/redact.mjs`, and
+  capped at the API's 100,000 characters.
+- Each session resolves its key through the client adapter for its `cwd`, so
+  project keys apply.
+
 ## Logging
 
 All file logging goes through `shared/logger.mjs`. Do not call `appendFileSync`
@@ -678,6 +717,11 @@ Vitest tests live in `tests/`.
 | `tests/mcp.test.mjs` | `mcp.mjs` / `index.js` |
 | `tests/docs-regression.test.mjs` | docs regression scripts |
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
+| `tests/history-import.test.mjs` | `shared/history-import/*.mjs`, `shared/history-import/readers/{claude,codex,common}.mjs`, `shared/redact.mjs` |
+| `tests/history-import-prime-agent.test.mjs` | `shared/history-import/readers/prime-agent.mjs` |
+| `tests/history-import-hermes.test.mjs` | `shared/history-import/readers/hermes.mjs` |
+| `tests/history-import-opencode.test.mjs` | `shared/history-import/readers/opencode.mjs` |
+| `tests/history-import-openclaw.test.mjs` | `shared/history-import/readers/openclaw.mjs`, SQLite helpers in `readers/common.mjs` |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.
