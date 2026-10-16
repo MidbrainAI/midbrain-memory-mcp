@@ -12,6 +12,7 @@ import {
   listPrimeAgentSessionFiles,
   readPrimeAgentSession,
 } from "../shared/history-import/readers/prime-agent.mjs";
+import { planImport } from "../shared/history-import/plan.mjs";
 
 let dir;
 
@@ -80,6 +81,10 @@ describe("readPrimeAgentSession", () => {
     const forked = [
       header({ timestamp: "2026-10-13T00:00:00.000Z", parentSession: "prime-0" }),
       message("2026-10-12T09:00:01.000Z", { role: "user", content: [{ type: "text", text: "parent prompt" }] }),
+      {
+        type: "custom_message", timestamp: "2026-10-12T09:00:02.000Z", customType: "agent_message",
+        details: { from: { clientId: "cli-1" }, message: "parent sent prompt" },
+      },
       message("2026-10-13T00:00:05.000Z", { role: "user", content: [{ type: "text", text: "fork prompt" }] }),
     ];
     const session = await readPrimeAgentSession(writeLog("fork.jsonl", forked));
@@ -92,5 +97,17 @@ describe("readPrimeAgentSession", () => {
     fs.symlinkSync(log, path.join(dir, "link.jsonl"));
     fs.mkdirSync(path.join(dir, "session-artifacts"));
     await expect(listPrimeAgentSessionFiles(dir)).resolves.toEqual([log]);
+  });
+
+  it("plans from a reader whose list() is async", async () => {
+    const log = writeLog("prime-1.jsonl", rows());
+    const old = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(log, old, old);
+    const [planned] = await planImport({
+      readers: { "prime-agent": { list: async () => [log], read: readPrimeAgentSession } },
+      clients: ["prime-agent"],
+    });
+    expect(planned).toMatchObject({ sessionId: "prime-1", skip: null });
+    expect(planned.entries).toHaveLength(5);
   });
 });

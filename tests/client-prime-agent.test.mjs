@@ -67,6 +67,8 @@ describe("Prime Agent adapter identity, paths and detection", () => {
     expect(await primeSessionsDir()).toBe(path.join(env.paths.primeAgentDir, "sessions"));
     await writeSettings({ sessionDir: "~/prime-sessions" });
     expect(await primeSessionsDir()).toBe(path.join(env.home, "prime-sessions"));
+    await writeSettings({ sessionDir: "logs" });
+    expect(await primeSessionsDir()).toBe(path.join(env.paths.primeAgentDir, "logs"));
     process.env.PRIME_AGENT_CODING_AGENT_SESSION_DIR = path.join(env.root, "legacy");
     expect(await primeSessionsDir()).toBe(path.join(env.root, "legacy"));
     process.env.PRIME_AGENT_SESSION_DIR = path.join(env.root, "sessions");
