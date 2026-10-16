@@ -73,6 +73,15 @@ function decodeEvent(row) {
   return null;
 }
 
+function parseEntry(json) {
+  try {
+    const value = JSON.parse(json);
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function messageText(message) {
   const content = message?.content;
   if (typeof content === "string") return content.trim();
@@ -118,6 +127,11 @@ export async function readOpenClawSession(source) {
     );
     session.skip = skipReason(window, node);
     if (session.skip) return;
+    // A session on a CLI backend (claude-cli) also lives in that client's own
+    // session, which its hooks may have captured live under that id.
+    const entry = parseEntry(node?.entry_json);
+    const linked = Object.values(entry?.cliSessionIds ?? {}).filter((value) => typeof value === "string" && value && value !== id);
+    if (linked.length) session.linkedSessionIds = [...new Set(linked)];
 
     const rows = db.prepare(
       "SELECT event_json, event_zstd FROM transcript_events WHERE session_id = ? ORDER BY seq",
