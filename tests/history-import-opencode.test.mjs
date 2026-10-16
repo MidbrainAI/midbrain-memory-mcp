@@ -100,6 +100,36 @@ describe.skipIf(!sqlite)("readOpenCodeSession", () => {
     ]);
   });
 
+  it("ends a turn that continues after compaction with its final reply, and keeps an interrupted reply", async () => {
+    const db = makeDb();
+    addSession(db, "ses_c");
+    addMessage(db, "ses_c", "msg_u1", { role: "user", time: { created: T + 1_000 } }, [{ type: "text", text: "long task prompt" }]);
+    addMessage(db, "ses_c", "msg_a1", {
+      role: "assistant", parentID: "msg_u1", finish: "tool-calls", time: { created: T + 2_000, completed: T + 3_000 },
+    }, [{ type: "tool", tool: "bash" }]);
+    addMessage(db, "ses_c", "msg_u2", { role: "user", time: { created: T + 4_000 } }, [{ type: "compaction", auto: true }]);
+    addMessage(db, "ses_c", "msg_a2", {
+      role: "assistant", parentID: "msg_u2", summary: true, finish: "stop", time: { created: T + 5_000, completed: T + 6_000 },
+    }, [{ type: "text", text: "summary of the work so far" }]);
+    addMessage(db, "ses_c", "msg_u3", { role: "user", time: { created: T + 7_000 } }, [{ type: "text", text: "Continue if you have next steps", synthetic: true }]);
+    addMessage(db, "ses_c", "msg_a3", {
+      role: "assistant", parentID: "msg_u3", finish: "stop", time: { created: T + 8_000, completed: T + 9_000 },
+    }, [{ type: "text", text: "task done" }]);
+    addMessage(db, "ses_c", "msg_u4", { role: "user", time: { created: T + 10_000 } }, [{ type: "text", text: "second prompt" }]);
+    addMessage(db, "ses_c", "msg_a4", {
+      role: "assistant", parentID: "msg_u4", error: { name: "MessageAbortedError" }, time: { created: T + 11_000 },
+    }, [{ type: "text", text: "partial answer" }]);
+    db.close();
+
+    const session = await readOpenCodeSession(`${dbFile}#ses_c`);
+    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["user", "long task prompt"],
+      ["assistant", "task done"],
+      ["user", "second prompt"],
+      ["assistant", "partial answer"],
+    ]);
+  });
+
   it("marks opencode run sessions automated and skips subagent sessions", async () => {
     const db = makeDb();
     addSession(db, "ses_run", { permission: RUN_PERMISSION });
@@ -110,13 +140,13 @@ describe.skipIf(!sqlite)("readOpenCodeSession", () => {
     expect((await readOpenCodeSession(`${dbFile}#ses_child`)).skip).toBe("subagent session");
   });
 
-  it("lists unarchived sessions, and nothing without a database", () => {
+  it("lists every session, archived ones too, and nothing without a database", () => {
     const db = makeDb();
     addSession(db, "ses_1");
     addSession(db, "ses_old", { archived: T });
     db.close();
 
-    expect(listOpenCodeSessions(dbFile)).toEqual([`${dbFile}#ses_1`]);
+    expect(listOpenCodeSessions(dbFile)).toEqual([`${dbFile}#ses_1`, `${dbFile}#ses_old`]);
     expect(listOpenCodeSessions(path.join(dir, "none", "opencode.db"))).toEqual([]);
     expect(openCodeDatabase({ XDG_DATA_HOME: "/data" })).toBe(path.join("/data", "opencode", "opencode.db"));
   });
