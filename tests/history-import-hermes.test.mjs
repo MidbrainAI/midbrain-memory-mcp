@@ -22,7 +22,7 @@ let home;
 
 const SCHEMA = `
 CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model_config TEXT, cwd TEXT, parent_session_id TEXT,
-  started_at REAL, ended_at REAL, last_activity_at REAL, hidden INTEGER DEFAULT 0);
+  started_at REAL, ended_at REAL, last_activity_at REAL, hidden INTEGER DEFAULT 0, end_reason TEXT);
 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT, api_content TEXT,
   tool_calls TEXT, timestamp REAL, display_kind TEXT, active INTEGER DEFAULT 1, _compressed_summary INTEGER DEFAULT 0);
 `;
@@ -76,9 +76,55 @@ describe.skipIf(!sqlite)("readHermesSession", () => {
     expect(session.lastWrittenMs).toBe((T + 60) * 1000);
     expect(session.entries).toEqual([
       { role: "user", text: "hermes prompt one", occurredAt: iso(T + 1), cwd: "/work/hermes" },
-      { role: "assistant", text: "more work", occurredAt: iso(T + 6), cwd: "/work/hermes" },
+      { role: "assistant", text: "hermes answer one", occurredAt: iso(T + 4), cwd: "/work/hermes" },
       { role: "user", text: "hermes prompt two", occurredAt: iso(T + 8), cwd: "/work/hermes" },
     ]);
+  });
+
+  it("ends a turn at an image-only prompt, so its reply is not filed under the previous one", async () => {
+    const { db, file } = makeDb();
+    addSession(db, "img");
+    addMessage(db, "img", "user", "text prompt", T + 1);
+    addMessage(db, "img", "assistant", "text answer", T + 2);
+    addMessage(db, "img", "user", `\u0000json:${JSON.stringify([{ type: "image_url" }])}`, T + 3);
+    addMessage(db, "img", "assistant", "image answer", T + 4);
+    db.close();
+
+    const session = await readHermesSession(`${file}#img`);
+    expect(session.entries.map((entry) => entry.text)).toEqual(["text prompt", "text answer"]);
+  });
+
+  it("skips the parent's tail a session continued after compression starts with", async () => {
+    const { db, file } = makeDb();
+    addSession(db, "parent");
+    db.prepare("UPDATE sessions SET end_reason = 'compression' WHERE id = 'parent'").run();
+    addMessage(db, "parent", "user", "before compression", T + 1);
+    addMessage(db, "parent", "assistant", "early answer", T + 2);
+    addSession(db, "child");
+    db.prepare("UPDATE sessions SET parent_session_id = 'parent' WHERE id = 'child'").run();
+    addMessage(db, "child", "user", "before compression", T + 10);
+    addMessage(db, "child", "assistant", "early answer", T + 11);
+    addMessage(db, "child", "user", "after compression", T + 20);
+    addMessage(db, "child", "assistant", "late answer", T + 21);
+    db.close();
+
+    const session = await readHermesSession(`${file}#child`);
+    expect(session.entries.map((entry) => entry.text)).toEqual(["after compression", "late answer"]);
+  });
+
+  it("reads an older state.db without the newer message columns", async () => {
+    const file = path.join(home, "state.db");
+    const db = new sqlite.DatabaseSync(file);
+    db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model_config TEXT, cwd TEXT, parent_session_id TEXT,
+      started_at REAL, ended_at REAL, last_activity_at REAL, hidden INTEGER DEFAULT 0);
+      CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT, timestamp REAL);`);
+    addSession(db, "old");
+    db.prepare("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)").run("old", "user", "old prompt", T + 1);
+    db.prepare("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)").run("old", "assistant", "old answer", T + 2);
+    db.close();
+
+    const session = await readHermesSession(`${file}#old`);
+    expect(session.entries.map((entry) => entry.text)).toEqual(["old prompt", "old answer"]);
   });
 
   it("marks one-shot and cron runs automated, and skips delegated and hidden sessions", async () => {
@@ -87,6 +133,7 @@ describe.skipIf(!sqlite)("readHermesSession", () => {
     addSession(db, "cron", { source: "cron" });
     addSession(db, "child", { config: JSON.stringify({ _delegate_from: "h1" }) });
     addSession(db, "sub", { source: "subagent" });
+    addSession(db, "api", { source: "api_server" });
     addSession(db, "hidden", { hidden: 1 });
     db.close();
 
@@ -95,6 +142,7 @@ describe.skipIf(!sqlite)("readHermesSession", () => {
     expect((await read("cron")).automated).toBe(true);
     expect((await read("child")).skip).toBe("subagent session");
     expect((await read("sub")).skip).toBe("subagent session");
+    expect((await read("api")).automated).toBe(true);
     expect((await read("hidden")).skip).toBe("hidden in Hermes");
   });
 
