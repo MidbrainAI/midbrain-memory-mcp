@@ -36,6 +36,8 @@ const HOOK_EVENTS = {
   beforeSubmitPrompt: 'user',
   postToolUse: 'tool',
   afterAgentResponse: 'assistant',
+  // Headless `agent -p` fires none of the above prompt/response hooks (#97).
+  sessionEnd: 'session-end',
 };
 
 function cursorDir() { return path.join(home(), '.cursor'); }
@@ -189,21 +191,25 @@ export class Cursor extends BaseClient {
   }
 
   /**
-   * Fresh when every event carrying a MidBrain hook carries exactly the
-   * canonical shim command and the shim body/mode is canonical (or dev).
+   * Fresh when no MidBrain hook is installed, or when every event carries
+   * exactly the canonical shim command and the shim body/mode is canonical
+   * (or dev).
    */
   async isFresh() {
     try {
       const data = (await readJson(hooksPath())) || {};
       let hasMidbrainHook = false;
+      let missingEvent = false;
       for (const [event, role] of Object.entries(HOOK_EVENTS)) {
         const entries = Array.isArray(data.hooks?.[event]) ? data.hooks[event] : [];
         const owned = entries.filter((hook) => isMidbrainHook(hook));
-        if (owned.length === 0) continue;
+        if (owned.length === 0) { missingEvent = true; continue; }
         hasMidbrainHook = true;
         if (owned.length !== 1 || owned[0].command !== buildHookCommand(role)) return false;
       }
       if (!hasMidbrainHook) return true;
+      // An install from before an event was added (sessionEnd, #97) is stale.
+      if (missingEvent) return false;
       return (await shimStatus(CLIENT_ID)).fresh;
     } catch { return true; }
   }

@@ -8,8 +8,9 @@ Works with [OpenCode](https://opencode.ai),
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
 [OpenAI Codex](https://developers.openai.com/codex),
 [Cursor](https://cursor.com),
-[Hermes Agent](https://github.com/NousResearch/hermes-agent), and
-[OpenClaw](https://github.com/openclaw/openclaw), plus
+[Hermes Agent](https://github.com/NousResearch/hermes-agent),
+[OpenClaw](https://github.com/openclaw/openclaw), and
+[Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent), plus
 [NanoClaw](https://nanoclaw.dev) via the bundled `/add-midbrain` skill.
 
 [![npm version](https://img.shields.io/npm/v/midbrain-memory-mcp.svg?style=flat-square)](https://www.npmjs.com/package/midbrain-memory-mcp)
@@ -30,7 +31,7 @@ npx midbrain-memory-mcp install
 ```
 
 The installer detects OpenCode, Claude Code, Codex, Cursor, Hermes Agent,
-OpenClaw, and/or NanoClaw on your
+OpenClaw, Prime Agent, and/or NanoClaw on your
 machine, opens browser-based authentication, creates or selects a memory agent,
 writes key files (chmod 600), patches MCP configs, copies hook/plugin/skill
 files, and synchronizes the managed MidBrain rules block across every detected
@@ -46,9 +47,10 @@ npx midbrain-memory-mcp install --no-login
 
 ### 3. Restart and verify
 
-Restart OpenCode, Claude Code, Codex, or Cursor, or restart the OpenClaw
-gateway. The `memory_search` tool should be available (OpenClaw names it
-`midbrain-memory__memory_search`). Send a few messages, then search; your
+Restart OpenCode, Claude Code, Codex, or Cursor, restart the OpenClaw
+gateway, or start a new Prime Agent session. The `memory_search` tool should be
+available (OpenClaw names it `midbrain-memory__memory_search`; Prime Agent
+calls it from its Python REPL). Send a few messages, then search; your
 messages should appear.
 
 ```sh
@@ -61,7 +63,7 @@ npx -y midbrain-memory-mcp@latest --version
 ## How It Works
 
 ```
-OpenCode / Claude Code / Codex / Cursor / OpenClaw session
+OpenCode / Claude Code / Codex / Cursor / OpenClaw / Prime Agent session
   |
   |-- MCP stdio -----> index.js -------> memory.midbrain.ai
   |                    (search, browse)    /api/v1/memories/search
@@ -87,7 +89,10 @@ many standalone memories. Cursor hooks reuse the Codex capture runtime: they
 capture prompts, final assistant responses, and bounded per-turn tool
 summaries (see [Cursor](#cursor)). OpenClaw uses an in-process gateway
 plugin on the `agent_end` hook that stores the prompt and the final reply of
-each turn (see [OpenClaw](#openclaw)).
+each turn (see [OpenClaw](#openclaw)). Prime Agent has no hooks: a MidBrain
+skill that Prime Agent loads into each session's Python kernel starts a
+watcher that reads the session log and stores prompts, final replies, and
+bounded tool summaries (see [Prime Agent](#prime-agent)).
 
 **Procedural knowledge**: Automatic procedural-knowledge injection is disabled by default
 in v0.4.3 while the experience layer is redesigned. Hooks do not
@@ -194,6 +199,8 @@ MidBrain rules current:
   block, and you can paste it into Cursor Settings -> Rules yourself.
 - OpenClaw: the default agent workspace `AGENTS.md` (normally
   `~/.openclaw/workspace/AGENTS.md`), only once OpenClaw has created it.
+- Prime Agent: `~/.prime/agent/AGENTS.md` (or `$PRIME_AGENT_CODING_AGENT_DIR`),
+  which Prime Agent loads into every session next to the project's `AGENTS.md`.
 
 NanoClaw's composed `groups/<group>/CLAUDE.md` files are generated at spawn
 and are never edited directly.
@@ -395,6 +402,10 @@ automatically repaired. No manual `install` needed. This covers:
 - **OpenClaw:** Re-copies stale capture plugin files to
   `~/.config/openclaw/midbrain-plugin/` (never touches `openclaw.json`); restart
   the gateway to load them
+- **Prime Agent:** Re-copies stale skill files to
+  `~/.prime/agent/skills/midbrain-memory/` and reinstalls a stale
+  `~/.midbrain/bin/prime-agent-hook` shim (never touches `settings.json`); new
+  sessions load them
 
 Repair only ever writes canonical, location-independent values (the stable
 shims and `npx -y midbrain-memory-mcp@latest`) — never the running
@@ -446,11 +457,13 @@ version. The MCP server logs the resolved package version to stderr on startup.
 
 | Variable | Purpose | Set by |
 |---|---|---|
-| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, `codex`, `cursor`, `hermes`, `openclaw`, or `nanoclaw`) | MCP config `environment`/`env` block |
+| `MIDBRAIN_CLIENT` | Which client adapter to use (`opencode`, `claude`, `codex`, `cursor`, `hermes`, `openclaw`, `prime-agent`, or `nanoclaw`) | MCP config `environment`/`env` block (Prime Agent: the entry's `sh -c` script) |
 | `MIDBRAIN_PROJECT_DIR` | Project dir for per-project key resolution, used when the client reports no directory | Project-level MCP config |
 | `MIDBRAIN_STRICT_PROJECT` | `1` withholds a capture that would fall back from a project directory to a client or global key | User environment (opt-in) |
 | `MIDBRAIN_API_KEY` | API key for CI/debug environments | User environment |
 | `MIDBRAIN_API_URL` | Highest-priority API-host override for development and compatibility | User process environment |
+| `MIDBRAIN_PRIME_CAPTURE` | `0` stops the Prime Agent skill from starting capture | User environment (opt-out) |
+| `MIDBRAIN_PRIME_POLL_MS` | How often the Prime Agent capture watcher reads session logs (default 2000) | User environment |
 
 ### API Host Resolution
 
@@ -782,11 +795,32 @@ enables the capture plugin; other keys are kept as-is:
 
 See [OpenClaw](#openclaw) for how JSON5 configs are written.
 
+**Prime Agent**: `~/.prime/agent/settings.json` (global) or
+`<project>/.prime/agent/settings.json` (per-project). Prime Agent gives an MCP
+server only `HOME`, `PATH` and `TMPDIR`, and its `env` values can only name
+variables the session already has, so the entry sets MidBrain's variables in a
+`/bin/sh -c` script. The global entry binds `MIDBRAIN_PROJECT_DIR` to the
+server's working directory, which is the session's directory; the project entry
+names the project directory. Other servers and settings are kept as-is:
+
+```json
+{
+  "mcpServers": {
+    "midbrain-memory": {
+      "type": "stdio",
+      "command": "/bin/sh",
+      "args": ["-c", "MIDBRAIN_CLIENT=prime-agent MIDBRAIN_PROJECT_DIR=\"$PWD\" exec npx -y midbrain-memory-mcp@latest"],
+      "startupTimeoutMs": 60000
+    }
+  }
+}
+```
+
 **Important:**
 - All paths must be absolute. JSON does not expand `~`.
-- OpenCode uses `mcp`. Claude Code and Cursor use `mcpServers`. OpenClaw uses
-  `mcp.servers`. Codex uses `[mcp_servers.<id>]` TOML tables. Wrong key =
-  silent failure.
+- OpenCode uses `mcp`. Claude Code, Cursor and Prime Agent use `mcpServers`.
+  OpenClaw uses `mcp.servers`. Codex uses `[mcp_servers.<id>]` TOML tables.
+  Wrong key = silent failure.
 - MCP servers in `~/.claude/settings.json` are silently ignored. Use `~/.claude.json`.
 
 ### Logging
@@ -802,7 +836,7 @@ directory (not your home directory):
 
 Per-client files: `midbrain-opencode.log`, `midbrain-claude.log`,
 `midbrain-codex.log`, `midbrain-hermes.log`, `midbrain-cursor.log`,
-`midbrain-openclaw.log`.
+`midbrain-openclaw.log`, `midbrain-prime-agent.log`.
 
 - Logs default to the `info` level. Per-request detail (individual REST
   calls, payload sizes) is logged at `debug` and suppressed by default.
@@ -827,7 +861,7 @@ The installer detects Cursor by `~/.cursor/` and then:
 
 - merges a `midbrain-memory` entry into `~/.cursor/mcp.json` `mcpServers`
   (project setup: `<project>/.cursor/mcp.json` with `MIDBRAIN_PROJECT_DIR`);
-- merges three hooks into `~/.cursor/hooks.json` that call the stable
+- merges four hooks into `~/.cursor/hooks.json` that call the stable
   `~/.midbrain/bin/cursor-hook` shim (10-second timeout each);
 - backs up each file to `<file>.bak` before it changes it. Your other MCP
   servers, hooks, and settings are kept in place and in order. Re-running the
@@ -840,7 +874,7 @@ Supported Cursor surfaces:
 |---|---|---|
 | Cursor desktop app | Yes | Yes |
 | Cursor CLI, interactive (`agent`) | Yes | Yes (validated 2026-09-25) |
-| Cursor CLI, headless (`agent -p`) | Yes, with `--approve-mcps --trust --force` so MCP tools run without a prompt | No: hooks do not run in headless mode |
+| Cursor CLI, headless (`agent -p`) | Yes, with `--approve-mcps --trust --force` so MCP tools run without a prompt | Yes, at session end from the session transcript (validated 2026-10-09, `cursor-agent` 2026.10.01) |
 
 What is captured:
 
@@ -849,6 +883,7 @@ What is captured:
 | `beforeSubmitPrompt` | `user` | The prompt text. Always answers `{"continue": true}` at once and stores the prompt in a background process, so capture never blocks a prompt. |
 | `postToolUse` | `tool` | One redacted tool event, buffered for the current generation (no API call). |
 | `afterAgentResponse` | `assistant` | The final response text, plus one bounded tool activity summary when tools ran. |
+| `sessionEnd` | `session-end` | Headless runs only. `agent -p` does not fire `beforeSubmitPrompt` or `afterAgentResponse`, so when neither ran during the session, the hook reads the last turn of Cursor's session transcript (`transcript_path`) and stores the prompt, the final response text, and the tool summary in a background process, under the same 20-second limit as prompt capture. Sessions where those hooks ran (desktop app, interactive CLI) are skipped, so nothing is stored twice. |
 
 Each capture sends `client: "cursor"`, `session_id` from Cursor's
 `conversation_id`, and `cwd` from the first `workspace_roots` entry. Cursor's
@@ -871,6 +906,10 @@ Limitations:
   capture Cursor reasoning, so there is no reasoning/commentary summary.
 - Tool events run after the last `afterAgentResponse` of a generation are not
   summarized; stale buffers are removed after 24 hours.
+- Headless capture depends on Cursor writing the session transcript. If
+  transcripts are disabled (`transcript_path` is null), a headless run is not
+  captured. Headless capture stores at session end, not per turn, and reads
+  only the final 4 MiB of a transcript under `~/.cursor/projects`.
 - Procedural-knowledge injection is not available: `beforeSubmitPrompt` cannot
   add context. `MIDBRAIN_ENABLE_PK_INJECTION` has no effect for Cursor.
 - Latency: Cursor holds the prompt until the `beforeSubmitPrompt` hook process
@@ -989,6 +1028,114 @@ Troubleshooting:
   `plugins.load.paths` item, and `plugins.entries.midbrain-memory` from
   `openclaw.json`, then delete `~/.config/openclaw/midbrain-plugin/`.
 
+### Prime Agent
+
+[Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent) (Prime
+Intellect's open-source coding harness, `prime-agent`) gets memory search
+through MCP and episodic capture through a MidBrain skill. Setup:
+
+```sh
+npx midbrain-memory-mcp install                  # global
+npx midbrain-memory-mcp install --project .      # optional per-project entry
+```
+
+The installer detects Prime Agent by `~/.prime/agent/` (or
+`PRIME_AGENT_CODING_AGENT_DIR`) and then:
+
+- adds `mcpServers["midbrain-memory"]` to `~/.prime/agent/settings.json`
+  (see [MCP Config Examples](#mcp-config-examples)), keeping any `enabled`,
+  `enabledTools`, `disabledTools`, timeout, or `env` you set on the entry;
+- copies the `midbrain-memory` Python skill (`SKILL.md`, `pyproject.toml`,
+  `src/midbrain_memory/__init__.py`, and a `.midbrain-repo-root` version
+  marker) to `~/.prime/agent/skills/midbrain-memory/`;
+- writes the stable `~/.midbrain/bin/prime-agent-hook` shim;
+- writes the managed rules block to `~/.prime/agent/AGENTS.md`.
+
+`install --project` writes `<project>/.prime/agent/settings.json` with the
+project directory named in the entry. It is optional: the global entry already
+uses the session's directory, so a project key in `.midbrain/.midbrain-key` (in
+the session's directory or any parent) applies without it.
+
+New sessions pick up the changes; stop running ones (`prime-agent shutdown`)
+to load them sooner.
+
+How the model reaches memory: Prime Agent calls MCP tools from its Python
+REPL. The skill adds a shortcut, `await midbrain_memory("query")`, that runs
+`memory_search`; every tool is also available as
+`await mcp.call_tool("midbrain-memory", "<tool>", {...})`. The skill's
+`SKILL.md` and the rules block tell the model both forms.
+
+How capture works: Prime Agent has no hooks. It writes each session to an
+append-only log (`~/.prime/agent/sessions/<id>.jsonl`, or
+`PRIME_AGENT_SESSION_DIR` / the `sessionDir` setting), and it imports every
+Python skill into a session's kernel when the kernel starts. The MidBrain
+skill's import starts `prime-agent-hook watch` in the background. The watcher
+reads the session logs every 2 seconds while the session's process runs, makes
+a final pass when it exits, and stores:
+
+- each user prompt, as soon as it is written;
+- each final assistant reply (a reply that ends the turn);
+- a bounded summary of the turn's tool calls (`ipython`, `bash`, ...), with
+  `sk-` keys and bearer tokens redacted.
+
+Each capture sends `client: "prime-agent"`, `session_id` from the log
+header, and `cwd` from the session's directory, whose project key is used.
+Subagent sessions (`rlm.spawn`) and the parent history a forked session
+(`--fork`) starts with are skipped. Capture starts from the install: a session
+older than that is read from where the watcher first sees it, so earlier
+history is never imported. A per-log cursor and lock under
+`~/.cache/midbrain/prime-agent/` keep each turn to one store even when several
+sessions run at once; a failed store goes to the offline cache. Set
+`MIDBRAIN_PRIME_CAPTURE=0` to turn capture off.
+
+Supported Prime Agent surfaces:
+
+| Surface | Memory search (MCP) | Capture (skill + watcher) |
+|---|---|---|
+| Headless (`prime-agent -p`) | Yes (validated 2026-10-13, Prime Agent 0.10.0, Claude Sonnet 5.5) | Yes (validated 2026-10-13) |
+| Interactive TUI (daemon-backed) | Same MCP server | Yes (validated 2026-10-13: a typed prompt was stored) |
+| RPC mode (`--mode rpc`, editor integrations) | Yes (validated 2026-10-13, Claude Sonnet 5.5) | Yes (validated 2026-10-13) |
+| Background sessions (`prime-agent send`) | Same MCP server | Yes (validated 2026-10-12) |
+| Forked sessions (`--fork`) | Same MCP server | Yes, new turns only (validated 2026-10-12) |
+
+Why capture works this way: the skill import is the only code Prime Agent
+runs at every session start. Prime Agent 0.10 removed its extension system
+(PrimeIntellect-ai/prime-agent#3189) and has no hooks; its MCP servers start
+lazily on the first tool call, so a watcher launched by the MCP server would
+miss sessions that never search memory. The watchers read all session logs, so
+a session's turns may be stored by another running session's watcher; the
+per-log lock keeps each turn to one store, and the next session catches up a
+log whose watcher died. When Prime Agent ships lifecycle hooks (discussed in
+PrimeIntellect-ai/prime-agent discussions #3200 and #2004), capture should move
+to them.
+
+Limitations:
+
+- macOS and Linux only: the MCP entry runs `/bin/sh`. On Windows the installer
+  skips Prime Agent.
+- The watcher is a separate process, so a capture lands a second or two after
+  Prime Agent writes the turn, not inside the turn.
+- Persona and profile injection is not available: Prime Agent has no hook that
+  adds per-session context.
+- Procedural-knowledge injection is not available.
+
+Troubleshooting:
+
+- `No API key found for amazon-bedrock`: Prime Agent has no default model and
+  falls back to Bedrock. Pick a model once with `/model` (or pass
+  `--provider` and `--model`).
+- Tools missing: `prime-agent mcp list` should show `midbrain-memory`; inside a
+  session, `await mcp.list_tools("midbrain-memory")` lists the tools.
+- Nothing captured: check that `~/.prime/agent/skills/midbrain-memory/` and
+  `~/.midbrain/bin/prime-agent-hook` exist, then read
+  `midbrain-prime-agent.log` (see [Logging](#logging)). Running
+  `npx -y midbrain-memory-mcp@latest hook prime-agent sync` stores anything
+  the watcher missed.
+- To remove MidBrain from Prime Agent, delete the `midbrain-memory` entry from
+  `settings.json` (or run `prime-agent mcp remove midbrain-memory`), then delete
+  `~/.prime/agent/skills/midbrain-memory/` and the MidBrain block in
+  `~/.prime/agent/AGENTS.md`.
+
 ### NanoClaw
 
 NanoClaw runs Claude Code inside Docker containers. MidBrain integrates via
@@ -1070,6 +1217,11 @@ clients, unless `--no-rules` is used:
   if you want it in every project.
 - OpenClaw uses the default agent workspace `AGENTS.md`, global only, and only
   after OpenClaw has created that file. Project setup writes no OpenClaw rules.
+- Prime Agent uses `~/.prime/agent/AGENTS.md` globally and reads the project
+  `AGENTS.md` too. Project setup writes the Prime Agent variant to `AGENTS.md`
+  only when no Codex, OpenCode or Cursor install shares that file; otherwise
+  the shared block stays, and Prime Agent's own line comes from its global
+  file and skill.
 - Claude Code uses `CLAUDE.md`.
 - Hermes global and gateway behavior uses the active `SOUL.md`. For project
   rules, Hermes updates an existing `.hermes.md`, then an existing `HERMES.md`;
@@ -1132,8 +1284,9 @@ works for Cursor):
 
 The behavioral body above is shared by every client. For manual configuration,
 replace only its `### Tool loading` section with the matching adapter below.
-This matters because Claude Code and NanoClaw may lazy-load MCP functions, while
-Hermes and OpenClaw use their own deferred-tool sequence.
+This matters because Claude Code and NanoClaw may lazy-load MCP functions,
+Hermes and OpenClaw use their own deferred-tool sequence, and Prime Agent calls
+MCP tools from Python.
 
 **Claude Code**
 
@@ -1176,6 +1329,17 @@ Hermes and OpenClaw use their own deferred-tool sequence.
   pre-recall action.
 ```
 
+**Prime Agent**
+
+```markdown
+### Tool loading
+
+- Prime Agent: MidBrain tools run in the Python REPL:
+  `await midbrain_memory(query)` searches; other tools use
+  `await mcp.call_tool("midbrain-memory", "<tool>", {...})`. Discovery is the
+  only allowed pre-recall action.
+```
+
 Normal installation selects and writes the correct adapter automatically; these
 snippets are only for users who maintain instruction files manually.
 
@@ -1209,7 +1373,7 @@ curl https://memory.midbrain.ai/health         # Is the API reachable?
 
 **Common causes:**
 - Stale npx cache (see version check above)
-- `MIDBRAIN_CLIENT` not set or set to wrong value (`opencode`, `claude`, `codex`, `cursor`, `hermes`, `openclaw`, or `nanoclaw`)
+- `MIDBRAIN_CLIENT` not set or set to wrong value (`opencode`, `claude`, `codex`, `cursor`, `hermes`, `openclaw`, `prime-agent`, or `nanoclaw`)
 - Key file missing or wrong permissions (`chmod 600`)
 - Claude Code: MCP entry in `~/.claude/settings.json` instead of `~/.claude.json`
 
@@ -1267,7 +1431,7 @@ Auth: send an `Authorization` header with your local API key, except for
 
 `memory_metadata` on POST is optional. Values must be strings. Capture hooks
 always tag each memory with the originating client (`opencode`, `claude`,
-`nanoclaw`, `codex`, `hermes`, `cursor`, or `openclaw`). When the harness provides them, hooks
+`nanoclaw`, `codex`, `hermes`, `cursor`, `openclaw`, or `prime-agent`). When the harness provides them, hooks
 also add scoping fields: `cwd` (own-home paths use `~/`, other-user home
 names are redacted, and non-user system paths remain absolute) and
 `session_id` (the harness's own session/conversation id, forwarded verbatim).
@@ -1346,6 +1510,7 @@ shared/
     codex.mjs                  Codex adapter (TOML config, hooks.json)
     cursor.mjs                 Cursor adapter (mcp.json, hooks.json)
     openclaw.mjs               OpenClaw adapter (JSON5 openclaw.json, plugin copy)
+    prime-agent.mjs            Prime Agent adapter (settings.json, skill copy)
     generic.mjs                Fallback adapter
     registry.mjs               getClient(id), detectClients()
 plugins/
@@ -1356,6 +1521,7 @@ plugins/
   codex/                       Codex hook scripts (Node 20, episodic capture)
   cursor/                      Cursor hook scripts (Node 20, reuse the Codex runtime)
   openclaw/                    OpenClaw gateway plugin (agent_end capture)
+  prime-agent/                 Prime Agent kernel skill + session-log capture watcher
 dist/
   midbrain-shared.mjs          Built bundle (all of shared/ in one file)
 scripts/                       CI guards (pinned-spec regression)
@@ -1398,7 +1564,8 @@ branching inside MCP tools or hook scripts.
    comments and existing settings when that client's format supports it.
 5. **Choose a capture surface.** Use a plugin when the client exposes a runtime
    message hook (OpenCode, OpenClaw). Use hook scripts when the client exposes lifecycle
-   hooks (Claude Code, Codex). OpenCode submits capture without awaiting the
+   hooks (Claude Code, Codex). With neither, read the client's own session log
+   (Prime Agent). OpenCode submits capture without awaiting the
    API response. Claude Code and Codex hooks complete capture and any required
    stdout before the throttled self-update check, which may delay hook exit by
    up to `UPDATE_FETCH_TIMEOUT_MS`; capture and update failures remain
@@ -1433,7 +1600,7 @@ Not shipped to users.
 ## Prerequisites
 
 - Node >= 20
-- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), [Cursor](https://cursor.com), [Hermes Agent](https://github.com/NousResearch/hermes-agent), [OpenClaw](https://github.com/openclaw/openclaw), and/or [NanoClaw](https://nanoclaw.dev)
+- [OpenCode](https://opencode.ai), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://developers.openai.com/codex), [Cursor](https://cursor.com), [Hermes Agent](https://github.com/NousResearch/hermes-agent), [OpenClaw](https://github.com/openclaw/openclaw), [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent), and/or [NanoClaw](https://nanoclaw.dev)
 - A MidBrain account ([memory.midbrain.ai](https://memory.midbrain.ai))
 
 ## License

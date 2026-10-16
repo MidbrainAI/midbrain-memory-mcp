@@ -6,6 +6,10 @@
  *   - postToolUse        -> buffer one tool event for the turn
  *   - afterAgentResponse -> capture the assistant text (`text`) plus the
  *                           buffered tool summary
+ *   - sessionEnd         -> headless fallback (#97): `agent -p` never fires
+ *                           beforeSubmitPrompt or afterAgentResponse, so when
+ *                           neither ran during the session the last turn of
+ *                           the session transcript is captured instead
  *
  * Tool buffering and assistant capture reuse the Codex runtime: the Cursor
  * payload is mapped onto the Codex field names (conversation_id -> session_id,
@@ -32,6 +36,7 @@ import { fileURLToPath } from "url";
 import { MidbrainApi } from "../../shared/midbrain-api.mjs";
 import { hookProjectDir, logProjectFallback } from "../../shared/project-dir.mjs";
 import { appendToCache } from "../../shared/episodic-cache.mjs";
+import { readTranscriptRows } from "../../shared/claude-transcript.mjs";
 import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
@@ -44,6 +49,16 @@ const CLIENT = "cursor";
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-cursor-assistant-turns");
 const TOOL_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-cursor-tool-events");
 const STORE_JOB_DIR = path.join(os.tmpdir(), "midbrain-cursor-store-jobs");
+const LIVE_SESSION_DIR = path.join(os.tmpdir(), "midbrain-cursor-live-sessions");
+// Cursor writes agent transcripts under ~/.cursor/projects/<slug>/agent-transcripts.
+const CURSOR_PROJECTS_ROOT = path.join(os.homedir(), ".cursor", "projects");
+// Clock slack when comparing a live-capture marker with the session start.
+const LIVE_MARKER_SLACK_MS = 5_000;
+// The desktop app does not always fire sessionEnd (closing the window left the
+// marker in place), so markers untouched for a day are removed. Every live
+// hook refreshes its conversation's marker.
+const LIVE_MARKER_TTL_MS = 24 * 60 * 60 * 1000;
+const TIMED_OUT = "timeout";
 const STORE_ENTRY = fileURLToPath(new URL("./store-user.mjs", import.meta.url));
 // Hard limit for the background user store. On expiry the entry goes to the
 // offline cache (boot-time drain) and the background child exits.
@@ -100,6 +115,7 @@ export function userStoreJob(input) {
  * started, store inline under the same hard time limit.
  */
 export async function captureUser(input, deps = makeDefaultDeps()) {
+  markLiveCapture(input, deps);
   const job = userStoreJob(input);
   if (!job) return CONTINUE;
   try {
@@ -147,6 +163,59 @@ function storeTimeLimitMs() {
   return Number.isInteger(value) && value > 0 ? value : STORE_TIME_LIMIT_MS;
 }
 
+class StoreTimeout extends Error {}
+
+/** Resolve to the work's value, or TIMED_OUT once ms have passed. */
+async function withinLimit(work, ms) {
+  let timer;
+  const expired = new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), Math.max(0, ms)); });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Deps whose key resolution and every store share one hard deadline (the
+ * store time limit, from now). A store still pending at the deadline goes to
+ * the offline cache under the resolved API's cache scope, for the boot drain,
+ * and resolves to TIMED_OUT (truthy: the entry is kept). Key resolution still
+ * pending at the deadline throws StoreTimeout: there is no scope to cache
+ * under, so the entry is dropped. The API is resolved once per cwd.
+ */
+function boundedDeps(deps) {
+  const deadline = Date.now() + (deps.storeTimeLimitMs ?? storeTimeLimitMs());
+  const remaining = () => deadline - Date.now();
+  const apis = new Map();
+  const resolveApi = async (cwd) => {
+    const api = await withinLimit(deps.createApi(cwd), remaining());
+    if (api === TIMED_OUT) {
+      throw new StoreTimeout(`key/host not resolved within ${deps.storeTimeLimitMs ?? storeTimeLimitMs()}ms; entry dropped`);
+    }
+    return {
+      cacheScope: api.cacheScope,
+      projectFallbackNote: api.projectFallbackNote,
+      requestedProjectDir: api.requestedProjectDir,
+      async storeEpisodic(text, role, logger, metadata) {
+        const stored = await withinLimit(Promise.resolve().then(() => api.storeEpisodic(text, role, logger, metadata)), remaining());
+        if (stored !== TIMED_OUT) return stored;
+        appendToCache({ text, role, memory_metadata: metadata }, api.cacheScope);
+        safeLog(deps.logger, `CURSOR CAPTURE TIMEOUT (${role}): no reply before the store time limit; cached for boot-time drain`, "warn");
+        return TIMED_OUT;
+      },
+    };
+  };
+  return {
+    ...deps,
+    createApi(cwd) {
+      const key = cwd ?? "";
+      if (!apis.has(key)) apis.set(key, resolveApi(cwd));
+      return apis.get(key);
+    },
+  };
+}
+
 /**
  * Store one user prompt with the Cursor metadata under a hard time limit.
  * On expiry the entry is appended to the offline cache under the resolved
@@ -155,30 +224,25 @@ function storeTimeLimitMs() {
  * @returns {Promise<"stored"|"failed"|"timeout">}
  */
 export async function storeUserJob(job, deps = makeDefaultDeps()) {
-  const limitMs = deps.storeTimeLimitMs ?? storeTimeLimitMs();
+  return storeUserPrompt(job, boundedDeps(deps));
+}
+
+async function storeUserPrompt(job, bounded) {
   const metadata = buildCaptureMetadata({ client: CLIENT, cwd: job.cwd, sessionId: job.session_id });
-  let api;
-  const work = (async () => {
-    api = await deps.createApi(job.cwd);
-    logProjectFallback(api, deps.logger);
-    const stored = await api.storeEpisodic(job.prompt, "user", deps.logger, metadata);
+  try {
+    const api = await bounded.createApi(job.cwd);
+    logProjectFallback(api, bounded.logger);
+    const stored = await api.storeEpisodic(job.prompt, "user", bounded.logger, metadata);
+    if (stored === TIMED_OUT) return "timeout";
     return stored === false ? "failed" : "stored";
-  })().catch((err) => {
-    safeLog(deps.logger, `CURSOR CAPTURE ERROR (user): ${errorMessage(err)}`);
+  } catch (err) {
+    if (err instanceof StoreTimeout) {
+      safeLog(bounded.logger, `CURSOR CAPTURE TIMEOUT (user): ${err.message}`);
+      return "timeout";
+    }
+    safeLog(bounded.logger, `CURSOR CAPTURE ERROR (user): ${errorMessage(err)}`);
     return "failed";
-  });
-  let timer;
-  const expired = new Promise((resolve) => { timer = setTimeout(() => resolve("timeout"), limitMs); });
-  const outcome = await Promise.race([work, expired]);
-  clearTimeout(timer);
-  if (outcome !== "timeout") return outcome;
-  if (api) {
-    appendToCache({ text: job.prompt, role: "user", memory_metadata: metadata }, api.cacheScope);
-    safeLog(deps.logger, `CURSOR CAPTURE TIMEOUT (user): no reply after ${limitMs}ms; cached for boot-time drain`, "warn");
-  } else {
-    safeLog(deps.logger, `CURSOR CAPTURE TIMEOUT (user): key/host not resolved after ${limitMs}ms; entry dropped`);
   }
-  return "timeout";
 }
 
 /**
@@ -194,7 +258,8 @@ export async function runBackgroundStore(jobFile, deps = makeDefaultDeps()) {
   } finally {
     try { fs.rmSync(jobFile, { force: true }); } catch { /* ignore */ }
   }
-  if (job && text(job.prompt)) await storeUserJob(job, deps);
+  if (job?.kind === "transcript") await storeTranscriptJob(job, deps);
+  else if (job && text(job.prompt)) await storeUserJob(job, deps);
 }
 
 /** Buffer one tool event for the current generation (no API call). */
@@ -204,7 +269,155 @@ export async function captureToolUse(input, deps = makeDefaultDeps()) {
 
 /** Capture the assistant response plus this generation's tool summary. */
 export async function captureAssistant(input, deps = makeDefaultDeps()) {
+  markLiveCapture(input, deps);
   await captureCodexAssistant(toCodexInput(input), deps);
+}
+
+/**
+ * sessionEnd: capture the session's last turn from the transcript, but only
+ * when no live prompt/response hook ran during this session. The desktop app
+ * and the interactive CLI fire those hooks (and also fire sessionEnd), so they
+ * are skipped here; headless `agent -p` fires neither. The store runs in the
+ * detached background child, since Cursor exits soon after this hook starts.
+ */
+export async function captureSessionEnd(input, deps = makeDefaultDeps()) {
+  const job = transcriptStoreJob(input);
+  if (!job) return {};
+  if (consumeLiveCapture(input, deps)) return {};
+  try {
+    await (deps.startBackgroundStore || startBackgroundStore)(job, deps);
+  } catch (err) {
+    safeLog(deps.logger, `CURSOR BACKGROUND STORE SPAWN ERROR: ${errorMessage(err)}; storing inline`, "warn");
+    await storeTranscriptJob(job, deps);
+  }
+  return {};
+}
+
+/** The only fields a transcript store needs: a path, never transcript content. */
+export function transcriptStoreJob(input, env = process.env) {
+  const transcriptPath = text(input?.transcript_path) || text(env.CURSOR_TRANSCRIPT_PATH);
+  if (!transcriptPath) return null;
+  const mapped = toCodexInput(input);
+  return {
+    kind: "transcript",
+    transcript_path: transcriptPath,
+    cwd: mapped.cwd,
+    session_id: mapped.session_id,
+    // Headless tool events carry generation_id == conversation_id, the same
+    // id sessionEnd carries, so the buffered tool summary is found under it.
+    turn_id: mapped.turn_id || mapped.session_id,
+  };
+}
+
+/**
+ * Store the transcript's last turn: the prompt (same path as the user hook),
+ * then the reply plus the buffered tool summary (same path as the response
+ * hook). Every store shares the hard time limit; a store still pending at the
+ * limit goes to the offline cache. Never throws.
+ */
+export async function storeTranscriptJob(job, deps = makeDefaultDeps()) {
+  const rows = readTranscriptRows(job.transcript_path, deps.transcriptRoot || CURSOR_PROJECTS_ROOT);
+  if (!rows) {
+    safeLog(deps.logger, "CURSOR TRANSCRIPT READ ERROR: transcript missing, unreadable, or outside ~/.cursor/projects");
+    return;
+  }
+  const turn = lastTranscriptTurn(rows);
+  if (!turn.prompt) return;
+  const bounded = boundedDeps(deps);
+  await storeUserPrompt({ prompt: turn.prompt, cwd: job.cwd, session_id: job.session_id }, bounded);
+  try {
+    await captureCodexAssistant({
+      cwd: job.cwd,
+      session_id: job.session_id,
+      turn_id: job.turn_id,
+      last_assistant_message: turn.reply,
+    }, bounded);
+  } catch (err) {
+    safeLog(deps.logger, `CURSOR CAPTURE ERROR (assistant): ${errorMessage(err)}`);
+  }
+}
+
+/**
+ * Last turn of a Cursor agent transcript ({role, message: {content}} rows):
+ * the latest user query and the last assistant text after it.
+ */
+export function lastTranscriptTurn(rows) {
+  let turn = { prompt: "", reply: "" };
+  for (const row of rows) {
+    const value = contentText(row).trim();
+    if (!value) continue;
+    if (row?.role === "user") turn = { prompt: userQuery(value), reply: "" };
+    else if (row?.role === "assistant" && turn.prompt) turn.reply = value;
+  }
+  return turn;
+}
+
+function contentText(entry) {
+  const content = entry?.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n\n");
+}
+
+// Cursor's wrapper around the prompt: an optional leading <timestamp> block,
+// then the whole prompt inside one <user_query> element. Only this outer
+// wrapper is removed; tags the user typed inside the prompt are kept.
+const WRAPPED_QUERY = /^\s*(?:<timestamp>[\s\S]*?<\/timestamp>\s*)?<user_query>\r?\n?([\s\S]*?)\r?\n?<\/user_query>\s*$/;
+const LEADING_TIMESTAMP = /^\s*<timestamp>[\s\S]*?<\/timestamp>/;
+
+function userQuery(value) {
+  const wrapped = WRAPPED_QUERY.exec(value);
+  return (wrapped ? wrapped[1] : value.replace(LEADING_TIMESTAMP, "")).trim();
+}
+
+function liveMarkerPath(input, deps) {
+  const id = typeof input?.conversation_id === "string" ? input.conversation_id.replace(/[^A-Za-z0-9_.-]/g, "_") : "";
+  const dir = typeof deps?.liveSessionDir === "string" ? deps.liveSessionDir : "";
+  if (!id || id.startsWith(".") || !dir) return "";
+  return path.join(dir, id);
+}
+
+/** Record that a live prompt/response hook ran for this conversation. */
+function markLiveCapture(input, deps) {
+  const marker = liveMarkerPath(input, deps);
+  if (!marker) return;
+  try {
+    const dir = path.dirname(marker);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(marker, "", { encoding: "utf8", mode: 0o600 });
+    removeStaleMarkers(dir, (deps.now ? deps.now() : Date.now()) - LIVE_MARKER_TTL_MS);
+  } catch (err) {
+    safeLog(deps.logger, `CURSOR LIVE MARK ERROR: ${errorMessage(err)}`);
+  }
+}
+
+function removeStaleMarkers(dir, cutoff) {
+  for (const name of fs.readdirSync(dir)) {
+    const file = path.join(dir, name);
+    try {
+      if (fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file, { force: true });
+    } catch { /* raced with another hook */ }
+  }
+}
+
+/**
+ * True when a live hook ran during this session (marker newer than the
+ * session start, from sessionEnd's duration_ms). Removes the marker, so a
+ * later headless resume of the same conversation is captured again.
+ */
+function consumeLiveCapture(input, deps) {
+  const marker = liveMarkerPath(input, deps);
+  if (!marker) return false;
+  let stat;
+  try { stat = fs.statSync(marker); } catch { return false; }
+  try { fs.rmSync(marker, { force: true }); } catch { /* ignore */ }
+  const duration = Number(input?.duration_ms);
+  if (!Number.isFinite(duration) || duration < 0) return true;
+  const now = deps.now ? deps.now() : Date.now();
+  return stat.mtimeMs >= now - duration - LIVE_MARKER_SLACK_MS;
 }
 
 /**
@@ -256,5 +469,7 @@ export function makeDefaultDeps() {
     logger: makeLogger(logFile("midbrain-cursor.log")),
     assistantBufferDir: ASSISTANT_BUFFER_DIR,
     toolBufferDir: TOOL_BUFFER_DIR,
+    liveSessionDir: LIVE_SESSION_DIR,
+    transcriptRoot: CURSOR_PROJECTS_ROOT,
   };
 }

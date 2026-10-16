@@ -190,6 +190,8 @@ set +e
   tests/client-hermes.test.mjs \
   tests/client-nanoclaw.test.mjs \
   tests/client-openclaw.test.mjs \
+  tests/client-prime-agent.test.mjs \
+  tests/prime-agent-capture.test.mjs \
   tests/install.test.mjs \
   tests/credential-isolation.test.mjs
 test_status=$?

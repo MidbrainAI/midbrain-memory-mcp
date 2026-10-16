@@ -4,7 +4,7 @@
 
 `midbrain-memory-mcp` is an MCP server plus capture hooks for persistent AI
 memory. It supports OpenCode, Claude Code, OpenAI Codex, Cursor, Hermes Agent,
-OpenClaw, and NanoClaw.
+OpenClaw, Prime Agent, and NanoClaw.
 
 Public package:
 
@@ -39,6 +39,7 @@ shared/
     nanoclaw.mjs                 NanoClaw skill copy
     hermes.mjs                   Hermes YAML config (mcp_servers + shell hooks)
     openclaw.mjs                 OpenClaw JSON5 openclaw.json and plugin copy
+    prime-agent.mjs              Prime Agent settings.json and skill copy
     generic.mjs                  Fallback client
     registry.mjs                 getClient(), detectClients(), allClients()
 plugins/
@@ -48,6 +49,7 @@ plugins/
   cursor/                        Cursor hook scripts (reuse the Codex runtime)
   hermes/                        Hermes shell-hook capture scripts
   openclaw/                      OpenClaw gateway plugin (agent_end capture)
+  prime-agent/                   Prime Agent kernel skill + session-log watcher
 skills/
   nanoclaw/                      /add-midbrain skill
 dist/
@@ -452,6 +454,54 @@ OpenClaw:
 - Per-client key file: `~/.config/openclaw/.midbrain-key`. Detection keys on
   `~/.openclaw/` (or the env-selected state dir / config file).
 
+Prime Agent:
+
+- Prime Agent (`prime-agent`, Prime Intellect) has no hooks. The adapter
+  copies a Python skill (`plugins/prime-agent/skill/`) to
+  `<agent>/skills/midbrain-memory/`; the agent dir is `~/.prime/agent` or
+  `PRIME_AGENT_CODING_AGENT_DIR`. Prime Agent imports every Python skill into
+  a session's kernel at start. The import starts the stable
+  `~/.midbrain/bin/prime-agent-hook watch` shim detached (only when
+  `PRIME_AGENT_KERNEL_OWNER_PID` is set, the shim exists, and
+  `MIDBRAIN_PRIME_CAPTURE` is not `0`; it never raises). Calling the module,
+  `await midbrain_memory(query)`, runs `memory_search` through the kernel's
+  `rlm.mcp`.
+- `plugins/prime-agent/common.mjs` (`hook prime-agent watch|sync`) reads the
+  append-only session logs (`<sessions>/<id>.jsonl`; sessions dir from
+  `PRIME_AGENT_SESSION_DIR`, `PRIME_AGENT_CODING_AGENT_SESSION_DIR`, the
+  `sessionDir` setting, else `<agent>/sessions`). `watch` polls every
+  `MIDBRAIN_PRIME_POLL_MS` (2 s) while the owner pid lives, then makes a final
+  pass; `sync` makes one pass. One watcher per owner pid (owner lock).
+- Per log, a cursor (byte offset + the turn's tool calls) and a pid lock live
+  under `<cacheDir>/prime-agent/`. The cursor moves before the POST, so a turn
+  is stored at most once; a failed POST is cached by `storeEpisodic`. Only
+  complete lines are read. A log first seen is read from the start only when
+  its header timestamp is at or after `<cacheDir>/prime-agent/enabled-at`
+  (written once at install), else from its end: no history import.
+- Stored: each user message's text; each assistant message with stopReason
+  `stop`/`length` (text), then a bounded tool summary of the turn's tool calls
+  (`sk-`/bearer values redacted). Skipped: subagent sessions (`rlmDepth` > 0),
+  message entries older than the session header (the copied parent history of
+  a `--fork`), errors and aborts. Metadata: `client "prime-agent"`,
+  `session_id` from the header, `cwd` from the header (its project key is
+  used).
+- MCP config is `mcpServers["midbrain-memory"]` in `<agent>/settings.json`
+  (project: `<project>/.prime/agent/settings.json`). Prime Agent passes a
+  stdio server only HOME/PATH/TMPDIR and its `env` values are `{ "env": NAME }`
+  references, so the entry is `/bin/sh -c "MIDBRAIN_CLIENT=prime-agent
+  MIDBRAIN_PROJECT_DIR=... exec npx -y midbrain-memory-mcp@latest"`. The
+  global entry uses `"$PWD"` (the server's cwd is the session's), the project
+  entry the quoted project dir. Rebuilt entries keep the user's `enabled`,
+  `enabledTools`, `disabledTools`, timeouts and `env`; a pinned entry is kept;
+  unparseable or unexpectedly shaped JSON fails closed. Windows is skipped.
+- `isFresh()`/`repairPlugins()` re-copy a stale skill and shim on server
+  start and never touch `settings.json`; `--dev` installs stay pinned.
+- Global rules go to `<agent>/AGENTS.md` (Prime Agent loads it next to the
+  project `AGENTS.md`). Project `AGENTS.md` gets the Prime Agent adapter only
+  when no Codex/OpenCode/Cursor shares it.
+- Per-client key file: `~/.config/prime-agent/.midbrain-key`. Detection keys on
+  the agent dir.
+
 ## History Import
 
 `npx midbrain-memory-mcp@latest import` (issue #75) imports conversations from
@@ -501,7 +551,7 @@ or hand-roll log files in plugins or hooks.
   - Windows: `%LOCALAPPDATA%/midbrain/logs` or `%APPDATA%/midbrain/logs`
 - Per-client log files: `midbrain-opencode.log`, `midbrain-claude.log`,
   `midbrain-codex.log`, `midbrain-hermes.log`, `midbrain-cursor.log`,
-  `midbrain-openclaw.log`.
+  `midbrain-openclaw.log`, `midbrain-prime-agent.log`.
 - `MidbrainApi.storeEpisodic(text, role, logger, metadata)` takes a logger
   object (not a bare function). Pass the client's `log`/`logger` instance.
 
@@ -561,8 +611,8 @@ global `SOUL.md` and prefers an existing project `.hermes.md`, then `HERMES.md`,
 otherwise `AGENTS.md`. NanoClaw updates shared `container/CLAUDE.md` and every
 existing group's writable `CLAUDE.local.md`; composed `CLAUDE.md` files are
 never edited. OpenClaw uses the default agent workspace `AGENTS.md` (global
-only, and only once OpenClaw created it). `--no-rules` remains the explicit
-opt-out.
+only, and only once OpenClaw created it). Prime Agent uses
+`<agent>/AGENTS.md` globally. `--no-rules` remains the explicit opt-out.
 
 ## Installer Rules
 
@@ -605,7 +655,7 @@ opt-out.
 - `--no-rules` skips instruction-file rule writes.
 - Use `process.execPath` when writing direct Node commands into configs.
 - JSONC config writes must preserve comments where supported.
-- OpenCode configs use `mcp`; Claude and Cursor configs use `mcpServers`;
+- OpenCode configs use `mcp`; Claude, Cursor and Prime Agent configs use `mcpServers`;
   OpenClaw uses `mcp.servers` in JSON5 `openclaw.json`; Codex configs use
   TOML `[mcp_servers.<id>]` tables.
 
@@ -648,6 +698,8 @@ Vitest tests live in `tests/`.
 | `tests/cursor-hooks.test.mjs` | `plugins/cursor/*.mjs` |
 | `tests/client-openclaw.test.mjs` | `shared/clients/openclaw.mjs` |
 | `tests/openclaw-plugin.test.mjs` | `plugins/openclaw/index.js` |
+| `tests/client-prime-agent.test.mjs` | `shared/clients/prime-agent.mjs` |
+| `tests/prime-agent-capture.test.mjs` | `plugins/prime-agent/` |
 | `tests/client-registry.test.mjs` | `shared/clients/registry.mjs` |
 | `tests/install.test.mjs` | `install.mjs` |
 | `tests/mcp.test.mjs` | `mcp.mjs` / `index.js` |

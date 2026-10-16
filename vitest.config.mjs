@@ -14,6 +14,7 @@ export default defineConfig({
       HERMES_HOME: '/nonexistent/midbrain-poison/hermes',
       NANOCLAW_HOME: '/nonexistent/midbrain-poison/nanoclaw',
       OPENCLAW_STATE_DIR: '/nonexistent/midbrain-poison/openclaw',
+      PRIME_AGENT_CODING_AGENT_DIR: '/nonexistent/midbrain-poison/prime-agent',
     },
     setupFiles: ['./tests/helpers/scrub-env.mjs'],
   },
