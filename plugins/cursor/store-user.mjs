@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Detached background child for the Cursor beforeSubmitPrompt hook.
- * Usage: node store-user.mjs <job-file>
+ * Detached background child for the Cursor beforeSubmitPrompt and sessionEnd
+ * hooks. Usage: node store-user.mjs <job-file>
  *
- * Reads and deletes the private job file, stores the prompt under a hard time
- * limit (offline cache on expiry), runs the throttled self-update, exits 0.
+ * Reads and deletes the private job file, stores the prompt (or, for a
+ * sessionEnd job, the transcript's last turn) under a hard time limit (offline
+ * cache on expiry), runs the throttled self-update, exits 0.
  * stdio is ignored by the parent; this process never writes to stdout.
  */
 

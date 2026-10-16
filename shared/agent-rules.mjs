@@ -4,6 +4,7 @@ import path from 'path';
 import { createHash } from 'node:crypto';
 
 import { openclawWorkspaceDir } from './clients/openclaw.mjs';
+import { primeAgentDir } from './clients/prime-agent.mjs';
 
 const RULES_START = '<!-- midbrain-memory-rules:start -->';
 const RULES_END   = '<!-- midbrain-memory-rules:end -->';
@@ -40,6 +41,13 @@ const CLIENT_ADAPTERS = {
   \`memory_search\`. If deferred, \`tool_search\` the needed function, then
   \`tool_describe\` and \`tool_call\` it. Discovery is the only allowed
   pre-recall action.`,
+  'prime-agent': `\
+### Tool loading
+
+- Prime Agent: MidBrain tools run in the Python REPL:
+  \`await midbrain_memory(query)\` searches; other tools use
+  \`await mcp.call_tool("midbrain-memory", "<tool>", {...})\`. Discovery is the
+  only allowed pre-recall action.`,
 };
 
 CLIENT_ADAPTERS['agents-hermes'] =
@@ -339,6 +347,13 @@ async function writeGlobalRules(opts = {}) {
     if (existsSync(agentsPath)) targets.push({ path: agentsPath, client: 'openclaw' });
   }
 
+  if (clients.has('prime-agent')) {
+    targets.push({
+      path: path.join(opts.primeAgentDir || primeAgentDir(), 'AGENTS.md'),
+      client: 'prime-agent',
+    });
+  }
+
   return Promise.all(targets.map((target) => {
     if (target.error) {
       return {
@@ -364,9 +379,13 @@ async function writeProjectRules(projectDir, opts = {}) {
   // Cursor reads project AGENTS.md; it has no file-based global rules surface.
   const codeClients = clients.has('codex') || clients.has('opencode') ||
     clients.has('cursor');
-  let needsAgents = codeClients;
+  // Prime Agent reads project AGENTS.md too. Alongside another AGENTS.md
+  // client the shared block stays as is: Prime Agent's own line lives in its
+  // global AGENTS.md and skill.
+  const primeOnly = clients.has('prime-agent') && !codeClients;
+  let needsAgents = codeClients || primeOnly;
   const needsClaude = clients.has('claude') || clients.has('nanoclaw');
-  let agentsClient = 'agents';
+  let agentsClient = primeOnly ? 'prime-agent' : 'agents';
 
   if (clients.has('hermes')) {
     const hermesContext = await findHermesContext(projectDir);
