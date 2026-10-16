@@ -230,8 +230,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Upload planned sessions. Sequential, spaced, with exponential back-off on
- * rate limits. Stops at the first entry that still fails, so a re-run
- * resumes from there (see trimAgainstServer).
+ * rate limits. A failed store (a 5xx or a dropped connection is usually
+ * brief) is retried twice. Stops at the first entry that still fails, so a
+ * re-run resumes from there (see trimAgainstServer).
  *
  * @param {object} opts
  * @param {any[]} opts.sessions
@@ -247,6 +248,7 @@ export async function uploadImport({
   post,
   spacingMs = 150,
   maxRetries = 6,
+  maxFailedRetries = 2,
   onProgress = () => {},
   wait = sleep,
   importedAt = new Date().toISOString(),
@@ -264,11 +266,20 @@ export async function uploadImport({
         import_id: importId(session, entry),
         imported_at: importedAt,
       };
-      let result = "failed";
-      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      let result;
+      let limited = 0;
+      let failed = 0;
+      for (;;) {
         result = await post(session, { ...entry, text: prepared.text }, metadata);
-        if (result !== "rateLimited") break;
-        await wait(Math.min(60_000, 2_000 * 2 ** attempt));
+        if (result === "rateLimited" && limited < maxRetries) {
+          await wait(Math.min(60_000, 2_000 * 2 ** limited));
+          limited += 1;
+        } else if (result === "failed" && failed < maxFailedRetries) {
+          await wait(2_000 * 2 ** failed);
+          failed += 1;
+        } else {
+          break;
+        }
       }
       if (result !== "ok") {
         totals.stopped = result === "rateLimited" ? "rate limited" : "store failed";

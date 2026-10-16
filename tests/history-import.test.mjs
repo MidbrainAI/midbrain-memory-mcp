@@ -332,17 +332,18 @@ describe("uploadImport", () => {
     expect(posts[0].metadata).not.toHaveProperty("source");
   });
 
-  it("backs off on rate limits and stops at a failure so a re-run resumes", async () => {
+  it("backs off on rate limits, retries a failed store, and stops when it keeps failing", async () => {
     const waits = [];
-    const results = ["rateLimited", "ok", "failed"];
+    const results = ["rateLimited", "ok", "failed", "ok", "failed", "failed", "failed"];
     const totals = await uploadImport({
       sessions: [session()],
       post: async () => results.shift() ?? "ok",
       spacingMs: 0,
       wait: async (ms) => { waits.push(ms); },
     });
-    expect(waits).toEqual([2000]);
-    expect(totals).toMatchObject({ sent: 1, sessions: 0, stopped: "store failed" });
+    // entry 1: rate limited once; entry 2: one failure, then stored; entry 3: fails 3 times.
+    expect(waits).toEqual([2000, 2000, 2000, 4000]);
+    expect(totals).toMatchObject({ sent: 2, sessions: 0, stopped: "store failed" });
   });
 });
 
