@@ -289,6 +289,66 @@ See [Configuration Reference](#configuration-reference) below for the
 full config format. Create the key file, add a project-level MCP config
 with `MIDBRAIN_PROJECT_DIR`, and restart.
 
+### Import Earlier Conversations
+
+Live capture starts when MidBrain is installed. To bring in conversations from
+before that, import them from the clients' local history (opt-in, preview
+first):
+
+```sh
+npx midbrain-memory-mcp@latest import                       # preview only
+npx midbrain-memory-mcp@latest import --since 2026-09-01 --apply
+```
+
+Supported sources (`--client` takes the id):
+
+| Client | `--client` | Reads |
+|---|---|---|
+| Claude Code | `claude` | `~/.claude/projects/*/*.jsonl` (or `CLAUDE_CONFIG_DIR`) |
+| Codex | `codex` | `~/.codex/sessions` and `archived_sessions` (or `CODEX_HOME`) |
+| Prime Agent | `prime-agent` | `~/.prime/agent/sessions/*.jsonl` (or `PRIME_AGENT_SESSION_DIR`, the `sessionDir` setting); subagent sessions and a fork's copied parent history are skipped |
+| OpenClaw | `openclaw` | `~/.openclaw/agents/*/agent/openclaw-agent.sqlite` (or `OPENCLAW_STATE_DIR`, `OPENCLAW_PROFILE`), read-only; cron, hook, plugin and spawned sessions, and heartbeat turns, are skipped. A session on the claude-cli backend is imported once, as the OpenClaw session. Needs Node 22.15+ (`node:sqlite` and zstd) |
+| OpenCode | `opencode` | `~/.local/share/opencode/opencode.db` (or `XDG_DATA_HOME`), read-only; subagent sessions are skipped, and `opencode run` sessions count as automated (OpenCode marks the whole session, so a run session continued in the TUI counts too). Archived sessions are read. Needs Node 22.13+ |
+| Hermes Agent | `hermes` | `~/.hermes/state.db` and each `profiles/*/state.db` (or `HERMES_HOME`), read-only; the stored prompt text only, never the context added for the model. Delegated (subagent) and hidden sessions, and the parent's tail a session continued after compression starts with, are skipped; cron, `hermes -z` one-shot, API-server and webhook sessions count as automated. Needs Node 22.13+ |
+| Cursor | `cursor` | The desktop app's `globalStorage/state.vscdb` (macOS `~/Library/Application Support/Cursor/User`, Linux `~/.config/Cursor/User`, Windows `%APPDATA%\Cursor\User`), read-only, plus `~/.cursor/projects/*/agent-transcripts` for CLI runs the app does not have. Subagent and never-sent conversations are skipped; background-agent runs and CLI runs from a temp directory count as automated. Transcripts have no per-message times: an entry uses Cursor's `<timestamp>` line when present, else it counts forward from when the chat started. If the desktop store exists but cannot be read, nothing is imported from transcripts either. Needs Node 22.13+ for the desktop store |
+
+- **Preview by default.** The preview counts sessions, prompts and replies per
+  client with their date range, says why sessions are skipped, and which key
+  each would use. It reads local files and sends only session ids to MidBrain,
+  to find what it already has. Nothing is uploaded without `--apply` and a
+  confirmation (`--yes` skips the question; without a terminal it is
+  required).
+- **What is imported:** each prompt you typed and the reply that ended the
+  turn, as episodic memories with their original time (`occurred_at`) and
+  `memory_metadata` `client`, `cwd`, `session_id`, `origin: "import"`,
+  `import_id`, `imported_at`.
+- **What is left out:** tool calls and output, injected context, slash-command
+  echoes, notifications, subagent threads, sessions a program started (Agent
+  SDK and `claude -p` runs, `codex exec`, `opencode run` and `hermes -z`
+  runs, cron jobs, orchestrators; add
+  `--include-automated` to import them), and
+  sessions written to in the last 10 minutes.
+- **No duplicates.** Turns MidBrain already captured live are skipped (a
+  session captured from partway through keeps only the earlier turns), and so
+  are entries an earlier import stored. An interrupted import resumes when
+  you run the same command again.
+- **Secrets.** Recognised credentials (API keys and tokens, private keys,
+  `password=...` style values) are replaced with `[redacted]` before upload.
+  Review the preview's sources if your history holds other sensitive text.
+- **Keys.** Each session is stored with the key live capture would use for its
+  directory, so per-project keys apply.
+- **Credits.** Each imported entry uses one MidBrain credit, like a live
+  capture; the preview shows how many the import needs. If the account runs
+  out of credits, the import stops at once (live capture and search need
+  credits too) and resumes when you run it again. Narrow a large import with
+  `--since`, `--until`, `--project` or `--client`.
+- **Load.** Uploads are sequential and back off on rate limits. They are sent
+  with `X-Skip-Dream: 1`, so MidBrain skips its per-memory processing for the
+  bulk load; `--dream` turns that processing on.
+
+Other filters: `--client claude,codex`, `--until <date>`, `--project <dir>`,
+`--offline` (preview without the MidBrain check), `--json`.
+
 ---
 
 ## Auto-Update
@@ -1452,6 +1512,8 @@ mcp.mjs                        MCP tool definitions (createServer factory)
 install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
   midbrain-api.mjs             MidbrainApi class: ALL API calls go here
+  redact.mjs                   Secret redaction for imported text
+  history-import/              `import` command: readers, plan/dedupe/upload, CLI
   diagnostics.mjs              Secret-free auth/capture report assembly
   logger.mjs                   makeLogger(), logFile(), logDir()
   plugin-entry.mjs             esbuild bundle entry point
