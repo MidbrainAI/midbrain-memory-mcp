@@ -583,8 +583,7 @@ the text costs its tokens once and the session prefix stays cache-stable:
 Rules: do not move identity back onto the per-turn prompt hooks. Session
 caches keep only a non-empty result (a blank or failed read is retried). The
 text is plain (no markers, nonces or signatures) and nothing strips it from
-captures; length is the API's, with only the `IDENTITY_MAX_CHARS` (50,000)
-safety ceiling in `shared/identity-context.mjs`. Adding a hook event to
+captures; length is the API's, with no client-side limit. Adding a hook event to
 `HOOK_EVENTS` makes installs without it stale, so repair adds it.
 
 ## Memory-First Agent Rules

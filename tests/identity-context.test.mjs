@@ -6,7 +6,6 @@ import { describe, expect, it, vi } from "vitest";
 import { MidbrainApi } from "../shared/midbrain-api.mjs";
 
 import {
-  IDENTITY_MAX_CHARS,
   formatIdentityContext,
   loadIdentityContext,
 } from "../shared/identity-context.mjs";
@@ -26,15 +25,11 @@ describe("formatIdentityContext", () => {
     expect(formatIdentityContext({ persona: "", profile: null })).toBe("");
   });
 
-  it("passes server-sized fields through untouched", () => {
-    const persona = "p".repeat(10_000);
-    expect(formatIdentityContext({ persona })).toContain(persona);
-  });
-
-  it("caps only a malformed, oversized response at the safety ceiling", () => {
-    const block = formatIdentityContext({ persona: "x".repeat(IDENTITY_MAX_CHARS * 2) });
-    expect(block.length).toBe(IDENTITY_MAX_CHARS);
-    expect(block.endsWith("\n[truncated]")).toBe(true);
+  it("passes fields through at any length: the API owns their size", () => {
+    const persona = "p".repeat(100_000);
+    const block = formatIdentityContext({ persona });
+    expect(block).toContain(persona);
+    expect(block).not.toContain("[truncated]");
   });
 
   it("adds no markers, nonces or signatures", () => {

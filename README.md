@@ -115,7 +115,7 @@ so they cost their tokens once and keep the client's prompt cache stable:
 | Cursor | the MidBrain MCP server's instructions, read once when the server starts |
 
 They are not MCP tools, and nothing writes either field. Their length is set
-by the API; MidBrain only cuts a malformed response above 50,000 characters. A
+by the API; MidBrain passes them through unchanged. A
 blank field or a failed read adds nothing (OpenCode and OpenClaw retry on the
 next turn). A change to the persona or profile applies from the next session.
 Captured prompts and replies are stored as written.

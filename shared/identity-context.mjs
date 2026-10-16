@@ -10,15 +10,13 @@
  * turn: the text stays stable for the session, so it costs its tokens once
  * and never disturbs the client's prompt cache.
  *
- * Persona and profile length is owned by the API. IDENTITY_MAX_CHARS is only a
- * safety ceiling for a malformed response, far above any normal value.
+ * Persona and profile length is owned by the API: the text is passed through
+ * as returned, with no client-side limit.
  */
 
-export const IDENTITY_MAX_CHARS = 50_000;
 const INTRO = "MidBrain persona and user profile for this session (read-only):";
 const PERSONA_HEADER = "## Agent persona";
 const PROFILE_HEADER = "## User profile";
-const TRUNCATION_MARKER = "\n[truncated]";
 
 function section(header, value) {
   if (typeof value !== "string" || !value.trim()) return "";
@@ -34,9 +32,7 @@ function section(header, value) {
 export function formatIdentityContext({ persona, profile } = {}) {
   const sections = [section(PERSONA_HEADER, persona), section(PROFILE_HEADER, profile)].filter(Boolean);
   if (sections.length === 0) return "";
-  const text = `${INTRO}\n\n${sections.join("\n\n")}`;
-  if (text.length <= IDENTITY_MAX_CHARS) return text;
-  return `${text.slice(0, IDENTITY_MAX_CHARS - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+  return `${INTRO}\n\n${sections.join("\n\n")}`;
 }
 
 async function readField(api, method) {
