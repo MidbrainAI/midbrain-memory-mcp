@@ -118,6 +118,24 @@ describe.skipIf(!sqlite || typeof zlib.zstdCompressSync !== "function")("readOpe
     expect((await readOpenClawSession(`${dbFile}#cli`)).linkedSessionIds).toEqual(["c3c3ef58-claude"]);
   });
 
+  it("links an unrecorded claude-cli backend session by prompt and time", async () => {
+    const db = makeDb();
+    addSession(db, "unlinked", { events: [header(), msg("2026-10-05T09:00:01.000Z", "user", "backend linked prompt")] });
+    db.close();
+    const projects = path.join(stateDir, "claude-projects");
+    const dir = path.join(projects, "-work-claw");
+    fs.mkdirSync(dir, { recursive: true });
+    const row = (sessionId, at) => JSON.stringify({
+      type: "user", sessionId, cwd: "/work/claw", timestamp: at, origin: { kind: "human" },
+      message: { role: "user", content: "[Mon 2026-10-05 11:00 GMT+2] backend linked prompt" },
+    });
+    fs.writeFileSync(path.join(dir, "near.jsonl"), `${row("claude-near", "2026-10-05T09:00:03.000Z")}\n`);
+    fs.writeFileSync(path.join(dir, "far.jsonl"), `${row("claude-far", "2026-10-05T12:00:00.000Z")}\n`);
+
+    const session = await readOpenClawSession(`${dbFile}#unlinked`, { claudeProjects: projects });
+    expect(session.linkedSessionIds).toEqual(["claude-near"]);
+  });
+
   it("drops the parent history a fork starts with", async () => {
     const db = makeDb();
     addSession(db, "fork", {
