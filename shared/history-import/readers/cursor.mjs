@@ -22,6 +22,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { userQuery } from "../../../plugins/cursor/common.mjs";
 import {
@@ -35,7 +36,7 @@ const ASSISTANT = 2;
 const NON_REPLY_CAPABILITIES = new Set([15, 30]);
 // User rows Cursor writes itself: background-task notices and injected context.
 const INJECTED_PROMPT = /^\s*<(?:system_notification|mcp_meta_tools|available_subagent_types|git_status|dynamic_tools|user_info|rules|attached_files)[\s>]/;
-const TEMP_DIRS = ["/tmp/", "/private/tmp/", "/private/var/folders/", "/var/folders/"];
+const TEMP_DIRS = ["/tmp", "/private/tmp", "/private/var/folders", "/var/folders"];
 
 /** Cursor's `User` dir for this platform. */
 export function cursorUserDir(env = process.env, platform = process.platform) {
@@ -99,20 +100,25 @@ export function listCursorTranscripts(home = cursorHome()) {
 
 /**
  * Desktop composers as `<state.vscdb>#<id>`, then transcripts of sessions
- * the desktop store does not have. Without `node:sqlite` the database is
- * listed as is (unreadable) and every transcript is read.
+ * the desktop store does not have. When the database exists but cannot be
+ * read (or this Node has no `node:sqlite`), it is listed as is, so the
+ * preview reports it unreadable, and no transcript is read: desktop chats
+ * also have transcripts, and importing them now would import them again
+ * from the database later.
  */
 export function listCursorSessions({ userDir = cursorUserDir(), home = cursorHome() } = {}) {
   const [database] = regularFiles(path.join(userDir, "globalStorage"), (name) => name === DATABASE_NAME);
   const sources = [];
   let known = new Set();
-  if (database && !loadSqlite()) sources.push(database);
-  else if (database) {
+  if (database) {
     try {
+      if (!loadSqlite()) throw new Error("no node:sqlite");
       const ids = withReadOnlyDatabase(database, composerIds);
       known = new Set(ids);
       sources.push(...ids.map((id) => databaseSource(database, id)));
-    } catch { /* unreadable: transcripts only */ }
+    } catch {
+      return [database];
+    }
   }
   for (const file of listCursorTranscripts(home)) {
     if (!known.has(path.basename(file, ".jsonl"))) sources.push(file);
@@ -136,11 +142,16 @@ function richText(value) {
   return out.join("").trim();
 }
 
+// The last <user_query> block: attached context (<attached_files>,
+// <git_diff>, ...) can come before it.
+const LAST_QUERY = /<user_query>\r?\n?([\s\S]*?)\r?\n?<\/user_query>(?![\s\S]*<user_query>)/;
+
 function prompt(text) {
-  if (!text || INJECTED_PROMPT.test(text)) return "";
-  const query = userQuery(text);
+  if (!text) return "";
+  const block = LAST_QUERY.exec(text);
+  const query = block ? block[1].trim() : (INJECTED_PROMPT.test(text) ? "" : userQuery(text));
   // Background-task notices also arrive inside the <user_query> wrapper.
-  return INJECTED_PROMPT.test(query) ? "" : query;
+  return !query || INJECTED_PROMPT.test(query) ? "" : query;
 }
 
 function toIso(value) {
@@ -151,7 +162,7 @@ function toIso(value) {
 function folderPath(uri) {
   if (typeof uri !== "string" || !uri.startsWith("file://")) return null;
   try {
-    return decodeURIComponent(new URL(uri).pathname);
+    return fileURLToPath(uri); // drive letters and UNC paths on Windows
   } catch {
     return null;
   }
@@ -225,7 +236,11 @@ function headerRow(db, id) {
 }
 
 function isTemp(cwd) {
-  return typeof cwd === "string" && [...TEMP_DIRS, `${os.tmpdir()}/`].some((dir) => `${cwd}/`.startsWith(dir));
+  if (typeof cwd !== "string" || !cwd) return false;
+  return [...TEMP_DIRS, os.tmpdir()].some((dir) => {
+    const relative = path.relative(path.resolve(dir), path.resolve(cwd));
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  });
 }
 
 /** Push the turn's entries; times stay in order and distinct. */
@@ -240,7 +255,7 @@ function readComposer(file, id, userDir) {
   withReadOnlyDatabase(file, (db) => {
     const data = parseJson(db.prepare("SELECT value FROM cursorDiskKV WHERE key = ?").get(`composerData:${id}`)?.value);
     if (!data) {
-      session.skip = "no session id";
+      session.skip = "unreadable composer data";
       return;
     }
     const header = headerRow(db, id);
@@ -272,30 +287,34 @@ function readComposer(file, id, userDir) {
       || null;
 
     let turn = null;
-    let last = toIso(data.createdAt);
-    const stamp = (value) => {
-      // Older composers lack bubble times: fall back to the last known time.
-      const at = toIso(value) ?? last;
-      if (at && (!last || at >= last)) last = at;
-      return last;
+    let last = null;
+    const created = Date.parse(toIso(data.createdAt) ?? "");
+    // Older composers lack bubble times. A bubble without one takes Cursor's
+    // <timestamp> line if it has one, else 1 ms after the last known time
+    // (the composer's creation time first). Times stay in order and
+    // distinct, so each entry has its own import id.
+    const stamp = (value, text) => {
+      const own = Date.parse(toIso(value) ?? (text ? transcriptTimestamp(text) : null) ?? "");
+      let at;
+      if (Number.isFinite(own)) at = last === null ? own : Math.max(own, last + 1);
+      else at = last === null ? created : last + 1;
+      if (!Number.isFinite(at)) return null;
+      last = at;
+      return new Date(at).toISOString();
     };
     for (const item of order) {
       const bubble = bubbles.get(item?.bubbleId);
       if (!bubble) continue;
       const text = (typeof bubble.text === "string" && bubble.text.trim()) ? bubble.text.trim() : richText(bubble.richText);
       if (bubble.type === USER) {
-        const query = prompt(text);
-        if (!query) {
-          // A notice ends the turn: what answers it is not the earlier reply.
-          if (text) {
-            pushTurn(session, turn, session.cwd ?? undefined);
-            turn = null;
-          }
-          continue;
-        }
+        // Every user bubble ends the turn: a notice or an image-only prompt
+        // is not answered by the earlier reply.
         pushTurn(session, turn, session.cwd ?? undefined);
+        turn = null;
+        const query = prompt(text);
+        if (!query) continue;
         if (!session.cwd) session.cwd = folderPath(bubble.workspaceUris?.[0]) || null;
-        turn = { prompt: query, at: stamp(bubble.createdAt ?? item.createdAt), reply: "", replyAt: null };
+        turn = { prompt: query, at: stamp(bubble.createdAt ?? item.createdAt, text), reply: "", replyAt: null };
       } else if (bubble.type === ASSISTANT && turn && text && !bubble.thinking && !isToolCall(bubble)
         && !NON_REPLY_CAPABILITIES.has(bubble.capabilityType)) {
         turn.reply = text;
@@ -334,24 +353,27 @@ export function transcriptTimestamp(text) {
   return Number.isFinite(utc) ? new Date(utc).toISOString() : null;
 }
 
-function chatCwd(home, id) {
+/** The CLI chat's meta.json (`cwd`, `createdAtMs`), if there is one. */
+function chatMeta(home, id) {
   let groups;
   try {
     groups = fs.readdirSync(path.join(home, "chats"), { withFileTypes: true });
   } catch {
-    return null;
+    return {};
   }
   for (const group of groups) {
     if (!group.isDirectory()) continue;
     const meta = parseJson(safeRead(path.join(home, "chats", group.name, id, "meta.json")));
-    if (typeof meta?.cwd === "string" && meta.cwd) return meta.cwd;
+    if (meta) return meta;
   }
-  return null;
+  return {};
 }
 
 async function readTranscript(file, home) {
   const id = path.basename(file, ".jsonl");
-  const session = { client: "cursor", file, sessionId: id, cwd: chatCwd(home, id), entries: [], skip: null, automated: false };
+  const meta = chatMeta(home, id);
+  const cwd = typeof meta.cwd === "string" && meta.cwd ? meta.cwd : null;
+  const session = { client: "cursor", file, sessionId: id, cwd, entries: [], skip: null, automated: false };
   session.automated = isTemp(session.cwd);
   const turns = [];
   let turn = null;
@@ -361,7 +383,7 @@ async function readTranscript(file, home) {
     if (row.role === "user") {
       const query = prompt(text);
       if (!query) {
-        turn = null; // injected context or a notice: what follows answers it
+        turn = null; // injected context, a notice or an image: what follows answers it
         continue;
       }
       turn = { prompt: query, at: transcriptTimestamp(text), reply: "" };
@@ -371,20 +393,25 @@ async function readTranscript(file, home) {
     }
   }
   // No per-message times. An entry with a <timestamp> uses it; one without
-  // follows the last known time by 1 ms, or, before any, sits just before the
-  // file's time. Times stay in order and distinct, and so do the import ids.
-  let mtime;
-  try {
-    mtime = fs.statSync(file).mtimeMs;
-  } catch {
-    mtime = Date.now();
+  // follows the last known time by 1 ms. Before any known time, it counts
+  // forward from when the chat started (the CLI chat's createdAtMs, else the
+  // file's creation time), which does not move as the file grows, so the
+  // import ids stay stable across runs.
+  let start = Number(meta.createdAtMs);
+  if (!Number.isFinite(start) || start <= 0) {
+    try {
+      const stat = fs.statSync(file);
+      start = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+    } catch {
+      start = Date.now();
+    }
   }
   let last = null;
   const next = (iso) => {
     const own = iso ? Date.parse(iso) : NaN;
     let at;
     if (Number.isFinite(own)) at = last === null ? own : Math.max(own, last + 1);
-    else at = last === null ? Math.floor(mtime) - 2 * turns.length : last + 1;
+    else at = last === null ? Math.floor(start) : last + 1;
     last = at;
     return new Date(at).toISOString();
   };

@@ -9,6 +9,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { loadSqlite } from "../shared/history-import/readers/common.mjs";
+import { importId } from "../shared/history-import/plan.mjs";
 import {
   listCursorSessions,
   listCursorTranscripts,
@@ -114,8 +115,37 @@ describe.skipIf(!sqlite)("Cursor desktop composers", () => {
     expect(session.cwd).toBe("/work/legacy");
     expect(session.entries.map((entry) => [entry.role, entry.occurredAt])).toEqual([
       ["user", "2026-10-01T09:00:00.000Z"],
-      ["assistant", "2026-10-01T09:00:00.000Z"],
+      ["assistant", "2026-10-01T09:00:00.001Z"],
     ]);
+  });
+
+  it("gives every entry of an untimed composer its own time and import id", async () => {
+    const db = makeGlobalDb();
+    addComposer(db, "untimed", [user("one"), reply("a1"), user("two"), reply("a2"), user("three"), reply("a3")], { _v: 10 });
+    db.close();
+
+    const session = await readCursorSession(`${dbFile}#untimed`, { userDir, home });
+    const ids = session.entries.map((entry) => importId(session, entry));
+    expect(new Set(ids).size).toBe(6);
+    expect(session.entries.map((entry) => entry.occurredAt)).toEqual(
+      [0, 1, 2, 3, 4, 5].map((ms) => new Date(Date.parse("2026-10-01T09:00:00.000Z") + ms).toISOString()),
+    );
+  });
+
+  it("ends a turn at an image-only prompt and takes the query after attached context", async () => {
+    const db = makeGlobalDb();
+    addComposer(db, "c2", [
+      user("first prompt", "2026-10-01T09:00:00.000Z"),
+      reply("first answer", "2026-10-01T09:00:01.000Z"),
+      user("", "2026-10-01T09:00:02.000Z"),
+      reply("about the image", "2026-10-01T09:00:03.000Z"),
+      user("<attached_files>\nfile.ts\n</attached_files>\n<user_query>\nexplain this file\n</user_query>", "2026-10-01T09:01:00.000Z"),
+      reply("It parses.", "2026-10-01T09:01:01.000Z"),
+    ]);
+    db.close();
+
+    const session = await readCursorSession(`${dbFile}#c2`, { userDir, home });
+    expect(session.entries.map((entry) => entry.text)).toEqual(["first prompt", "first answer", "explain this file", "It parses."]);
   });
 
   it("skips subagent and never-sent composers, and marks background-agent ones automated", async () => {
@@ -168,6 +198,20 @@ describe("Cursor agent transcripts", () => {
     ]);
   });
 
+  it("times a transcript without <timestamp> from the chat start, so ids do not move as it grows", async () => {
+    const file = writeTranscript("p", "cli-2", [row("user", "<user_query>\nfirst\n</user_query>"), row("assistant", "one")]);
+    fs.mkdirSync(path.join(home, "chats", "h", "cli-2"), { recursive: true });
+    fs.writeFileSync(path.join(home, "chats", "h", "cli-2", "meta.json"), JSON.stringify({ cwd: "/work/cli", createdAtMs: Date.parse("2026-10-10T08:00:00.000Z") }));
+    const before = await readCursorSession(file, { userDir, home });
+
+    fs.appendFileSync(file, `${JSON.stringify(row("user", "<user_query>\nsecond\n</user_query>"))}\n`);
+    fs.utimesSync(file, new Date(), new Date());
+    const after = await readCursorSession(file, { userDir, home });
+
+    expect(before.entries.map((entry) => entry.occurredAt)).toEqual(["2026-10-10T08:00:00.000Z", "2026-10-10T08:00:00.001Z"]);
+    expect(after.entries.slice(0, 2).map((entry) => importId(after, entry))).toEqual(before.entries.map((entry) => importId(before, entry)));
+  });
+
   it("marks a run from a temp directory automated", async () => {
     const file = writeTranscript("tmp", "cli-tmp", [row("user", "hi")]);
     fs.mkdirSync(path.join(home, "chats", "h", "cli-tmp"), { recursive: true });
@@ -183,6 +227,15 @@ describe("Cursor agent transcripts", () => {
     const cliOnly = writeTranscript("p", "cli-only", [row("user", "x")]);
 
     expect(listCursorSessions({ userDir, home })).toEqual([`${dbFile}#both`, cliOnly]);
+  });
+
+  it.skipIf(!sqlite)("lists an unreadable desktop store alone, so its chats are not imported from transcripts", () => {
+    fs.mkdirSync(path.join(userDir, "globalStorage"), { recursive: true });
+    const broken = path.join(userDir, "globalStorage", "state.vscdb");
+    fs.writeFileSync(broken, "not a database");
+    writeTranscript("p", "desktop-chat", [row("user", "x")]);
+
+    expect(listCursorSessions({ userDir, home })).toEqual([broken]);
   });
 
   it("parses Cursor's <timestamp> line", () => {
