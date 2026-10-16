@@ -72,6 +72,9 @@ OpenCode / Claude Code / Codex / Cursor / OpenClaw / Prime Agent session
                        (auto-capture)     /api/v1/memories/episodic
 ```
 
+[docs/clients.md](docs/clients.md) lists what each client gets (search,
+capture, persona and profile, repair) and the gaps that are still open.
+
 **Search**: The LLM calls `memory_search` via MCP. The server queries the
 API and returns scored results as formatted text.
 
@@ -1576,7 +1579,8 @@ branching inside MCP tools or hook scripts.
    global/project config writes, MCP coexistence tests when setup behavior is
    touched, and hook/plugin runtime tests for stdout safety, key resolution,
    capture, and procedural-knowledge injection.
-8. **Document it.** Update the client matrix, setup notes, troubleshooting, and
+8. **Document it.** Update the client matrix in
+   [docs/clients.md](docs/clients.md), setup notes, troubleshooting, and
    this architecture section. Do not document support until installer wiring,
    runtime capture, tests, and package contents are all present.
 
