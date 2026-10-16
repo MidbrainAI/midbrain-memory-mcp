@@ -306,6 +306,7 @@ Supported sources (`--client` takes the id):
 |---|---|---|
 | Claude Code | `claude` | `~/.claude/projects/*/*.jsonl` (or `CLAUDE_CONFIG_DIR`) |
 | Codex | `codex` | `~/.codex/sessions` and `archived_sessions` (or `CODEX_HOME`) |
+| Prime Agent | `prime-agent` | `~/.prime/agent/sessions/*.jsonl` (or `PRIME_AGENT_SESSION_DIR`, the `sessionDir` setting); subagent sessions and a fork's copied parent history are skipped |
 
 - **Preview by default.** The preview counts sessions, prompts and replies per
   client with their date range, says why sessions are skipped, and which key

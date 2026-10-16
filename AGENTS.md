@@ -707,7 +707,8 @@ Vitest tests live in `tests/`.
 | `tests/mcp.test.mjs` | `mcp.mjs` / `index.js` |
 | `tests/docs-regression.test.mjs` | docs regression scripts |
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
-| `tests/history-import.test.mjs` | `shared/history-import/*.mjs`, `shared/redact.mjs` |
+| `tests/history-import.test.mjs` | `shared/history-import/*.mjs`, `shared/history-import/readers/{claude,codex,common}.mjs`, `shared/redact.mjs` |
+| `tests/history-import-prime-agent.test.mjs` | `shared/history-import/readers/prime-agent.mjs` |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.

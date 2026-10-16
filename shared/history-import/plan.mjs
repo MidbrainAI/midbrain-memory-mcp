@@ -68,7 +68,7 @@ export function prepareText(text) {
  * Read and filter local sessions. Pure apart from reading the session files.
  *
  * @param {object} opts
- * @param {Record<string, {list: () => string[], read: (file: string) => Promise<any>}>} opts.readers
+ * @param {Record<string, {list: () => string[]|Promise<string[]>, read: (file: string) => Promise<any>}>} opts.readers
  * @param {string[]} opts.clients
  * @param {string|null} [opts.since]   ISO date; entries before it are left out.
  * @param {string|null} [opts.until]   ISO date; entries at or after it are left out.
@@ -91,7 +91,7 @@ export async function planImport({
   for (const client of clients) {
     const reader = readers[client];
     if (!reader) continue;
-    for (const file of reader.list()) {
+    for (const file of await reader.list()) {
       let session;
       try {
         session = await reader.read(file);
