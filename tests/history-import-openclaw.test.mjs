@@ -22,7 +22,7 @@ let stateDir;
 let dbFile;
 
 const SCHEMA = `
-CREATE TABLE session_nodes (session_key TEXT PRIMARY KEY, created_via TEXT, created_actor_type TEXT, parent_session_key TEXT, spawned_by TEXT);
+CREATE TABLE session_nodes (session_key TEXT PRIMARY KEY, created_via TEXT, created_actor_type TEXT, parent_session_key TEXT, spawned_by TEXT, entry_json TEXT);
 CREATE TABLE session_windows (session_id TEXT PRIMARY KEY, session_key TEXT, reason TEXT, created_at INTEGER, updated_at INTEGER,
   transcript_updated_at INTEGER, acp_owned INTEGER, plugin_owner_id TEXT, hook_external_content_source TEXT, parent_session_key TEXT, spawned_by TEXT);
 CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, created_at INTEGER);
@@ -37,8 +37,8 @@ function makeDb() {
 }
 
 function addSession(db, id, { key = `agent:main:explicit:${id}`, node = {}, window = {}, events = [] } = {}) {
-  db.prepare("INSERT INTO session_nodes (session_key, created_via, created_actor_type, spawned_by) VALUES (?, ?, ?, ?)")
-    .run(key, node.created_via ?? null, node.created_actor_type ?? null, node.spawned_by ?? null);
+  db.prepare("INSERT INTO session_nodes (session_key, created_via, created_actor_type, spawned_by, entry_json) VALUES (?, ?, ?, ?, ?)")
+    .run(key, node.created_via ?? null, node.created_actor_type ?? null, node.spawned_by ?? null, node.entry_json ?? null);
   db.prepare("INSERT INTO session_windows (session_id, session_key, reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
     .run(id, key, window.reason ?? null, 1_000, window.updated_at ?? 2_000);
   events.forEach((event, seq) => {
@@ -105,6 +105,17 @@ describe.skipIf(!sqlite || typeof zlib.zstdCompressSync !== "function")("readOpe
       "automated (cron, hook or plugin run)",
       "subagent session",
     ]);
+  });
+
+  it("links the Claude Code session a claude-cli backend ran", async () => {
+    const db = makeDb();
+    addSession(db, "cli", {
+      node: { entry_json: JSON.stringify({ cliSessionIds: { "claude-cli": "c3c3ef58-claude" } }) },
+      events: [header(), msg("2026-10-05T09:00:01.000Z", "user", "hello there")],
+    });
+    db.close();
+
+    expect((await readOpenClawSession(`${dbFile}#cli`)).linkedSessionIds).toEqual(["c3c3ef58-claude"]);
   });
 
   it("drops the parent history a fork starts with", async () => {
