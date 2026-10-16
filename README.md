@@ -300,9 +300,12 @@ npx midbrain-memory-mcp@latest import                       # preview only
 npx midbrain-memory-mcp@latest import --since 2026-09-01 --apply
 ```
 
-Supported sources: Claude Code (`~/.claude/projects/*/*.jsonl`, or
-`CLAUDE_CONFIG_DIR`) and Codex (`~/.codex/sessions` and `archived_sessions`,
-or `CODEX_HOME`).
+Supported sources (`--client` takes the id):
+
+| Client | `--client` | Reads |
+|---|---|---|
+| Claude Code | `claude` | `~/.claude/projects/*/*.jsonl` (or `CLAUDE_CONFIG_DIR`) |
+| Codex | `codex` | `~/.codex/sessions` and `archived_sessions` (or `CODEX_HOME`) |
 
 - **Preview by default.** The preview counts sessions, prompts and replies per
   client with their date range, says why sessions are skipped, and which key

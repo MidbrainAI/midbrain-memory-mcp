@@ -512,7 +512,7 @@ reader module in `readers/` (`list()` and `read(source)`), registered in
 
 - Opt-in and preview-first: no upload without `--apply` plus a confirmation
   or `--yes`. Never run it from install, repair, or the MCP server.
-- Readers (Claude Code transcripts, Codex rollouts) only read the client's
+- Readers (see the README table of sources) only read the client's
   own history dirs and skip symlinks. They emit what live capture would have
   stored: typed prompts and each turn's final reply, with the original time.
   Tool rows, injected context, harness echoes, subagents, automated (Agent
