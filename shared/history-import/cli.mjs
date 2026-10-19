@@ -144,27 +144,47 @@ async function quietly(resolve) {
   }
 }
 
-/** One MidbrainApi per (client, directory): the key live capture would use there. */
+/**
+ * One MidbrainApi per (client, directory): the key and host live capture
+ * would use there. Each entry is resolved from its own directory, so a
+ * session that moved between projects stores each turn where live capture
+ * would have.
+ */
 function apiResolver() {
   const adapters = Object.fromEntries(allClients().map((client) => [client.id, client]));
   const cache = new Map();
-  return (session) => {
-    const cacheKey = `${session.client}\0${session.cwd ?? ""}`;
+  return ({ client, cwd }) => {
+    const cacheKey = `${client}\0${cwd ?? ""}`;
     if (!cache.has(cacheKey)) {
-      const adapter = adapters[session.client];
+      const adapter = adapters[client];
       cache.set(cacheKey, adapter
-        ? quietly(() => MidbrainApi.create(adapter, session.cwd ?? undefined, { clientLabel: session.client }))
-        : Promise.reject(new Error(`no adapter for ${session.client}`)));
+        ? quietly(() => MidbrainApi.create(adapter, cwd ?? undefined, { clientLabel: client }))
+        : Promise.reject(new Error(`no adapter for ${client}`)));
     }
     return cache.get(cacheKey);
   };
 }
 
+/** The directory an entry is stored from: its own, else its session's. */
+const entryCwd = (session, entry) => entry.cwd || session.cwd || null;
+
+/** Every distinct destination (host and key) a session's entries go to. */
+async function sessionDestinations(session, apiFor) {
+  const cwds = new Set(session.entries.map((entry) => entryCwd(session, entry)));
+  if (cwds.size === 0) cwds.add(session.cwd ?? null);
+  const destinations = new Map();
+  for (const cwd of cwds) {
+    const api = await apiFor({ client: session.client, cwd });
+    destinations.set(`${api.effectiveApiBase}\0${api.keyFingerprint}`, api);
+  }
+  return [...destinations.values()];
+}
+
 function formatKeyScopes(sessions) {
   const counts = {};
   for (const session of sessions) {
-    if (session.skip || !session.keyScope) continue;
-    counts[session.keyScope] = (counts[session.keyScope] || 0) + 1;
+    if (session.skip) continue;
+    for (const scope of session.keyScopes ?? []) counts[scope] = (counts[scope] || 0) + 1;
   }
   const parts = Object.entries(counts).map(([scope, count]) => `${count} session(s) with the ${scope} key`);
   return parts.length ? `Keys: ${parts.join(", ")}.` : "";
@@ -183,7 +203,9 @@ async function withRetry(fn, wait) {
       return await fn();
     } catch (error) {
       const status = /\bAPI (\d{3})\b/.exec(error?.message ?? "")?.[1];
-      const transient = !status || status === "429" || status === "403" || status.startsWith("5");
+      // A dropped connection (fetch throws a TypeError) or a transient status;
+      // a fail-closed check (too many pages, an unexpected shape) is final.
+      const transient = status ? status === "429" || status === "403" || status.startsWith("5") : error instanceof TypeError;
       if (!transient || attempt >= 2) throw error;
       await wait(2_000 * 2 ** attempt);
     }
@@ -220,12 +242,15 @@ export async function runImportCli(argv, {
   if (!options.offline) {
     err.write("Checking which sessions MidBrain already has (sends session ids only)...\n");
     await trimAgainstServer(sessions, async (session) => {
-      const api = await apiFor(session);
-      session.keyScope = api.keyScope;
-      // Live capture may have stored the conversation under a linked id too
-      // (e.g. the Claude Code session an OpenClaw session ran on).
+      // Check every destination the session's entries go to: what each one
+      // already holds is skipped. Live capture may have stored the
+      // conversation under a linked id too (e.g. the Claude Code session an
+      // OpenClaw session ran on).
+      const destinations = await sessionDestinations(session, apiFor);
+      session.keyScopes = [...new Set(destinations.map((api) => api.keyScope).filter(Boolean))];
       const ids = [session.sessionId, ...(session.linkedSessionIds ?? [])];
-      return (await Promise.all(ids.map((id) => withRetry(() => api.listEpisodicForSession(id), wait)))).flat();
+      const lists = await Promise.all(destinations.flatMap((api) => ids.map((id) => withRetry(() => api.listEpisodicForSession(id), wait))));
+      return lists.flat();
     });
   }
   const summary = summarize(sessions);
@@ -265,8 +290,8 @@ export async function runImportCli(argv, {
     sessions: pending,
     wait,
     post: async (session, entry, metadata) => {
-      const api = await apiFor(session);
-      return api.postEpisodicResult(entry.text, entry.role, metadata, {
+      const api = await apiFor({ client: session.client, cwd: entryCwd(session, entry) });
+      return api.postImportedEpisodic(entry.text, entry.role, metadata, {
         occurredAt: entry.occurredAt,
         skipDream: !options.dream,
       });
@@ -282,6 +307,12 @@ export async function runImportCli(argv, {
   err.write(totals.redactions ? `, ${totals.redactions} secret(s) redacted` : "");
   err.write(totals.truncated ? `, ${totals.truncated} long entr${totals.truncated === 1 ? "y" : "ies"} truncated` : "");
   err.write(".\n");
+  if (totals.blocked.length) {
+    err.write(`${totals.blocked.length} entr${totals.blocked.length === 1 ? "y was" : "ies were"} blocked by MidBrain's firewall and not imported `
+      + "(it can read text such as localhost URLs, SQL or HTML as an attack):\n");
+    for (const item of totals.blocked.slice(0, 10)) err.write(`  ${item.client} ${item.sessionId} ${item.role} at ${item.occurredAt}\n`);
+    if (totals.blocked.length > 10) err.write(`  ...and ${totals.blocked.length - 10} more\n`);
+  }
   if (totals.stopped === "out of MidBrain credits") {
     err.write("Stopped early: your MidBrain account is out of credits. Live capture and search need them too.\n"
       + "Add credits or wait for the next cycle, then run the same command again to continue; entries already stored are skipped.\n"

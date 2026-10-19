@@ -522,14 +522,22 @@ reader module in `readers/` (`list()` and `read(source)`), registered in
   Do not use `memory_metadata.source` for this: search results read it as a
   semantic document path. Before uploading, `listEpisodicForSession` trims a
   session to the whole turns before its first live capture and drops entries
-  whose `import_id` is already stored; a failed check skips the session.
-- Uploads use `postEpisodicResult` with `occurredAt` and `X-Skip-Dream: 1`
-  (unless `--dream`), sequentially with back-off, stopping at the first failure
-  so a re-run resumes. They never write the offline cache.
+  whose `import_id` is already stored. It uses the v3 endpoint and fails
+  closed: an error, an unexpected response or more than 20 pages skips the
+  session.
+- Uploads use `postImportedEpisodic` (v3, `/api/v3/mm/memories/episodic`)
+  with `occurredAt` and `X-Skip-Dream: 1` (unless `--dream`), sequentially,
+  one attempt per entry. A write that fails may still have been stored and
+  the server does not enforce `import_id`, so nothing is retried: any failure
+  stops the upload and a re-run resumes after the server check. An HTML 403
+  from the edge firewall never reached the API and repeats on every run, so
+  that entry is skipped and reported instead. Live capture keeps
+  `postEpisodicResult` (v1). Uploads never write the offline cache.
 - Text is passed through `stripInjectedContext` and `shared/redact.mjs`, and
   capped at the API's 100,000 characters.
-- Each session resolves its key through the client adapter for its `cwd`, so
-  project keys apply.
+- Each entry resolves its key and host through the client adapter for its own
+  `cwd` (else the session's), as live capture would; the server check covers
+  every destination a session's entries go to.
 
 ## Logging
 

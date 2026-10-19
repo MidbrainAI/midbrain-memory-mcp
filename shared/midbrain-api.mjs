@@ -41,6 +41,8 @@ function buildEndpoints(apiBase) {
     SEARCH_LEXICAL:    `${apiV1}/memories/search/lexical`,
     SEARCH_PROCEDURAL: `${apiV1}/memories/search/procedural`,
     EPISODIC:          `${apiV1}/memories/episodic`,
+    // v1 and v2 are deprecated; new callers use v3 server-managed memory.
+    EPISODIC_V3:       `${apiBase}/api/v3/mm/memories/episodic`,
     SEMANTIC_FILES:    `${apiV1}/memories/semantic/files`,
     PROCEDURAL:        `${apiV1}/memories/procedural`,
   };
@@ -365,37 +367,23 @@ export class MidbrainApi {
    * JSON (the HTML-bodied edge rejection observed in the #53 incident), is
    * reported as `rateLimited`. Never throws.
    *
-   * History import (issue #75) also passes `occurredAt`, the turn's original
-   * time, and `skipDream`, which sends `X-Skip-Dream: 1` so the API skips the
-   * per-memory dream processing it documents as optional for bulk ingestion.
-   *
    * @param {string} text
    * @param {"user"|"assistant"} role
    * @param {Record<string,string>} [memoryMetadata]
-   * @param {{occurredAt?: string, skipDream?: boolean}} [opts]
-   * @returns {Promise<"ok"|"rateLimited"|"outOfCredits"|"failed">} `outOfCredits`
-   *   is a 402: the account has no credits left for another memory.
+   * @returns {Promise<"ok"|"rateLimited"|"failed">}
    */
-  async postEpisodicResult(text, role, memoryMetadata, { occurredAt, skipDream = false } = {}) {
+  async postEpisodicResult(text, role, memoryMetadata) {
     if (process.env.MIDBRAIN_SIMULATE_OFFLINE === "1") return "failed";
     try {
-      const headers = this.#headers({ json: true });
-      if (skipDream) headers["X-Skip-Dream"] = "1";
-      const body = { text, role, memory_metadata: memoryMetadata };
-      if (occurredAt) body.occurred_at = occurredAt;
       const response = await fetch(this.#endpoints.EPISODIC, {
         method: "POST",
-        headers,
-        body: JSON.stringify(body),
+        headers: this.#headers({ json: true }),
+        body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
       });
       if (response.ok) return "ok";
       if (response.status === 429) {
         await response.text().catch(() => undefined);
         return "rateLimited";
-      }
-      if (response.status === 402) {
-        await response.text().catch(() => undefined);
-        return "outOfCredits";
       }
       if (response.status === 403) {
         const contentType = (response.headers.get("content-type") || "").toLowerCase();
@@ -412,12 +400,57 @@ export class MidbrainApi {
   }
 
   /**
-   * Every episodic memory stored for one harness session (matched on
-   * `memory_metadata.session_id` through the API's metadata filter), oldest
-   * page last. Used by history import (issue #75) to skip turns that live
-   * capture or an earlier import already stored. Quiet: no request logging.
-   * Throws on a non-2xx response so the caller can stop instead of importing
-   * duplicates.
+   * One history-import entry (issue #75) to the v3 episodic endpoint, with
+   * its original time and `X-Skip-Dream: 1` (per-memory dream processing is
+   * optional for bulk ingestion). One attempt, never retried: a write that
+   * fails mid-flight may still have been stored. The result says whether the
+   * memory was stored, definitely not stored, or may have been stored:
+   *
+   * - `ok`: stored.
+   * - `outOfCredits` (402), `rateLimited` (429): refused; nothing stored.
+   * - `blocked`: an HTML 403 from the edge firewall. The request never reached
+   *   the API, so nothing was stored, and the same text is blocked again.
+   * - `rejected`: any other 4xx; refused, nothing stored.
+   * - `unknown`: a 5xx or a dropped connection; it may have been stored.
+   *
+   * Never throws.
+   *
+   * @param {string} text
+   * @param {"user"|"assistant"} role
+   * @param {Record<string,string>} memoryMetadata
+   * @param {{occurredAt?: string, skipDream?: boolean}} [opts]
+   * @returns {Promise<"ok"|"outOfCredits"|"rateLimited"|"blocked"|"rejected"|"unknown">}
+   */
+  async postImportedEpisodic(text, role, memoryMetadata, { occurredAt, skipDream = true } = {}) {
+    const headers = this.#headers({ json: true });
+    if (skipDream) headers["X-Skip-Dream"] = "1";
+    const body = { text, role, memory_metadata: memoryMetadata };
+    if (occurredAt) body.occurred_at = occurredAt;
+    let response;
+    try {
+      response = await fetch(this.#endpoints.EPISODIC_V3, { method: "POST", headers, body: JSON.stringify(body) });
+    } catch {
+      return "unknown";
+    }
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    await response.text().catch(() => undefined);
+    if (response.ok) return "ok";
+    if (response.status === 402) return "outOfCredits";
+    if (response.status === 429) return "rateLimited";
+    if (response.status === 403 && !contentType.includes("application/json")) return "blocked";
+    if (response.status >= 400 && response.status < 500) return "rejected";
+    return "unknown";
+  }
+
+  /**
+   * Every episodic memory stored for one harness session, matched on
+   * `memory_metadata.session_id` (the API's exact-match metadata filter), via
+   * v3. Used by history import (issue #75) to skip turns that live capture or
+   * an earlier import already stored. Quiet: no request logging.
+   *
+   * Fails closed: a non-2xx response, an unexpected response shape, or more
+   * pages than `maxPages` throws, so the caller skips the session instead of
+   * treating a partial list as complete and importing duplicates.
    *
    * @param {string} sessionId
    * @param {{maxPages?: number}} [opts]
@@ -427,7 +460,7 @@ export class MidbrainApi {
     const items = [];
     let after = null;
     for (let page = 0; page < maxPages; page += 1) {
-      const url = new URL(this.#endpoints.EPISODIC);
+      const url = new URL(this.#endpoints.EPISODIC_V3);
       url.searchParams.set("memory_metadata.session_id", sessionId);
       url.searchParams.set("limit", "1000");
       url.searchParams.set("with_total", "false");
@@ -438,11 +471,12 @@ export class MidbrainApi {
         throw new Error(`API ${response.status} listing session memories (host=${this.#apiBase})`);
       }
       const data = await response.json();
-      items.push(...(Array.isArray(data?.items) ? data.items : []));
-      after = data?.next_cursor || null;
-      if (!after) break;
+      if (!Array.isArray(data?.items)) throw new Error("unexpected response listing session memories");
+      items.push(...data.items);
+      after = data.next_cursor || null;
+      if (!after) return items;
     }
-    return items;
+    throw new Error(`more than ${maxPages} pages of memories for one session`);
   }
 
   /**

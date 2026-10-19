@@ -397,18 +397,33 @@ describe("uploadImport", () => {
     expect(totals).toMatchObject({ sent: 1, stopped: "out of MidBrain credits" });
   });
 
-  it("backs off on rate limits, retries a failed store, and stops when it keeps failing", async () => {
-    const waits = [];
-    const results = ["rateLimited", "ok", "failed", "ok", "failed", "failed", "failed"];
+  it.each([
+    ["unknown", "an upload failed and may or may not have been stored"],
+    ["rateLimited", "rate limited"],
+    ["rejected", "MidBrain rejected an entry"],
+  ])("posts each entry once and stops on %s, never retrying", async (result, reason) => {
+    const results = ["ok", result];
+    let calls = 0;
     const totals = await uploadImport({
       sessions: [session()],
-      post: async () => results.shift() ?? "ok",
+      post: async () => { calls += 1; return results.shift() ?? "ok"; },
       spacingMs: 0,
-      wait: async (ms) => { waits.push(ms); },
+      wait: async () => {},
     });
-    // entry 1: rate limited once; entry 2: one failure, then stored; entry 3: fails 3 times.
-    expect(waits).toEqual([2000, 2000, 2000, 4000]);
-    expect(totals).toMatchObject({ sent: 2, sessions: 0, stopped: "store failed" });
+    expect(calls).toBe(2);
+    expect(totals).toMatchObject({ sent: 1, sessions: 0, stopped: reason });
+  });
+
+  it("skips and reports an entry the firewall blocks, and keeps going", async () => {
+    const results = ["ok", "blocked", "ok", "ok"];
+    const totals = await uploadImport({
+      sessions: [session()],
+      post: async () => results.shift(),
+      spacingMs: 0,
+      wait: async () => {},
+    });
+    expect(totals).toMatchObject({ sent: 3, sessions: 1, stopped: null });
+    expect(totals.blocked).toEqual([{ client: "fake", sessionId: "s1", role: "assistant", occurredAt: expect.any(String) }]);
   });
 });
 
@@ -441,6 +456,19 @@ describe("prepareText and redaction", () => {
     expect(text).not.toMatch(/s3cretpass|abcdefghij1234|eyJzdWIi|dXNlcjpw/);
     for (const plain of ["max_tokens=4096", "token_count: 1234567", "tokenizer: cl100k_base_x", "https://example.com/a:b@c"]) {
       expect(redactSecrets(plain)).toEqual({ text: plain, count: 0 });
+    }
+  });
+
+  it("redacts JSON credentials with quoted keys, but not JSON lookalikes", () => {
+    const secret = `{"password":"synthetic-secret","api_key": "synthetic-key-abcdef", "user": "bob"}`;
+    expect(redactSecrets(secret)).toEqual({ text: `{"password":[redacted],"api_key": [redacted], "user": "bob"}`, count: 2 });
+    for (const harmless of [
+      `{"max_tokens": 4096, "token_count": 123456}`,
+      `{"tokenizer": "cl100k_base"}`,
+      `{"secret_santa": true}`,
+      "the password reset email",
+    ]) {
+      expect(redactSecrets(harmless)).toEqual({ text: harmless, count: 0 });
     }
   });
 
@@ -506,8 +534,10 @@ describe("import CLI", () => {
     const posts = [];
     const api = {
       keyScope: "client",
+      effectiveApiBase: "https://example.test",
+      keyFingerprint: "k1",
       listEpisodicForSession: async () => [],
-      postEpisodicResult: async (text, role) => { posts.push({ text, role }); return results.shift() ?? "ok"; },
+      postImportedEpisodic: async (text, role) => { posts.push({ text, role }); return results.shift() ?? "ok"; },
     };
     return { apiFor: async () => api, posts, api };
   }
@@ -555,6 +585,63 @@ describe("import CLI", () => {
     expect(calls).toBe(3);
     expect(waits).toEqual([2000, 4000]);
     expect(err.text).toContain("could not check MidBrain (API 429");
+  });
+
+  it("stores each turn with its own directory's key and checks every destination", async () => {
+    const file = writeClaude(claudeRows());
+    const old = new Date(Date.now() - ACTIVE_SESSION_MS * 2);
+    fs.utimesSync(file, old, old);
+    const readers = {
+      claude: {
+        list: () => [file],
+        read: async (source) => {
+          const session = await readClaudeSession(source);
+          // The second turn ran after a cd into another project.
+          for (const entry of session.entries.slice(2)) entry.cwd = "/work/other";
+          return session;
+        },
+      },
+    };
+    const apis = new Map();
+    const listed = [];
+    const apiFor = async ({ cwd }) => {
+      if (!apis.has(cwd)) {
+        const posts = [];
+        apis.set(cwd, {
+          posts,
+          keyScope: cwd === "/work/other" ? "project" : "client",
+          effectiveApiBase: "https://example.test",
+          keyFingerprint: cwd,
+          listEpisodicForSession: async (id) => { listed.push([cwd, id]); return []; },
+          postImportedEpisodic: async (text, role, metadata) => { posts.push({ role, cwd: metadata.cwd }); return "ok"; },
+        });
+      }
+      return apis.get(cwd);
+    };
+    const err = capture();
+    expect(await runImportCli(["--client", "claude", "--apply", "--yes"], { readers, err, out: capture(), apiFor, wait: async () => {} })).toBe(0);
+    expect(listed.map(([cwd]) => cwd).sort()).toEqual(["/work/other", "/work/proj"]);
+    expect(apis.get("/work/proj").posts.map((post) => post.cwd)).toEqual(["/work/proj", "/work/proj"]);
+    expect(apis.get("/work/other").posts.map((post) => post.cwd)).toEqual(["/work/other", "/work/other"]);
+    expect(err.text).toContain("1 session(s) with the client key, 1 session(s) with the project key");
+  });
+
+  it("reports entries the firewall blocked", async () => {
+    const { apiFor } = fakeApi(["ok", "blocked"]);
+    const err = capture();
+    expect(await runImportCli(["--client", "claude", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} })).toBe(0);
+    expect(err.text).toContain("Imported 3 entries");
+    expect(err.text).toContain("1 entry was blocked by MidBrain's firewall");
+  });
+
+  it("does not retry a check that failed closed", async () => {
+    const { apiFor, api } = fakeApi([]);
+    let calls = 0;
+    api.listEpisodicForSession = async () => { calls += 1; throw new Error("more than 20 pages of memories for one session"); };
+    const err = capture();
+    await runImportCli(["--client", "claude"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
+    expect(calls).toBe(1);
+    expect(err.text).toContain("could not check MidBrain (more than 20 pages");
   });
 
   it("refuses --apply with --offline", async () => {

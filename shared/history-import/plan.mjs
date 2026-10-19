@@ -235,17 +235,28 @@ export function summarize(sessions) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const STOP_REASONS = {
+  outOfCredits: "out of MidBrain credits",
+  rateLimited: "rate limited",
+  rejected: "MidBrain rejected an entry",
+  unknown: "an upload failed and may or may not have been stored",
+};
+
 /**
- * Upload planned sessions. Sequential, spaced, with exponential back-off on
- * rate limits. A failed store (a 5xx or a dropped connection is usually
- * brief) is retried twice; running out of credits (402) stops at once. Stops at the first entry that still fails, so a
- * re-run resumes from there (see trimAgainstServer).
+ * Upload planned sessions, one entry at a time, spaced. Each entry is posted
+ * once and never retried: a failed write may still have been stored, and the
+ * server does not enforce `import_id`. Any failure stops the upload; a re-run
+ * first checks what MidBrain holds (trimAgainstServer), so it resumes without
+ * storing anything twice.
+ *
+ * One exception: an entry the edge firewall blocks never reached MidBrain and
+ * would be blocked on every run, so it is skipped and counted (`blocked`)
+ * instead of stopping every run at the same entry.
  *
  * @param {object} opts
  * @param {any[]} opts.sessions
- * @param {(session: any, entry: any, metadata: Record<string,string>) => Promise<"ok"|"rateLimited"|"outOfCredits"|"failed">} opts.post
+ * @param {(session: any, entry: any, metadata: Record<string,string>) => Promise<"ok"|"outOfCredits"|"rateLimited"|"blocked"|"rejected"|"unknown">} opts.post
  * @param {number} [opts.spacingMs]
- * @param {number} [opts.maxRetries]
  * @param {(event: object) => void} [opts.onProgress]
  * @param {(ms: number) => Promise<void>} [opts.wait]
  * @param {string} [opts.importedAt]
@@ -254,13 +265,11 @@ export async function uploadImport({
   sessions,
   post,
   spacingMs = 150,
-  maxRetries = 6,
-  maxFailedRetries = 2,
   onProgress = () => {},
   wait = sleep,
   importedAt = new Date().toISOString(),
 }) {
-  const totals = { sent: 0, sessions: 0, redactions: 0, truncated: 0, stopped: null };
+  const totals = { sent: 0, sessions: 0, redactions: 0, truncated: 0, blocked: [], stopped: null };
   for (const session of sessions) {
     if (session.skip || session.entries.length === 0) continue;
     const key = sessionKey(session);
@@ -273,30 +282,18 @@ export async function uploadImport({
         import_id: importId(session, entry),
         imported_at: importedAt,
       };
-      let result;
-      let limited = 0;
-      let failed = 0;
-      for (;;) {
-        result = await post(session, { ...entry, text: prepared.text }, metadata);
-        if (result === "rateLimited" && limited < maxRetries) {
-          await wait(Math.min(60_000, 2_000 * 2 ** limited));
-          limited += 1;
-        } else if (result === "failed" && failed < maxFailedRetries) {
-          await wait(2_000 * 2 ** failed);
-          failed += 1;
-        } else {
-          break;
-        }
-      }
-      if (result !== "ok") {
-        totals.stopped = result === "rateLimited" ? "rate limited"
-          : result === "outOfCredits" ? "out of MidBrain credits" : "store failed";
+      const result = await post(session, { ...entry, text: prepared.text }, metadata);
+      if (result === "blocked") {
+        totals.blocked.push({ client: session.client, sessionId: session.sessionId, role: entry.role, occurredAt: entry.occurredAt });
+      } else if (result !== "ok") {
+        totals.stopped = STOP_REASONS[result] ?? STOP_REASONS.unknown;
         onProgress({ type: "stopped", session: key, reason: totals.stopped, totals });
         return totals;
+      } else {
+        totals.sent += 1;
+        totals.redactions += prepared.redactions;
+        if (prepared.truncated) totals.truncated += 1;
       }
-      totals.sent += 1;
-      totals.redactions += prepared.redactions;
-      if (prepared.truncated) totals.truncated += 1;
       onProgress({ type: "entry", session: key, index, total: session.entries.length, totals });
       if (spacingMs) await wait(spacingMs);
     }

@@ -35,12 +35,13 @@ const SECRET_PATTERNS = [
   { re: /\bnpm_[A-Za-z0-9]{36}\b/g },
   // Passwords in URLs: scheme://user:PASSWORD@host (database URLs, DSNs).
   { re: /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)([^\s/@]{3,})(?=@)/gi, keep: 1 },
-  // `password=...`, `api_key: ...`, `SECRET_TOKEN="..."` style assignments:
-  // keep the name, drop the value. The keyword must be a whole name part,
-  // so `max_tokens=4096` or `tokenizer: ...` are left alone, and an
-  // all-digit value (a count) is not a secret.
+  // `password=...`, `api_key: ...`, `SECRET_TOKEN="..."` and JSON
+  // `"password": "..."` assignments: keep the name, drop the value. The
+  // keyword must be a whole name part, so `max_tokens=4096` or
+  // `tokenizer: ...` are left alone, and an all-digit value (a count) is not
+  // a secret.
   {
-    re: /\b((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|secret|password|passwd|token)(?:[_-][A-Za-z0-9]+)*\s*[:=]\s*)(["']?)(?!\d+\2(?:[\s,;]|$))[^\s"']{6,}\2/gi,
+    re: /\b((?:[A-Za-z0-9]+[_-])*(?:api[_-]?key|access[_-]?key|secret|password|passwd|token)(?:[_-][A-Za-z0-9]+)*["']?\s*[:=]\s*)(["']?)(?!\d+\2(?:[\s,;}\]]|$))[^\s"']{6,}\2/gi,
     keep: 1,
   },
 ];

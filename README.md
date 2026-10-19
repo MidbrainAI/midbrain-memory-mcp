@@ -327,16 +327,20 @@ Supported sources (`--client` takes the id):
   are entries an earlier import stored. An interrupted import resumes when
   you run the same command again.
 - **Secrets.** Recognised credentials (API keys and tokens, private keys,
-  `password=...` style values) are replaced with `[redacted]` before upload.
+  `password=...` and JSON `"password": "..."` style values) are replaced with `[redacted]` before upload.
   Review the preview's sources if your history holds other sensitive text.
-- **Keys.** Each session is stored with the key live capture would use for its
-  directory, so per-project keys apply.
+- **Keys.** Each turn is stored with the key live capture would use for its
+  directory, so per-project keys apply, also when a session changed directory.
 - **Credits.** Each imported entry uses one MidBrain credit, like a live
   capture; the preview shows how many the import needs. If the account runs
   out of credits, the import stops at once (live capture and search need
   credits too) and resumes when you run it again. Narrow a large import with
   `--since`, `--until`, `--project` or `--client`.
-- **Load.** Uploads are sequential and back off on rate limits. They are sent
+- **Load.** Uploads are sequential, and each entry is sent once: if one fails
+  (a rate limit, a server error, a dropped connection), the import stops and
+  resumes when you run it again, skipping what was stored. An entry MidBrain's
+  firewall blocks (some text, such as localhost URLs, can look like an attack)
+  is skipped and listed. Entries are sent
   with `X-Skip-Dream: 1`, so MidBrain skips its per-memory processing for the
   bulk load; `--dream` turns that processing on.
 
