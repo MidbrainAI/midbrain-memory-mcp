@@ -431,7 +431,7 @@ describe("prepareText and redaction", () => {
   it("redacts common credential shapes", () => {
     const input = [
       "sk-ant-api03-abcdefghijkl",
-      "Authorization: Bearer abcdefghijklmnop",
+      "Authorization: Bearer abcdefgh12345678",
       "ghp_abcdefghijklmnopqrstuvwxyz0123",
       "AKIAABCDEFGHIJKLMNOP",
       "DB_PASSWORD=hunter2hunter2",
@@ -461,15 +461,26 @@ describe("prepareText and redaction", () => {
 
   it("redacts JSON credentials with quoted keys, but not JSON lookalikes", () => {
     const secret = `{"password":"synthetic-secret","api_key": "synthetic-key-abcdef", "user": "bob"}`;
-    expect(redactSecrets(secret)).toEqual({ text: `{"password":[redacted],"api_key": [redacted], "user": "bob"}`, count: 2 });
+    expect(redactSecrets(secret)).toEqual({ text: `{"password":"[redacted]","api_key": "[redacted]", "user": "bob"}`, count: 2 });
     for (const harmless of [
       `{"max_tokens": 4096, "token_count": 123456}`,
       `{"tokenizer": "cl100k_base"}`,
       `{"secret_santa": true}`,
       "the password reset email",
+      "const token = process.env.GITHUB_TOKEN;",
+      "apiKey = apiKeyParam.trim()",
+      "const token = makeToken()",
+      "MIDBRAIN_API_KEY=<your-key>",
+      "We use Basic authentication, then switch to Bearer authentication.",
     ]) {
       expect(redactSecrets(harmless)).toEqual({ text: harmless, count: 0 });
     }
+  });
+
+  it("redacts GitLab tokens and real Bearer credentials", () => {
+    expect(redactSecrets("glpat-abcdefghijklmnopqrstuv").text).toBe("[redacted]");
+    expect(redactSecrets("curl -H 'Authorization: Bearer eyabc123def456'").text).toBe("curl -H 'Authorization: [redacted]'");
+    expect(redactSecrets("Bearer abcdefghijklmnopqrstuvwx").text).toBe("[redacted]");
   });
 
   it("strips injected MidBrain context and caps length", () => {
