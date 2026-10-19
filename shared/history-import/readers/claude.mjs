@@ -92,10 +92,11 @@ export async function readClaudeSession(file) {
     if (row.type === "user") {
       const prompt = claudePrompt(row);
       if (!prompt) {
-        // A slash command, notification or meta row starts a turn nobody
+        // A slash command, notification or interrupt starts a turn nobody
         // typed: what answers it is not the earlier prompt's reply. A tool
-        // result stays inside the current turn.
-        if (!isToolResult(row)) closeTurn();
+        // result and a meta row (a loaded skill, Stop-hook feedback) stay
+        // inside the current turn.
+        if (!isToolResult(row) && !row.isMeta) closeTurn();
         continue;
       }
       const at = validTimestamp(row.timestamp);

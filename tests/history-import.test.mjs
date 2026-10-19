@@ -125,6 +125,24 @@ describe("readClaudeSession", () => {
     ]);
   });
 
+  it("keeps a turn open across a loaded skill or Stop-hook feedback", async () => {
+    const base = { sessionId: SID, cwd: "/work/proj" };
+    const human = { entrypoint: "cli", promptSource: "typed", origin: { kind: "human" } };
+    const rows = [
+      { ...base, ...human, type: "user", timestamp: "2026-09-01T10:00:00.000Z", message: { role: "user", content: "start" } },
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:01.000Z", message: { id: "m1", role: "assistant", content: [{ type: "text", text: "Starting." }] } },
+      { ...base, type: "user", isMeta: true, timestamp: "2026-09-01T10:00:02.000Z", message: { role: "user", content: [{ type: "text", text: "Base directory for this skill: /skills/x" }] } },
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:03.000Z", message: { id: "m2", role: "assistant", content: [{ type: "text", text: "Skill loaded." }] } },
+      { ...base, type: "user", isMeta: true, timestamp: "2026-09-01T10:00:04.000Z", message: { role: "user", content: "Stop hook feedback:\nkeep going" } },
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:05.000Z", message: { id: "m3", role: "assistant", content: [{ type: "text", text: "Done." }] } },
+    ];
+    const session = await readClaudeSession(writeClaude(rows));
+    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["user", "start"],
+      ["assistant", "Done."],
+    ]);
+  });
+
   it("marks a session no person typed in as automated", async () => {
     const session = await readClaudeSession(writeClaude(claudeRows({ promptSource: "sdk", entrypoint: "sdk-py" })));
     expect(session.automated).toBe(true);
