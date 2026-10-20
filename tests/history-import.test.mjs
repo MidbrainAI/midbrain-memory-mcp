@@ -18,7 +18,6 @@ import {
   uploadImport,
 } from "../shared/history-import/plan.mjs";
 import { parseImportArgs, runImportCli } from "../shared/history-import/cli.mjs";
-import { redactSecrets } from "../shared/redact.mjs";
 
 function fakeReaders(sessions) {
   return {
@@ -198,13 +197,13 @@ describe("uploadImport", () => {
   it("posts each entry once with its original time and import labels", async () => {
     const posts = [];
     const totals = await uploadImport({
-      sessions: [session({ entries: [{ role: "user", text: "key sk-abcdefgh12345678", occurredAt: "2026-09-01T10:00:00.000Z", cwd: "/work/proj/sub" }] })],
+      sessions: [session({ entries: [{ role: "user", text: "first prompt", occurredAt: "2026-09-01T10:00:00.000Z", cwd: "/work/proj/sub" }] })],
       post: async (_session, entry, metadata) => { posts.push({ entry, metadata }); return "ok"; },
       spacingMs: 0,
       importedAt: "2026-10-13T00:00:00.000Z",
     });
-    expect(totals).toMatchObject({ sent: 1, sessions: 1, redactions: 1, stopped: null });
-    expect(posts[0].entry).toMatchObject({ role: "user", text: "key [redacted]", occurredAt: "2026-09-01T10:00:00.000Z" });
+    expect(totals).toMatchObject({ sent: 1, sessions: 1, stopped: null });
+    expect(posts[0].entry).toMatchObject({ role: "user", text: "first prompt", occurredAt: "2026-09-01T10:00:00.000Z" });
     expect(posts[0].metadata).toEqual({
       client: "fake",
       cwd: "/work/proj/sub",
@@ -259,62 +258,7 @@ describe("uploadImport", () => {
   });
 });
 
-describe("prepareText and redaction", () => {
-  it("redacts common credential shapes", () => {
-    const input = [
-      "sk-ant-api03-abcdefghijkl",
-      "Authorization: Bearer abcdefgh12345678",
-      "ghp_abcdefghijklmnopqrstuvwxyz0123",
-      "AKIAABCDEFGHIJKLMNOP",
-      "DB_PASSWORD=hunter2hunter2",
-      "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----",
-    ].join("\n");
-    const { text, count } = redactSecrets(input);
-    expect(count).toBe(6);
-    expect(text).toContain("DB_PASSWORD=[redacted]");
-    expect(text).not.toMatch(/abcdefghijkl|hunter2|AKIAABCD|BEGIN OPENSSH/);
-  });
-
-  it("redacts URL passwords, Stripe keys, JWTs and Basic credentials, but not counts", () => {
-    const input = [
-      "postgres://app:s3cretpass@db:5432/main",
-      "sk_live_abcdefghij1234",
-      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop",
-      "Authorization: Basic dXNlcjpwYXNzd29yZA==",
-    ].join("\n");
-    const { text, count } = redactSecrets(input);
-    expect(count).toBe(4);
-    expect(text).toContain("postgres://app:[redacted]@db:5432/main");
-    expect(text).not.toMatch(/s3cretpass|abcdefghij1234|eyJzdWIi|dXNlcjpw/);
-    for (const plain of ["max_tokens=4096", "token_count: 1234567", "tokenizer: cl100k_base_x", "https://example.com/a:b@c"]) {
-      expect(redactSecrets(plain)).toEqual({ text: plain, count: 0 });
-    }
-  });
-
-  it("redacts JSON credentials with quoted keys, but not JSON lookalikes", () => {
-    const secret = `{"password":"synthetic-secret","api_key": "synthetic-key-abcdef", "user": "bob"}`;
-    expect(redactSecrets(secret)).toEqual({ text: `{"password":"[redacted]","api_key": "[redacted]", "user": "bob"}`, count: 2 });
-    for (const harmless of [
-      `{"max_tokens": 4096, "token_count": 123456}`,
-      `{"tokenizer": "cl100k_base"}`,
-      `{"secret_santa": true}`,
-      "the password reset email",
-      "const token = process.env.GITHUB_TOKEN;",
-      "apiKey = apiKeyParam.trim()",
-      "const token = makeToken()",
-      "MIDBRAIN_API_KEY=<your-key>",
-      "We use Basic authentication, then switch to Bearer authentication.",
-    ]) {
-      expect(redactSecrets(harmless)).toEqual({ text: harmless, count: 0 });
-    }
-  });
-
-  it("redacts GitLab tokens and real Bearer credentials", () => {
-    expect(redactSecrets("glpat-abcdefghijklmnopqrstuv").text).toBe("[redacted]");
-    expect(redactSecrets("curl -H 'Authorization: Bearer eyabc123def456'").text).toBe("curl -H 'Authorization: [redacted]'");
-    expect(redactSecrets("Bearer abcdefghijklmnopqrstuvwx").text).toBe("[redacted]");
-  });
-
+describe("prepareText", () => {
   it("strips injected MidBrain context and caps length", () => {
     const long = prepareText("x".repeat(MAX_TEXT_CHARS + 10));
     expect(long.truncated).toBe(true);

@@ -533,8 +533,9 @@ reader module in `readers/` (`list()` and `read(source)`), registered in
   from the edge firewall never reached the API and repeats on every run, so
   that entry is skipped and reported instead. Live capture keeps
   `postEpisodicResult` (v1). Uploads never write the offline cache.
-- Text is passed through `stripInjectedContext` and `shared/redact.mjs`, and
-  capped at the API's 100,000 characters.
+- Text is passed through `stripInjectedContext` and capped at the API's
+  100,000 characters. It is not redacted: live capture stores text as
+  provided, and both paths should follow one redaction policy.
 - Each entry resolves its key and host through the client adapter for its own
   `cwd` (else the session's), as live capture would; the server check covers
   every destination a session's entries go to.
@@ -715,7 +716,7 @@ Vitest tests live in `tests/`.
 | `tests/mcp.test.mjs` | `mcp.mjs` / `index.js` |
 | `tests/docs-regression.test.mjs` | docs regression scripts |
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
-| `tests/history-import.test.mjs` | `shared/history-import/*.mjs`, `shared/redact.mjs` |
+| `tests/history-import.test.mjs` | `shared/history-import/*.mjs` |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.

@@ -324,9 +324,8 @@ Supported sources (`--client` takes the id):
   session captured from partway through keeps only the earlier turns), and so
   are entries an earlier import stored. An interrupted import resumes when
   you run the same command again.
-- **Secrets.** Recognised credentials (API keys and tokens, private keys,
-  `password=...` and JSON `"password": "..."` style values) are replaced with `[redacted]` before upload.
-  Review the preview's sources if your history holds other sensitive text.
+- **Secrets.** Text is stored as written, as live capture stores it: review
+  what your history holds before importing it.
 - **Keys.** Each turn is stored with the key live capture would use for its
   directory, so per-project keys apply, also when a session changed directory.
 - **Credits.** Each imported entry uses one MidBrain credit, like a live
@@ -1508,7 +1507,6 @@ mcp.mjs                        MCP tool definitions (createServer factory)
 install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
   midbrain-api.mjs             MidbrainApi class: ALL API calls go here
-  redact.mjs                   Secret redaction for imported text
   history-import/              `import` command: readers, plan/dedupe/upload, CLI
   diagnostics.mjs              Secret-free auth/capture report assembly
   logger.mjs                   makeLogger(), logFile(), logDir()
