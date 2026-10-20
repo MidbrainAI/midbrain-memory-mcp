@@ -319,7 +319,9 @@ Supported sources (`--client` takes the id):
   use for its directory, and uses one MidBrain credit. When credits run out,
   the import stops and says how many entries it stored; add credits and run
   the same command to continue.
-- **Secrets.** Text is stored as written, as live capture stores it.
+- **Secrets.** Recognised credentials (API keys and tokens, private keys,
+  `password=...` and JSON `"password": "..."` style values) are replaced
+  with `[redacted]` before upload.
 - **Load.** Entries are sent one at a time, once each: any failure stops the
   import (run it again to resume). An entry MidBrain's firewall blocks is
   skipped and listed. MidBrain's per-memory processing is skipped for the bulk
@@ -1488,6 +1490,7 @@ mcp.mjs                        MCP tool definitions (createServer factory)
 install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
   midbrain-api.mjs             MidbrainApi class: ALL API calls go here
+  redact.mjs                   Secret redaction for imported text
   history-import/              `import` command: readers, plan/dedupe/upload, CLI
   diagnostics.mjs              Secret-free auth/capture report assembly
   logger.mjs                   makeLogger(), logFile(), logDir()

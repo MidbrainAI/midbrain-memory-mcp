@@ -17,6 +17,7 @@ import fs from "node:fs";
 
 import { buildCaptureMetadata } from "../capture-metadata.mjs";
 import { stripInjectedContext } from "../pk-inject.mjs";
+import { redactSecrets } from "../redact.mjs";
 
 /**
  * The session shape every history reader returns (readers/).
@@ -77,9 +78,10 @@ export function importId(session, entry) {
 
 /** Clean one entry's text the way it will be stored. */
 export function prepareText(text) {
-  const trimmed = stripInjectedContext(text).trim();
-  if (trimmed.length <= MAX_TEXT_CHARS) return { text: trimmed, truncated: false };
-  return { text: trimmed.slice(0, MAX_TEXT_CHARS - TRUNCATED.length) + TRUNCATED, truncated: true };
+  const { text: redacted, count } = redactSecrets(stripInjectedContext(text));
+  const trimmed = redacted.trim();
+  if (trimmed.length <= MAX_TEXT_CHARS) return { text: trimmed, redactions: count, truncated: false };
+  return { text: trimmed.slice(0, MAX_TEXT_CHARS - TRUNCATED.length) + TRUNCATED, redactions: count, truncated: true };
 }
 
 /**
@@ -267,7 +269,7 @@ export async function uploadImport({
   wait = sleep,
   importedAt = new Date().toISOString(),
 }) {
-  const totals = { sent: 0, sessions: 0, truncated: 0, blocked: [], stopped: null, stoppedOn: null };
+  const totals = { sent: 0, sessions: 0, redactions: 0, truncated: 0, blocked: [], stopped: null, stoppedOn: null };
   for (const session of sessions) {
     if (session.skip || session.entries.length === 0) continue;
     const key = sessionKey(session);
@@ -290,6 +292,7 @@ export async function uploadImport({
         return totals;
       } else {
         totals.sent += 1;
+        totals.redactions += prepared.redactions;
         if (prepared.truncated) totals.truncated += 1;
       }
       onProgress({ type: "entry", session: key, index, total: session.entries.length, totals });

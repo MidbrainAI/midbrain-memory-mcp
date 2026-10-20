@@ -32,6 +32,8 @@ What is imported: your prompts and the reply that ended each turn, with
 their original time, labeled origin=import. Tool calls and output, injected
 context, subagent threads, sessions a program started, sessions active in
 the last 10 minutes, and turns MidBrain already captured live are left out.
+Recognised secrets (API keys, tokens, private keys, password=... values)
+are replaced with [redacted].
 Each turn is stored with the key live capture would use for its directory.`;
 
 /** Strict, so a typo never drops a filter and widens the import. */
@@ -194,6 +196,7 @@ export async function runImportCli(argv, {
     },
   });
   err.write(`Imported ${totals.sent} entries from ${totals.sessions} session(s)`);
+  err.write(totals.redactions ? `, ${totals.redactions} secret(s) redacted` : "");
   err.write(totals.truncated ? `, ${totals.truncated} long entr${totals.truncated === 1 ? "y" : "ies"} truncated` : "");
   err.write(".\n");
   if (totals.blocked.length) {

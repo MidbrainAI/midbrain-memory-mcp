@@ -527,8 +527,8 @@ the session shape is in `plan.mjs`.
   re-run resumes after the check. An HTML 403 from the edge firewall never
   reached the API, so that entry is skipped and listed. Live capture keeps
   `postEpisodicResult` (v1).
-- Text goes through `stripInjectedContext` and is capped at the API's 100,000
-  characters. It is not redacted, like live capture.
+- Text goes through `stripInjectedContext` and `shared/redact.mjs`, and is
+  capped at the API's 100,000 characters.
 - Each entry resolves its key and host for its own `cwd` (else the session's);
   the check covers every destination a session's entries go to.
 
@@ -708,7 +708,7 @@ Vitest tests live in `tests/`.
 | `tests/mcp.test.mjs` | `mcp.mjs` / `index.js` |
 | `tests/docs-regression.test.mjs` | docs regression scripts |
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
-| `tests/history-import.test.mjs` | `shared/history-import/*.mjs` |
+| `tests/history-import.test.mjs` | `shared/history-import/*.mjs`, `shared/redact.mjs` |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.
