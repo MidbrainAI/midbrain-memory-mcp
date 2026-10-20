@@ -508,7 +508,7 @@ Prime Agent:
 before installation. Code: `shared/history-import/` (`readers/`, `plan.mjs`,
 `cli.mjs`), dispatched from `index.js`. Each client has one reader module in
 `readers/` (`list()` and `read(source)`), registered in `readers/index.mjs`;
-the session shape is in `plan.mjs`.
+shared helpers are in `readers/common.mjs`.
 
 - Opt-in and preview-first: no upload without `--apply` plus a confirmation
   or `--yes`. Never run it from install, repair, or the MCP server.
@@ -709,6 +709,7 @@ Vitest tests live in `tests/`.
 | `tests/docs-regression.test.mjs` | docs regression scripts |
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
 | `tests/history-import.test.mjs` | `shared/history-import/*.mjs` |
+| `tests/history-import-claude.test.mjs` | `shared/history-import/readers/claude.mjs` |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.

@@ -4,4 +4,8 @@
  * registers its reader here.
  */
 
-export const READERS = {};
+import { listClaudeSessionFiles, readClaudeSession } from "./claude.mjs";
+
+export const READERS = {
+  claude: { list: listClaudeSessionFiles, read: readClaudeSession },
+};
