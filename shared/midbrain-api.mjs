@@ -437,7 +437,7 @@ export class MidbrainApi {
     if (response.ok) return "ok";
     if (response.status === 402) return "outOfCredits";
     if (response.status === 429) return "rateLimited";
-    if (response.status === 403 && !contentType.includes("application/json")) return "blocked";
+    if (response.status === 403 && contentType.includes("text/html")) return "blocked";
     if (response.status >= 400 && response.status < 500) return "rejected";
     return "unknown";
   }

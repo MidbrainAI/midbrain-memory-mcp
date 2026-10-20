@@ -1268,6 +1268,9 @@ describe("MidbrainApi.postImportedEpisodic", () => {
     [429, "application/json", "rateLimited"],
     [403, "text/html", "blocked"],
     [403, "application/json", "rejected"],
+    // Only the firewall's HTML page means blocked; any other 403 stops the import.
+    [403, "text/plain", "rejected"],
+    [403, "application/problem+json", "rejected"],
     [422, "application/json", "rejected"],
     [500, "application/json", "unknown"],
     [503, "text/html", "unknown"],

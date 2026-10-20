@@ -95,18 +95,21 @@ describe("planImport", () => {
 });
 
 describe("trimAgainstServer", () => {
+  // Every entry goes to one destination that holds `existing`.
+  const oneDestination = (existing) => async (planned) => [{ entries: planned.entries, existing }];
+
   it("keeps only whole turns from before the first live capture", async () => {
-    const [trimmed] = await trimAgainstServer([session()], async () => [
+    const [trimmed] = await trimAgainstServer([session()], oneDestination([
       { occurred_at: "2026-09-02T10:00:03", memory_metadata: { client: "fake", session_id: "s1" } },
-    ]);
+    ]));
     expect(trimmed.entries.map((entry) => entry.text)).toEqual(["p1", "r1"]);
     expect(trimmed.capturedLive).toBe(2);
   });
 
   it("drops the reply when its prompt was captured live", async () => {
-    const [trimmed] = await trimAgainstServer([session()], async () => [
+    const [trimmed] = await trimAgainstServer([session()], oneDestination([
       { occurred_at: "2026-09-02T10:00:04Z", memory_metadata: {} },
-    ]);
+    ]));
     expect(trimmed.entries.map((entry) => entry.text)).toEqual(["p1", "r1"]);
   });
 
@@ -116,31 +119,31 @@ describe("trimAgainstServer", () => {
       occurred_at: "2026-10-13T00:00:00",
       memory_metadata: { origin: IMPORT_ORIGIN, import_id: importId(planned, entry) },
     }));
-    const [trimmed] = await trimAgainstServer([planned], async () => done);
+    const [trimmed] = await trimAgainstServer([planned], oneDestination(done));
     expect(trimmed.entries.map((entry) => entry.text)).toEqual(["r2"]);
     expect(trimmed.alreadyImported).toBe(3);
 
     const fresh = session();
-    const [complete] = await trimAgainstServer([fresh], async () => fresh.entries.map((entry) => ({
+    const [complete] = await trimAgainstServer([fresh], oneDestination(fresh.entries.map((entry) => ({
       occurred_at: "2026-10-13T00:00:00",
       memory_metadata: { origin: IMPORT_ORIGIN, import_id: importId(fresh, entry) },
-    })));
+    }))));
     expect(complete.skip).toBe("already imported");
   });
 
   it("leaves out a turn live capture stored a few minutes after it happened", async () => {
-    const [trimmed] = await trimAgainstServer([session()], async () => [
+    const [trimmed] = await trimAgainstServer([session()], oneDestination([
       // The second prompt, stored 4 minutes after it was typed.
       { role: "user", occurred_at: "2026-09-02T10:04:00", memory_metadata: {} },
-    ]);
+    ]));
     expect(trimmed.entries.map((entry) => entry.text)).toEqual(["p1", "r1"]);
     expect(trimmed.capturedLive).toBe(2);
   });
 
   it("keeps turns from before the capture window", async () => {
-    const [trimmed] = await trimAgainstServer([session()], async () => [
+    const [trimmed] = await trimAgainstServer([session()], oneDestination([
       { role: "user", occurred_at: "2026-09-02T14:00:00", memory_metadata: {} },
-    ]);
+    ]));
     expect(trimmed.entries).toHaveLength(4);
   });
 
@@ -150,8 +153,24 @@ describe("trimAgainstServer", () => {
   });
 
   it("skips a session live capture fully covered", async () => {
-    const [trimmed] = await trimAgainstServer([session()], async () => [{ occurred_at: "2026-08-01T00:00:00", memory_metadata: {} }]);
+    const [trimmed] = await trimAgainstServer([session()], oneDestination([{ occurred_at: "2026-08-01T00:00:00", memory_metadata: {} }]));
     expect(trimmed.skip).toBe("already captured live");
+  });
+
+  it("checks each entry only against its own destination", async () => {
+    const [trimmed] = await trimAgainstServer([session()], async (planned) => [
+      // Live capture in the first project, after its turn.
+      { entries: planned.entries.slice(0, 2), existing: [{ occurred_at: "2026-09-01T10:00:06", memory_metadata: {} }] },
+      // Nothing captured in the second project.
+      { entries: planned.entries.slice(2), existing: [] },
+    ]);
+    expect(trimmed.entries.map((entry) => entry.text)).toEqual(["p2", "r2"]);
+    expect(trimmed.capturedLive).toBe(2);
+  });
+
+  it("skips a session with an entry no destination was checked for", async () => {
+    const [trimmed] = await trimAgainstServer([session()], async (planned) => [{ entries: planned.entries.slice(1), existing: [] }]);
+    expect(trimmed.skip).toBe("could not check MidBrain (an entry has no destination)");
   });
 });
 
@@ -247,6 +266,8 @@ describe("import CLI", () => {
       clients: ["fake"], since: "2026-09-01T00:00:00.000Z", apply: true, yes: false, dream: false,
     });
     expect(parseImportArgs([], readers).clients).toEqual(["fake"]);
+    // A repeated name would plan its sessions twice and upload them twice.
+    expect(parseImportArgs(["--client", "fake, fake,fake"], readers).clients).toEqual(["fake"]);
     expect(() => parseImportArgs(["--client", "nope"], readers)).toThrow(/unsupported client/);
     expect(() => parseImportArgs(["--since", "yesterday"], readers)).toThrow(/--since/);
   });
@@ -343,6 +364,29 @@ describe("import CLI", () => {
     expect(listed.map(([cwd]) => cwd).sort()).toEqual(["/work/other", "/work/proj"]);
     expect(apis.get("/work/proj").posts.map((post) => post.cwd)).toEqual(["/work/proj", "/work/proj"]);
     expect(apis.get("/work/other").posts.map((post) => post.cwd)).toEqual(["/work/other", "/work/other"]);
+  });
+
+  it("uploads each session once when a client is named twice", async () => {
+    const { apiFor, posts } = fakeApi([]);
+    const err = capture();
+    expect(await runImportCli(["--client", "fake,fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(0);
+    expect(posts).toHaveLength(4);
+  });
+
+  it("imports a project's turns even when another project of the session was captured live", async () => {
+    const moved = session({ lastWrittenMs: Date.now() - ACTIVE_SESSION_MS * 2 });
+    for (const entry of moved.entries.slice(2)) entry.cwd = "/work/other";
+    const posts = [];
+    const apiFor = async ({ cwd }) => ({
+      effectiveApiBase: "https://example.test",
+      keyFingerprint: cwd,
+      // Live capture ran in the first project only, after its turn.
+      listEpisodicForSession: async () => (cwd === "/work/proj" ? [{ occurred_at: "2026-09-01T10:00:06", memory_metadata: {} }] : []),
+      postImportedEpisodic: async (text) => { posts.push(text); return "ok"; },
+    });
+    const err = capture();
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: fakeReaders([moved]), err, apiFor, wait: async () => {} })).toBe(0);
+    expect(posts).toEqual(["p2", "r2"]);
   });
 
   it("reports entries the firewall blocked", async () => {

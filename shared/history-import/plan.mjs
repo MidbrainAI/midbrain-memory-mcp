@@ -97,7 +97,8 @@ export async function planImport({
 }
 
 /**
- * Trim sessions MidBrain already has.
+ * Trim sessions MidBrain already has. Each entry is checked only against what
+ * its own destination (the key and host it is stored with) holds.
  * - Entries an earlier import stored (same `import_id`) are dropped, so an
  *   interrupted or repeated import picks up where it stopped.
  * - When live capture covered part of the session (MidBrain was installed
@@ -107,43 +108,58 @@ export async function planImport({
  *   rather than risk storing it twice.
  *
  * @param {any[]} sessions planned sessions (mutated)
- * @param {(session: any) => Promise<Array<{occurred_at: string, memory_metadata?: Record<string,string>}>>} listExisting
+ * @param {(session: any) => Promise<Array<{entries: any[], existing: Array<{occurred_at: string, memory_metadata?: Record<string,string>}>}>>} listExisting
+ *   For each destination, the session's entries stored there and what it holds.
  */
 export async function trimAgainstServer(sessions, listExisting) {
   for (const session of sessions) {
-    if (session.skip) continue;
-    let existing;
+    if (session.skip || session.entries.length === 0) continue;
+    let destinations;
     try {
-      existing = await listExisting(session);
+      destinations = await listExisting(session);
     } catch (error) {
       session.skip = `could not check MidBrain (${error.message})`;
       continue;
     }
-    if (existing.length === 0) continue;
+    const checked = new Set();
+    const captured = new Set();
     const imported = new Set();
-    let firstCaptured = Infinity;
-    for (const memory of existing) {
-      if (memory.memory_metadata?.origin === IMPORT_ORIGIN) {
-        if (memory.memory_metadata.import_id) imported.add(memory.memory_metadata.import_id);
-        continue;
+    for (const { entries, existing } of destinations) {
+      const importIds = new Set();
+      let firstCaptured = Infinity;
+      for (const memory of existing) {
+        if (memory.memory_metadata?.origin === IMPORT_ORIGIN) {
+          if (memory.memory_metadata.import_id) importIds.add(memory.memory_metadata.import_id);
+          continue;
+        }
+        const time = validTime(memory.occurred_at);
+        if (time !== null) firstCaptured = Math.min(firstCaptured, time);
       }
-      const time = validTime(memory.occurred_at);
-      if (time !== null) firstCaptured = Math.min(firstCaptured, time);
+      const cutoff = firstCaptured - CAPTURE_LAG_MS;
+      for (const entry of entries) {
+        checked.add(entry);
+        if (Date.parse(entry.occurredAt) >= cutoff) captured.add(entry);
+        else if (importIds.has(importId(session, entry))) imported.add(entry);
+      }
     }
-    const before = session.entries.length;
-    const cutoff = firstCaptured - CAPTURE_LAG_MS;
-    // Keep whole turns only: a reply whose prompt was captured live goes too.
-    const kept = [];
-    for (const entry of session.entries) {
-      if (Date.parse(entry.occurredAt) >= cutoff) break;
-      kept.push(entry);
+    if (session.entries.some((entry) => !checked.has(entry))) {
+      session.skip = "could not check MidBrain (an entry has no destination)";
+      continue;
     }
-    if (kept.length && kept[kept.length - 1].role === "user" && session.entries[kept.length]?.role === "assistant") {
-      kept.pop();
-    }
-    session.alreadyImported = kept.filter((entry) => imported.has(importId(session, entry))).length;
-    session.capturedLive = before - kept.length;
-    session.entries = kept.filter((entry) => !imported.has(importId(session, entry)));
+    // Keep whole turns only: when the prompt or the reply was captured live,
+    // the other goes too.
+    session.entries.forEach((entry, index) => {
+      const reply = session.entries[index + 1];
+      if (entry.role !== "user" || reply?.role !== "assistant") return;
+      if (captured.has(entry) || captured.has(reply)) {
+        captured.add(entry).add(reply);
+        imported.delete(entry);
+        imported.delete(reply);
+      }
+    });
+    session.capturedLive = captured.size;
+    session.alreadyImported = imported.size;
+    session.entries = session.entries.filter((entry) => !captured.has(entry) && !imported.has(entry));
     if (session.entries.length === 0) {
       session.skip = session.alreadyImported ? "already imported" : "already captured live";
     }

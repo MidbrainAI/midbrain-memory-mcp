@@ -49,7 +49,8 @@ export function parseImportArgs(argv, readers = READERS) {
     },
   });
   if (values.client === "") throw new Error("--client requires a value");
-  const clients = values.client ? values.client.split(",").map((name) => name.trim()).filter(Boolean) : Object.keys(readers);
+  // Each client once: a repeated name would plan, and upload, its sessions twice.
+  const clients = values.client ? [...new Set(values.client.split(",").map((name) => name.trim()).filter(Boolean))] : Object.keys(readers);
   const unknown = clients.filter((name) => !readers[name]);
   if (unknown.length) throw new Error(`unsupported client: ${unknown.join(", ")} (supported: ${Object.keys(readers).join(", ")})`);
   let since = null;
@@ -105,14 +106,14 @@ function apiResolver() {
 /** The directory an entry is stored from: its own, else its session's. */
 const entryCwd = (session, entry) => entry.cwd || session.cwd || null;
 
-/** Every distinct destination (host and key) a session's entries go to. */
+/** Each distinct destination (host and key) and the session's entries stored there. */
 async function sessionDestinations(session, apiFor) {
-  const cwds = new Set(session.entries.map((entry) => entryCwd(session, entry)));
-  if (cwds.size === 0) cwds.add(session.cwd ?? null);
   const destinations = new Map();
-  for (const cwd of cwds) {
-    const api = await apiFor({ client: session.client, cwd });
-    destinations.set(`${api.effectiveApiBase}\0${api.keyFingerprint}`, api);
+  for (const entry of session.entries) {
+    const api = await apiFor({ client: session.client, cwd: entryCwd(session, entry) });
+    const key = `${api.effectiveApiBase}\0${api.keyFingerprint}`;
+    if (!destinations.has(key)) destinations.set(key, { api, entries: [] });
+    destinations.get(key).entries.push(entry);
   }
   return [...destinations.values()];
 }
@@ -140,12 +141,14 @@ export async function runImportCli(argv, {
   err.write("Reading local history (nothing is uploaded yet)...\n");
   const sessions = await planImport({ ...options, readers });
   err.write("Checking which sessions MidBrain already has (sends session ids only)...\n");
-  // What every destination of the session already holds is skipped. A
-  // failed check skips the session (see trimAgainstServer); a re-run retries.
+  // Each entry is checked against what its own destination holds. A failed
+  // check skips the session (see trimAgainstServer); a re-run retries.
   await trimAgainstServer(sessions, async (session) => {
     const destinations = await sessionDestinations(session, apiFor);
-    const lists = await Promise.all(destinations.map((api) => api.listEpisodicForSession(session.sessionId)));
-    return lists.flat();
+    return Promise.all(destinations.map(async ({ api, entries }) => ({
+      entries,
+      existing: await api.listEpisodicForSession(session.sessionId),
+    })));
   });
   err.write(`\n${formatPreview(summarize(sessions))}\n\n`);
 
