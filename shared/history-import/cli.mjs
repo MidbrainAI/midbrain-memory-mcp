@@ -3,11 +3,11 @@
  * history into MidBrain episodic memory (issue #75).
  *
  * Preview by default. Nothing is uploaded without `--apply` and a
- * confirmation (or `--yes`). Output goes to stderr, like the installer;
- * `--json` prints the plan to stdout instead.
+ * confirmation (or `--yes`). Output goes to stderr, like the installer.
  */
 
 import readline from "node:readline";
+import { parseArgs } from "node:util";
 
 import { allClients } from "../clients/registry.mjs";
 import { MidbrainApi } from "../midbrain-api.mjs";
@@ -22,88 +22,47 @@ unless --apply is given; asks before uploading.
 Options:
   --client <list>   Clients to read: ${Object.keys(READERS).join(", ")} (default: all)
   --since <date>    Only turns on or after this date (YYYY-MM-DD)
-  --until <date>    Only turns before this date (YYYY-MM-DD)
-  --project <dir>   Only sessions started in this directory or below it
-  --include-automated
-                    Also import sessions a program started (Agent SDK,
-                    headless and exec runs), where no prompt was typed
   --apply           Upload after showing the preview
   --yes             With --apply: do not ask for confirmation
   --dream           Let MidBrain run its per-memory processing on imported
                     turns (off by default, as for any bulk load)
-  --offline         Preview without asking MidBrain what it already has
-  --json            Print the plan as JSON on stdout
   -h, --help        Show this help
 
 What is imported: your prompts and the reply that ended each turn, with
 their original time, labeled origin=import. Tool calls and output, injected
-context, subagent threads, sessions a program started, sessions active in the last 10 minutes, and turns
-MidBrain already captured live are left out.
-Each session is stored with the key that live capture would use for its
-directory, so project keys apply.`;
+context, subagent threads, sessions a program started, sessions active in
+the last 10 minutes, and turns MidBrain already captured live are left out.
+Each turn is stored with the key live capture would use for its directory.`;
 
-const VALUE_FLAGS = new Set(["--client", "--since", "--until", "--project"]);
-const BOOLEAN_FLAGS = new Set(["--help", "-h", "--include-automated", "--apply", "--yes", "--dream", "--offline", "--json"]);
-
-/**
- * Split `--flag=value` and reject anything unknown, so a typo or an
- * unsupported form never drops a filter and widens the import.
- */
-function normalizeArgs(argv) {
-  const args = [];
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = String(argv[i]);
-    const eq = arg.startsWith("--") ? arg.indexOf("=") : -1;
-    const flag = eq > 0 ? arg.slice(0, eq) : arg;
-    if (VALUE_FLAGS.has(flag)) {
-      const value = eq > 0 ? arg.slice(eq + 1) : argv[i + 1];
-      if (!value || String(value).startsWith("--")) throw new Error(`${flag} requires a value`);
-      args.push(flag, String(value));
-      if (eq < 0) i += 1;
-    } else if (BOOLEAN_FLAGS.has(arg)) {
-      args.push(arg);
-    } else {
-      throw new Error(`unknown argument: ${arg}`);
-    }
-  }
-  return args;
-}
-
-function flagValue(argv, flag) {
-  const index = argv.indexOf(flag);
-  return index === -1 ? null : argv[index + 1];
-}
-
-function isoDate(value, flag) {
-  if (value === null) return null;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
-    throw new Error(`${flag} must be a date like 2026-09-01`);
-  }
-  return new Date(`${value}T00:00:00Z`).toISOString();
-}
-
-export function parseImportArgs(rawArgv, readers = READERS) {
-  const argv = normalizeArgs(rawArgv);
-  const clientList = flagValue(argv, "--client");
-  const clients = clientList ? clientList.split(",").map((name) => name.trim()).filter(Boolean) : Object.keys(readers);
+/** Strict, so a typo never drops a filter and widens the import. */
+export function parseImportArgs(argv, readers = READERS) {
+  const { values } = parseArgs({
+    args: argv.map(String),
+    strict: true,
+    options: {
+      client: { type: "string" },
+      since: { type: "string" },
+      apply: { type: "boolean", default: false },
+      yes: { type: "boolean", default: false },
+      dream: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false },
+    },
+  });
+  if (values.client === "") throw new Error("--client requires a value");
+  const clients = values.client ? values.client.split(",").map((name) => name.trim()).filter(Boolean) : Object.keys(readers);
   const unknown = clients.filter((name) => !readers[name]);
   if (unknown.length) throw new Error(`unsupported client: ${unknown.join(", ")} (supported: ${Object.keys(readers).join(", ")})`);
-  return {
-    help: argv.includes("--help") || argv.includes("-h"),
-    clients,
-    since: isoDate(flagValue(argv, "--since"), "--since"),
-    until: isoDate(flagValue(argv, "--until"), "--until"),
-    project: flagValue(argv, "--project"),
-    includeAutomated: argv.includes("--include-automated"),
-    apply: argv.includes("--apply"),
-    yes: argv.includes("--yes"),
-    dream: argv.includes("--dream"),
-    offline: argv.includes("--offline"),
-    json: argv.includes("--json"),
-  };
+  let since = null;
+  if (values.since !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(values.since) || Number.isNaN(Date.parse(`${values.since}T00:00:00Z`))) {
+      throw new Error("--since must be a date like 2026-09-01");
+    }
+    since = new Date(`${values.since}T00:00:00Z`).toISOString();
+  }
+  return { help: values.help, clients, since, apply: values.apply, yes: values.yes, dream: values.dream };
 }
 
-function formatPreview(summary, { offline }) {
+function formatPreview(summary) {
   const lines = [];
   for (const [client, row] of Object.entries(summary)) {
     const entries = row.user + row.assistant;
@@ -112,7 +71,6 @@ function formatPreview(summary, { offline }) {
     for (const [reason, count] of Object.entries(row.skipped)) lines.push(`  skipped ${count} session(s): ${reason}`);
   }
   if (lines.length === 0) lines.push("No history found for the selected clients.");
-  if (offline) lines.push("(--offline: turns MidBrain already has were not checked and may be counted.)");
   return lines.join("\n");
 }
 
@@ -121,26 +79,6 @@ async function confirm(question) {
   const answer = await new Promise((resolve) => rl.question(question, resolve));
   rl.close();
   return /^y(es)?$/i.test(answer.trim());
-}
-
-const NO_PROJECT_KEY_WARNING = /^WARN: no project key found in /;
-
-/**
- * Key resolution warns once per directory without a project key. Across a
- * whole history that is one line per old project, so the preview reports the
- * key scope per session instead and these lines are held back.
- */
-async function quietly(resolve) {
-  const original = console.error;
-  console.error = (...args) => {
-    if (typeof args[0] === "string" && NO_PROJECT_KEY_WARNING.test(args[0])) return;
-    original(...args);
-  };
-  try {
-    return await resolve();
-  } finally {
-    console.error = original;
-  }
 }
 
 /**
@@ -157,7 +95,7 @@ function apiResolver() {
     if (!cache.has(cacheKey)) {
       const adapter = adapters[client];
       cache.set(cacheKey, adapter
-        ? quietly(() => MidbrainApi.create(adapter, cwd ?? undefined, { clientLabel: client }))
+        ? MidbrainApi.create(adapter, cwd ?? undefined, { clientLabel: client })
         : Promise.reject(new Error(`no adapter for ${client}`)));
     }
     return cache.get(cacheKey);
@@ -179,46 +117,13 @@ async function sessionDestinations(session, apiFor) {
   return [...destinations.values()];
 }
 
-function formatKeyScopes(sessions) {
-  const counts = {};
-  for (const session of sessions) {
-    if (session.skip) continue;
-    for (const scope of session.keyScopes ?? []) counts[scope] = (counts[scope] || 0) + 1;
-  }
-  const parts = Object.entries(counts).map(([scope, count]) => `${count} session(s) with the ${scope} key`);
-  return parts.length ? `Keys: ${parts.join(", ")}.` : "";
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * One session's check, retried twice on a rate limit, a server error or a
- * dropped connection; any other error (or a third failure) is thrown, and
- * the planner skips that session rather than risk duplicates.
- */
-async function withRetry(fn, wait) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await fn();
-    } catch (error) {
-      const status = /\bAPI (\d{3})\b/.exec(error?.message ?? "")?.[1];
-      // A dropped connection (fetch throws a TypeError) or a transient status;
-      // a fail-closed check (too many pages, an unexpected shape) is final.
-      const transient = status ? status === "429" || status === "403" || status.startsWith("5") : error instanceof TypeError;
-      if (!transient || attempt >= 2) throw error;
-      await wait(2_000 * 2 ** attempt);
-    }
-  }
-}
-
 export async function runImportCli(argv, {
   readers = READERS,
-  out = process.stdout,
   err = process.stderr,
   isTTY = process.stdin.isTTY,
   apiFor = apiResolver(),
-  wait = sleep,
   confirmFn = confirm,
+  wait,
 } = {}) {
   let options;
   try {
@@ -231,35 +136,18 @@ export async function runImportCli(argv, {
     err.write(`${HELP}\n`);
     return 0;
   }
-  if (options.apply && options.offline) {
-    err.write("Error: --apply needs the MidBrain check; drop --offline.\n");
-    return 2;
-  }
 
   err.write("Reading local history (nothing is uploaded yet)...\n");
   const sessions = await planImport({ ...options, readers });
-  if (!options.offline) {
-    err.write("Checking which sessions MidBrain already has (sends session ids only)...\n");
-    await trimAgainstServer(sessions, async (session) => {
-      // Check every destination the session's entries go to: what each one
-      // already holds is skipped. Live capture may have stored the
-      // conversation under a linked id too (e.g. the Claude Code session an
-      // OpenClaw session ran on).
-      const destinations = await sessionDestinations(session, apiFor);
-      session.keyScopes = [...new Set(destinations.map((api) => api.keyScope).filter(Boolean))];
-      const ids = [session.sessionId, ...(session.linkedSessionIds ?? [])];
-      const lists = await Promise.all(destinations.flatMap((api) => ids.map((id) => withRetry(() => api.listEpisodicForSession(id), wait))));
-      return lists.flat();
-    });
-  }
-  const summary = summarize(sessions);
-
-  if (options.json) {
-    out.write(`${JSON.stringify({ summary, sessions: sessions.map(({ entries, ...rest }) => ({ ...rest, entries: entries.length })) }, null, 2)}\n`);
-  } else {
-    const keys = formatKeyScopes(sessions);
-    err.write(`\n${formatPreview(summary, options)}\n${keys ? `${keys}\n` : ""}\n`);
-  }
+  err.write("Checking which sessions MidBrain already has (sends session ids only)...\n");
+  // What every destination of the session already holds is skipped. A
+  // failed check skips the session (see trimAgainstServer); a re-run retries.
+  await trimAgainstServer(sessions, async (session) => {
+    const destinations = await sessionDestinations(session, apiFor);
+    const lists = await Promise.all(destinations.map((api) => api.listEpisodicForSession(session.sessionId)));
+    return lists.flat();
+  });
+  err.write(`\n${formatPreview(summarize(sessions))}\n\n`);
 
   const pending = sessions.filter((session) => !session.skip && session.entries.length);
   const total = pending.reduce((sum, session) => sum + session.entries.length, 0);
@@ -310,12 +198,6 @@ export async function runImportCli(argv, {
       + "(it can read text such as localhost URLs, SQL or HTML as an attack):\n");
     for (const item of totals.blocked.slice(0, 10)) err.write(`  ${item.client} ${item.sessionId} ${item.role} at ${item.occurredAt}\n`);
     if (totals.blocked.length > 10) err.write(`  ...and ${totals.blocked.length - 10} more\n`);
-  }
-  if (totals.stopped === "out of MidBrain credits") {
-    err.write("Stopped early: your MidBrain account is out of credits. Live capture and search need them too.\n"
-      + "Add credits or wait for the next cycle, then run the same command again to continue; entries already stored are skipped.\n"
-      + "To import less, narrow it with --since, --until, --project or --client.\n");
-    return 1;
   }
   if (totals.stopped) {
     err.write(`Stopped early: ${totals.stopped}. Run the same command again to continue; entries already stored are skipped.\n`);

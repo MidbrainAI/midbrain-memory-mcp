@@ -305,44 +305,23 @@ Supported sources (`--client` takes the id):
 | Client | `--client` | Reads |
 |---|---|---|
 
-- **Preview by default.** The preview counts sessions, prompts and replies per
-  client with their date range, says why sessions are skipped, and which key
-  each would use. It reads local files and sends only session ids to MidBrain,
-  to find what it already has. Nothing is uploaded without `--apply` and a
-  confirmation (`--yes` skips the question; without a terminal it is
-  required).
 - **What is imported:** each prompt you typed and the reply that ended the
-  turn, as episodic memories with their original time (`occurred_at`) and
-  `memory_metadata` `client`, `cwd`, `session_id`, `origin: "import"`,
-  `import_id`, `imported_at`.
-- **What is left out:** tool calls and output, injected context, slash-command
-  echoes, notifications, subagent threads, sessions a program started (Agent
-  SDK and `claude -p` runs, `codex exec` runs, orchestrators; add
-  `--include-automated` to import them), and
-  sessions written to in the last 10 minutes.
-- **No duplicates.** Turns MidBrain already captured live are skipped (a
-  session captured from partway through keeps only the earlier turns), and so
-  are entries an earlier import stored. An interrupted import resumes when
+  turn, with its original time, labeled `origin: "import"`. Tool calls and
+  output, injected context, subagent threads, sessions a program started, and
+  sessions written in the last 10 minutes are left out.
+- **Preview first.** The preview reads local files and sends MidBrain only
+  session ids, to find what it already has. Nothing is uploaded without
+  `--apply` and a confirmation (`--yes` skips it).
+- **No duplicates.** Turns MidBrain already captured live, and entries an
+  earlier import stored, are skipped, so an interrupted import resumes when
   you run the same command again.
-- **Secrets.** Text is stored as written, as live capture stores it: review
-  what your history holds before importing it.
-- **Keys.** Each turn is stored with the key live capture would use for its
-  directory, so per-project keys apply, also when a session changed directory.
-- **Credits.** Each imported entry uses one MidBrain credit, like a live
-  capture; the preview shows how many the import needs. If the account runs
-  out of credits, the import stops at once (live capture and search need
-  credits too) and resumes when you run it again. Narrow a large import with
-  `--since`, `--until`, `--project` or `--client`.
-- **Load.** Uploads are sequential, and each entry is sent once: if one fails
-  (a rate limit, a server error, a dropped connection), the import stops and
-  resumes when you run it again, skipping what was stored. An entry MidBrain's
-  firewall blocks (some text, such as localhost URLs, can look like an attack)
-  is skipped and listed. Entries are sent
-  with `X-Skip-Dream: 1`, so MidBrain skips its per-memory processing for the
-  bulk load; `--dream` turns that processing on.
-
-Other filters: `--client claude,codex`, `--until <date>`, `--project <dir>`,
-`--offline` (preview without the MidBrain check), `--json`.
+- **Keys and credits.** Each turn is stored with the key live capture would
+  use for its directory, and uses one MidBrain credit.
+- **Secrets.** Text is stored as written, as live capture stores it.
+- **Load.** Entries are sent one at a time, once each: any failure stops the
+  import (run it again to resume). An entry MidBrain's firewall blocks is
+  skipped and listed. MidBrain's per-memory processing is skipped for the bulk
+  load (`X-Skip-Dream: 1`); `--dream` turns it on.
 
 ---
 

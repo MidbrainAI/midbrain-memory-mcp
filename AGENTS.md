@@ -505,40 +505,32 @@ Prime Agent:
 ## History Import
 
 `npx midbrain-memory-mcp@latest import` (issue #75) imports conversations from
-before installation. Code: `shared/history-import/` (`readers/`,
-`plan.mjs`, `cli.mjs`), dispatched from `index.js`. Each client has one
-reader module in `readers/` (`list()` and `read(source)`), registered in
-`readers/index.mjs`; shared helpers are in `readers/common.mjs`.
+before installation. Code: `shared/history-import/` (`readers/`, `plan.mjs`,
+`cli.mjs`), dispatched from `index.js`. Each client has one reader module in
+`readers/` (`list()` and `read(source)`), registered in `readers/index.mjs`;
+shared helpers are in `readers/common.mjs`.
 
 - Opt-in and preview-first: no upload without `--apply` plus a confirmation
   or `--yes`. Never run it from install, repair, or the MCP server.
-- Readers (see the README table of sources) only read the client's
-  own history dirs and skip symlinks. They emit what live capture would have
-  stored: typed prompts and each turn's final reply, with the original time.
-  Tool rows, injected context, harness echoes, subagents, automated (Agent
-  SDK) sessions, and sessions written in the last 10 minutes are skipped.
+- Readers only read the client's own history dirs and skip symlinks. They emit
+  what live capture would have stored: typed prompts and each turn's final
+  reply, with the original time. Automated sessions and sessions written in the
+  last 10 minutes are skipped.
 - MidBrain is the record of what was imported: `memory_metadata.origin =
-  "import"` and a stable `import_id` (client, session, role, original time).
-  Do not use `memory_metadata.source` for this: search results read it as a
-  semantic document path. Before uploading, `listEpisodicForSession` trims a
-  session to the whole turns before its first live capture and drops entries
-  whose `import_id` is already stored. It uses the v3 endpoint and fails
-  closed: an error, an unexpected response or more than 20 pages skips the
-  session.
-- Uploads use `postImportedEpisodic` (v3, `/api/v3/mm/memories/episodic`)
-  with `occurredAt` and `X-Skip-Dream: 1` (unless `--dream`), sequentially,
-  one attempt per entry. A write that fails may still have been stored and
-  the server does not enforce `import_id`, so nothing is retried: any failure
-  stops the upload and a re-run resumes after the server check. An HTML 403
-  from the edge firewall never reached the API and repeats on every run, so
-  that entry is skipped and reported instead. Live capture keeps
-  `postEpisodicResult` (v1). Uploads never write the offline cache.
-- Text is passed through `stripInjectedContext` and capped at the API's
-  100,000 characters. It is not redacted: live capture stores text as
-  provided, and both paths should follow one redaction policy.
-- Each entry resolves its key and host through the client adapter for its own
-  `cwd` (else the session's), as live capture would; the server check covers
-  every destination a session's entries go to.
+  "import"` and a stable `import_id`. Not `source`: search reads it as a
+  semantic document path. `listEpisodicForSession` (v3) lists each session;
+  it fails closed (an error, an unexpected response or more than 20 pages
+  skips the session). Entries an earlier import stored are dropped, and a
+  session is cut `CAPTURE_LAG_MS` before its first live capture.
+- `postImportedEpisodic` (v3) posts each entry once, never retried: a failed
+  write may still have been stored, so any failure stops the upload and a
+  re-run resumes after the check. An HTML 403 from the edge firewall never
+  reached the API, so that entry is skipped and listed. Live capture keeps
+  `postEpisodicResult` (v1).
+- Text goes through `stripInjectedContext` and is capped at the API's 100,000
+  characters. It is not redacted, like live capture.
+- Each entry resolves its key and host for its own `cwd` (else the session's);
+  the check covers every destination a session's entries go to.
 
 ## Logging
 

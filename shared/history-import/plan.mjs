@@ -14,7 +14,6 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 
 import { buildCaptureMetadata } from "../capture-metadata.mjs";
 import { stripInjectedContext } from "../pk-inject.mjs";
@@ -44,12 +43,6 @@ export function importId(session, entry) {
     .slice(0, 24);
 }
 
-function underDir(cwd, dir) {
-  if (!cwd || !dir) return false;
-  const relative = path.relative(path.resolve(dir), path.resolve(cwd));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
 /** Clean one entry's text the way it will be stored. */
 export function prepareText(text) {
   const trimmed = stripInjectedContext(text).trim();
@@ -63,10 +56,7 @@ export function prepareText(text) {
  * @param {object} opts
  * @param {Record<string, {list: () => string[], read: (file: string) => Promise<any>}>} opts.readers
  * @param {string[]} opts.clients
- * @param {string|null} [opts.since]   ISO date; entries before it are left out.
- * @param {string|null} [opts.until]   ISO date; entries at or after it are left out.
- * @param {string|null} [opts.project] Only sessions whose cwd is inside this dir.
- * @param {boolean} [opts.includeAutomated] Also import sessions no person typed in.
+ * @param {string|null} [opts.since] ISO date; entries before it are left out.
  * @param {number} [opts.now]
  * @param {(file: string) => number} [opts.mtimeMs]
  */
@@ -74,9 +64,6 @@ export async function planImport({
   readers,
   clients,
   since = null,
-  until = null,
-  project = null,
-  includeAutomated = false,
   now = Date.now(),
   mtimeMs = (file) => fs.statSync(file).mtimeMs,
 }) {
@@ -98,12 +85,9 @@ export async function planImport({
           if (now - lastWritten < ACTIVE_SESSION_MS) session.skip = "active (written in the last 10 minutes)";
         } catch { /* deleted while reading: keep what was read */ }
       }
-      if (!session.skip && session.automated && !includeAutomated) session.skip = "automated (started by a program, not typed)";
-      if (!session.skip && project && !underDir(session.cwd, project)) session.skip = "outside --project";
+      if (!session.skip && session.automated) session.skip = "automated (started by a program, not typed)";
       if (!session.skip) {
-        session.entries = session.entries.filter((entry) => (
-          (!since || entry.occurredAt >= since) && (!until || entry.occurredAt < until)
-        ));
+        session.entries = session.entries.filter((entry) => !since || entry.occurredAt >= since);
         if (session.entries.length === 0) session.skip = "no turns in range";
       }
       sessions.push(session);
@@ -118,10 +102,9 @@ export async function planImport({
  *   interrupted or repeated import picks up where it stopped.
  * - When live capture covered part of the session (MidBrain was installed
  *   during it), only the turns from before the first live capture are kept.
- *   Live capture stores a turn a few seconds after it happened, and some
- *   clients add an envelope to the stored text, so the cut is also made at
- *   the first entry, within CAPTURE_LAG_MS before that capture, whose text a
- *   live capture of the same role holds.
+ *   Live capture stores a turn up to CAPTURE_LAG_MS after it happened, so
+ *   the cut is made that much earlier: a turn in that window is left out
+ *   rather than risk storing it twice.
  *
  * @param {any[]} sessions planned sessions (mutated)
  * @param {(session: any) => Promise<Array<{occurred_at: string, memory_metadata?: Record<string,string>}>>} listExisting
@@ -138,7 +121,6 @@ export async function trimAgainstServer(sessions, listExisting) {
     }
     if (existing.length === 0) continue;
     const imported = new Set();
-    const live = [];
     let firstCaptured = Infinity;
     for (const memory of existing) {
       if (memory.memory_metadata?.origin === IMPORT_ORIGIN) {
@@ -147,19 +129,13 @@ export async function trimAgainstServer(sessions, listExisting) {
       }
       const time = validTime(memory.occurred_at);
       if (time !== null) firstCaptured = Math.min(firstCaptured, time);
-      const text = comparable(memory.text ?? memory.content);
-      if (text) live.push({ role: memory.role, text });
     }
     const before = session.entries.length;
+    const cutoff = firstCaptured - CAPTURE_LAG_MS;
     // Keep whole turns only: a reply whose prompt was captured live goes too.
     const kept = [];
     for (const entry of session.entries) {
-      const at = Date.parse(entry.occurredAt);
-      if (at >= firstCaptured) break;
-      // Only the capture lag before the first live capture can hold the
-      // captured turn itself; an earlier repeat of the same text is a
-      // different turn.
-      if (at >= firstCaptured - CAPTURE_LAG_MS && capturedText(live, entry)) break;
+      if (Date.parse(entry.occurredAt) >= cutoff) break;
       kept.push(entry);
     }
     if (kept.length && kept[kept.length - 1].role === "user" && session.entries[kept.length]?.role === "assistant") {
@@ -175,27 +151,8 @@ export async function trimAgainstServer(sessions, listExisting) {
   return sessions;
 }
 
-const MIN_MATCH_CHARS = 12;
 // How long after a turn live capture can store it (hooks, watchers, agent_end).
 export const CAPTURE_LAG_MS = 5 * 60_000;
-
-function comparable(text) {
-  return typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
-}
-
-/**
- * A live capture of the same role holds this entry's text (or the reverse).
- * Short texts ("yes", "go on") repeat too often to identify a turn.
- */
-function capturedText(live, entry) {
-  const text = comparable(entry.text);
-  if (text.length < MIN_MATCH_CHARS) return false;
-  return live.some((memory) => {
-    if (memory.role && memory.role !== entry.role) return false;
-    const [shorter, longer] = memory.text.length < text.length ? [memory.text, text] : [text, memory.text];
-    return shorter.length >= MIN_MATCH_CHARS && longer.includes(shorter);
-  });
-}
 
 function validTime(value) {
   if (typeof value !== "string") return null;

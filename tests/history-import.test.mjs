@@ -74,35 +74,23 @@ describe("planImport", () => {
     ]);
   });
 
-  it("skips active, automated, out-of-project and empty sessions", async () => {
+  it("skips active, automated and empty sessions", async () => {
     const planned = await planImport({
       readers: fakeReaders([
         session({ sessionId: "active" }),
         session({ sessionId: "auto", automated: true }),
-        session({ sessionId: "elsewhere", cwd: "/other" }),
-        session({ sessionId: "inside", cwd: "/work/proj/sub" }),
         session({ sessionId: "old" }),
       ]),
       clients: ["fake"],
       now,
-      project: "/work/proj",
-      until: "2026-09-01T00:00:00.000Z",
+      since: "2026-10-01T00:00:00.000Z",
       mtimeMs: (file) => (file === "file-0" ? now - 1000 : old()),
     });
     expect(planned.map((item) => [item.sessionId, item.skip])).toEqual([
       ["active", "active (written in the last 10 minutes)"],
       ["auto", "automated (started by a program, not typed)"],
-      ["elsewhere", "outside --project"],
-      ["inside", "no turns in range"],
       ["old", "no turns in range"],
     ]);
-  });
-
-  it("imports automated sessions when asked", async () => {
-    const [planned] = await planImport({
-      readers: fakeReaders([session({ automated: true })]), clients: ["fake"], now, mtimeMs: old, includeAutomated: true,
-    });
-    expect(planned.skip).toBeNull();
   });
 });
 
@@ -140,44 +128,18 @@ describe("trimAgainstServer", () => {
     expect(complete.skip).toBe("already imported");
   });
 
-  it("cuts at a live capture of the same text even when it was stored after the turn", async () => {
-    const planned = session({
-      entries: [
-        { role: "user", text: "first prompt here", occurredAt: "2026-09-01T10:00:00.000Z" },
-        { role: "assistant", text: "first reply", occurredAt: "2026-09-01T10:00:05.000Z" },
-        { role: "user", text: "Wake up, my friend!", occurredAt: "2026-09-02T10:00:00.000Z" },
-        { role: "assistant", text: "Awake and ready to help.", occurredAt: "2026-09-02T10:00:05.000Z" },
-      ],
-    });
-    const [trimmed] = await trimAgainstServer([planned], async () => [
-      // Stored 2 s after the prompt, with the client's envelope added.
-      { role: "user", text: "[Mon 2026-09-02 12:00 GMT+2] Wake up, my friend!", occurred_at: "2026-09-02T10:00:02" },
+  it("leaves out a turn live capture stored a few minutes after it happened", async () => {
+    const [trimmed] = await trimAgainstServer([session()], async () => [
+      // The second prompt, stored 4 minutes after it was typed.
+      { role: "user", occurred_at: "2026-09-02T10:04:00", memory_metadata: {} },
     ]);
-    expect(trimmed.entries.map((entry) => entry.text)).toEqual(["first prompt here", "first reply"]);
+    expect(trimmed.entries.map((entry) => entry.text)).toEqual(["p1", "r1"]);
     expect(trimmed.capturedLive).toBe(2);
   });
 
-  it("keeps an earlier turn that repeats a live-captured prompt", async () => {
-    const planned = session({
-      entries: [
-        { role: "user", text: "commit and push the branch", occurredAt: "2026-09-01T10:00:00.000Z" },
-        { role: "assistant", text: "Pushed.", occurredAt: "2026-09-01T10:00:05.000Z" },
-        { role: "user", text: "run the tests again", occurredAt: "2026-09-01T11:00:00.000Z" },
-        { role: "assistant", text: "All pass.", occurredAt: "2026-09-01T11:00:05.000Z" },
-      ],
-    });
-    const [trimmed] = await trimAgainstServer([planned], async () => [
-      { role: "user", text: "commit and push the branch", occurred_at: "2026-09-01T14:00:00" },
-    ]);
-    expect(trimmed.entries).toHaveLength(4);
-  });
-
-  it("does not match short or other-role text", async () => {
-    const planned = session();
-    planned.entries[2].text = "a much longer user prompt text";
-    const [trimmed] = await trimAgainstServer([planned], async () => [
-      { role: "user", text: "p1", occurred_at: "2026-12-01T00:00:00" },
-      { role: "assistant", text: "a much longer user prompt text", occurred_at: "2026-12-01T00:00:00" },
+  it("keeps turns from before the capture window", async () => {
+    const [trimmed] = await trimAgainstServer([session()], async () => [
+      { role: "user", occurred_at: "2026-09-02T14:00:00", memory_metadata: {} },
     ]);
     expect(trimmed.entries).toHaveLength(4);
   });
@@ -293,8 +255,9 @@ describe("import CLI", () => {
     expect(parseImportArgs(["--since=2026-09-01", "--client=fake", "--apply"], fakeReaders([]))).toMatchObject({
       clients: ["fake"], since: "2026-09-01T00:00:00.000Z", apply: true,
     });
-    expect(() => parseImportArgs(["--sinse", "2026-09-01", "--apply"])).toThrow(/unknown argument: --sinse/);
-    expect(() => parseImportArgs(["--since"])).toThrow(/--since requires a value/);
+    expect(() => parseImportArgs(["--sinse", "2026-09-01", "--apply"])).toThrow(/Unknown option '--sinse'/);
+    expect(() => parseImportArgs(["--since"])).toThrow(/--since <value>' argument missing/);
+    expect(() => parseImportArgs(["--since", "--apply"])).toThrow(/ambiguous/);
     expect(() => parseImportArgs(["--client=", "--apply"])).toThrow(/--client requires a value/);
   });
 
@@ -302,21 +265,9 @@ describe("import CLI", () => {
     return fakeReaders([session({ lastWrittenMs: Date.now() - ACTIVE_SESSION_MS * 2 })]);
   }
 
-  it("previews offline without uploading", async () => {
-    const err = capture();
-    const out = capture();
-    const code = await runImportCli(["--client", "fake", "--offline"], { readers: applyFixture(), err, out });
-    expect(code).toBe(0);
-    expect(err.text).toContain("fake: 1 session(s), 2 prompt(s) + 2 reply(ies) = 4 entries");
-    expect(err.text).toContain("Preview only");
-    expect(out.text).toBe("");
-  });
-
-
   function fakeApi(results) {
     const posts = [];
     const api = {
-      keyScope: "client",
       effectiveApiBase: "https://example.test",
       keyFingerprint: "k1",
       listEpisodicForSession: async () => [],
@@ -325,14 +276,23 @@ describe("import CLI", () => {
     return { apiFor: async () => api, posts, api };
   }
 
+  it("previews without uploading", async () => {
+    const { apiFor, posts } = fakeApi([]);
+    const err = capture();
+    expect(await runImportCli(["--client", "fake"], { readers: applyFixture(), err, apiFor })).toBe(0);
+    expect(err.text).toContain("fake: 1 session(s), 2 prompt(s) + 2 reply(ies) = 4 entries");
+    expect(err.text).toContain("Preview only");
+    expect(posts).toEqual([]);
+  });
+
   it("refuses --apply without a terminal or --yes, and stops when declined", async () => {
     const { apiFor, posts } = fakeApi([]);
     const err = capture();
-    expect(await runImportCli(["--client", "fake", "--apply"], { readers: applyFixture(), err, out: capture(), apiFor, isTTY: false })).toBe(2);
+    expect(await runImportCli(["--client", "fake", "--apply"], { readers: applyFixture(), err, apiFor, isTTY: false })).toBe(2);
     expect(err.text).toContain("needs confirmation");
     const declined = capture();
     expect(await runImportCli(["--client", "fake", "--apply"], {
-      readers: applyFixture(), err: declined, out: capture(), apiFor, isTTY: true, confirmFn: async () => false,
+      readers: applyFixture(), err: declined, apiFor, isTTY: true, confirmFn: async () => false,
     })).toBe(1);
     expect(declined.text).toContain("Nothing was uploaded");
     expect(posts).toEqual([]);
@@ -341,7 +301,7 @@ describe("import CLI", () => {
   it("uploads with --yes and reports the credits it needs", async () => {
     const { apiFor, posts } = fakeApi([]);
     const err = capture();
-    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
+    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} });
     expect(code).toBe(0);
     expect(err.text).toContain("this import needs 4 credits");
     expect(err.text).toContain("Imported 4 entries from 1 session(s)");
@@ -351,23 +311,11 @@ describe("import CLI", () => {
   it("stops at once with exit 1 and how to resume when credits run out", async () => {
     const { apiFor, posts } = fakeApi(["ok", "outOfCredits"]);
     const err = capture();
-    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
+    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} });
     expect(code).toBe(1);
     expect(posts).toHaveLength(2);
-    expect(err.text).toContain("out of credits");
-    expect(err.text).toContain("run the same command again to continue");
-  });
-
-  it("retries a rate-limited check, and skips a session it still cannot check", async () => {
-    const { apiFor, api } = fakeApi([]);
-    const waits = [];
-    let calls = 0;
-    api.listEpisodicForSession = async () => { calls += 1; throw new Error("API 429 listing session memories"); };
-    const err = capture();
-    await runImportCli(["--client", "fake"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async (ms) => { waits.push(ms); } });
-    expect(calls).toBe(3);
-    expect(waits).toEqual([2000, 4000]);
-    expect(err.text).toContain("could not check MidBrain (API 429");
+    expect(err.text).toContain("Stopped early: out of MidBrain credits");
+    expect(err.text).toContain("Run the same command again to continue");
   });
 
   it("stores each turn with its own directory's key and checks every destination", async () => {
@@ -382,7 +330,6 @@ describe("import CLI", () => {
         const posts = [];
         apis.set(cwd, {
           posts,
-          keyScope: cwd === "/work/other" ? "project" : "client",
           effectiveApiBase: "https://example.test",
           keyFingerprint: cwd,
           listEpisodicForSession: async (id) => { listed.push([cwd, id]); return []; },
@@ -392,34 +339,27 @@ describe("import CLI", () => {
       return apis.get(cwd);
     };
     const err = capture();
-    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers, err, out: capture(), apiFor, wait: async () => {} })).toBe(0);
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers, err, apiFor, wait: async () => {} })).toBe(0);
     expect(listed.map(([cwd]) => cwd).sort()).toEqual(["/work/other", "/work/proj"]);
     expect(apis.get("/work/proj").posts.map((post) => post.cwd)).toEqual(["/work/proj", "/work/proj"]);
     expect(apis.get("/work/other").posts.map((post) => post.cwd)).toEqual(["/work/other", "/work/other"]);
-    expect(err.text).toContain("1 session(s) with the client key, 1 session(s) with the project key");
   });
 
   it("reports entries the firewall blocked", async () => {
     const { apiFor } = fakeApi(["ok", "blocked"]);
     const err = capture();
-    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} })).toBe(0);
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(0);
     expect(err.text).toContain("Imported 3 entries");
     expect(err.text).toContain("1 entry was blocked by MidBrain's firewall");
   });
 
-  it("does not retry a check that failed closed", async () => {
+  it("skips a session it cannot check, without retrying", async () => {
     const { apiFor, api } = fakeApi([]);
     let calls = 0;
-    api.listEpisodicForSession = async () => { calls += 1; throw new Error("more than 20 pages of memories for one session"); };
+    api.listEpisodicForSession = async () => { calls += 1; throw new Error("API 429 listing session memories"); };
     const err = capture();
-    await runImportCli(["--client", "fake"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
+    await runImportCli(["--client", "fake"], { readers: applyFixture(), err, apiFor });
     expect(calls).toBe(1);
-    expect(err.text).toContain("could not check MidBrain (more than 20 pages");
-  });
-
-  it("refuses --apply with --offline", async () => {
-    const err = capture();
-    expect(await runImportCli(["--apply", "--offline"], { err, out: capture() })).toBe(2);
-    expect(err.text).toContain("drop --offline");
+    expect(err.text).toContain("skipped 1 session(s): could not check MidBrain (API 429");
   });
 });

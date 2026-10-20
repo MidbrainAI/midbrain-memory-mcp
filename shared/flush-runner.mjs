@@ -27,7 +27,7 @@
  * Node 20 + Bun compatible. No npm deps. Never throws.
  */
 
-/** @typedef {"ok"|"rateLimited"|"outOfCredits"|"failed"} PostResult */
+/** @typedef {"ok"|"rateLimited"|"failed"} PostResult */
 
 /**
  * A pluggable flush source. Both claude-spool and episodic-cache expose these
