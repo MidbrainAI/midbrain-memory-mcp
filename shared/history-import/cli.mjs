@@ -83,12 +83,12 @@ function isoDate(value, flag) {
   return new Date(`${value}T00:00:00Z`).toISOString();
 }
 
-export function parseImportArgs(rawArgv) {
+export function parseImportArgs(rawArgv, readers = READERS) {
   const argv = normalizeArgs(rawArgv);
   const clientList = flagValue(argv, "--client");
-  const clients = clientList ? clientList.split(",").map((name) => name.trim()).filter(Boolean) : Object.keys(READERS);
-  const unknown = clients.filter((name) => !READERS[name]);
-  if (unknown.length) throw new Error(`unsupported client: ${unknown.join(", ")} (supported: ${Object.keys(READERS).join(", ")})`);
+  const clients = clientList ? clientList.split(",").map((name) => name.trim()).filter(Boolean) : Object.keys(readers);
+  const unknown = clients.filter((name) => !readers[name]);
+  if (unknown.length) throw new Error(`unsupported client: ${unknown.join(", ")} (supported: ${Object.keys(readers).join(", ")})`);
   return {
     help: argv.includes("--help") || argv.includes("-h"),
     clients,
@@ -223,7 +223,7 @@ export async function runImportCli(argv, {
 } = {}) {
   let options;
   try {
-    options = parseImportArgs(argv);
+    options = parseImportArgs(argv, readers);
   } catch (error) {
     err.write(`Error: ${error.message}\n\n${HELP}\n`);
     return 2;

@@ -1,16 +1,11 @@
 /**
  * Issue #75: opt-in import of existing local conversation history.
- * Readers, planning, server-side dedupe, upload and the CLI preview.
+ * Planning, server-side dedupe, upload and the CLI preview, with a fake
+ * client; each client's reader has its own test file.
  */
 
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "vitest";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
-import { listClaudeSessionFiles, readClaudeSession } from "../shared/history-import/readers/claude.mjs";
-import { listCodexSessionFiles, readCodexSession } from "../shared/history-import/readers/codex.mjs";
 import {
   ACTIVE_SESSION_MS,
   IMPORT_ORIGIN,
@@ -24,169 +19,6 @@ import {
 } from "../shared/history-import/plan.mjs";
 import { parseImportArgs, runImportCli } from "../shared/history-import/cli.mjs";
 import { redactSecrets } from "../shared/redact.mjs";
-
-let dir;
-
-beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-import-"));
-});
-
-afterEach(() => {
-  fs.rmSync(dir, { recursive: true, force: true });
-});
-
-function writeJsonl(file, rows) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
-  return file;
-}
-
-const SID = "11111111-2222-4333-8444-555555555555";
-
-function claudeRows({ promptSource = "typed", entrypoint = "cli" } = {}) {
-  const base = { sessionId: SID, cwd: "/work/proj" };
-  const human = { entrypoint, promptSource, origin: { kind: "human" } };
-  return [
-    { type: "mode", sessionId: SID, mode: "default" },
-    { ...base, ...human, type: "user", timestamp: "2026-09-01T10:00:00.000Z", message: { role: "user", content: "first prompt" } },
-    { ...base, type: "assistant", timestamp: "2026-09-01T10:00:01.000Z", message: { id: "m1", role: "assistant", content: [{ type: "text", text: "Let me look." }] } },
-    { ...base, type: "assistant", timestamp: "2026-09-01T10:00:02.000Z", message: { id: "m1", role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] } },
-    { ...base, type: "user", timestamp: "2026-09-01T10:00:03.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "out" }] } },
-    { ...base, type: "assistant", timestamp: "2026-09-01T10:00:04.000Z", message: { id: "m2", role: "assistant", content: [{ type: "text", text: "Final part one." }] } },
-    { ...base, type: "assistant", timestamp: "2026-09-01T10:00:05.000Z", message: { id: "m2", role: "assistant", content: [{ type: "text", text: "Final part two." }], stop_reason: "end_turn" } },
-    { ...base, type: "user", isMeta: true, timestamp: "2026-09-01T10:01:00.000Z", message: { role: "user", content: "skill body" } },
-    { ...base, type: "user", timestamp: "2026-09-01T10:01:01.000Z", message: { role: "user", content: "<command-name>/clear</command-name>" } },
-    { ...base, type: "user", origin: { kind: "task-notification" }, timestamp: "2026-09-01T10:01:02.000Z", message: { role: "user", content: "<task-notification>done</task-notification>" } },
-    { ...base, type: "user", isSidechain: true, timestamp: "2026-09-01T10:01:03.000Z", message: { role: "user", content: "subagent prompt" } },
-    { ...base, type: "user", isCompactSummary: true, timestamp: "2026-09-01T10:01:04.000Z", message: { role: "user", content: "This session is being continued" } },
-    { ...base, ...human, type: "user", timestamp: "2026-09-01T10:02:00.000Z", message: { role: "user", content: [{ type: "text", text: "second prompt" }] } },
-    { ...base, type: "assistant", timestamp: "2026-09-01T10:02:01.000Z", message: { id: "m3", role: "assistant", content: [{ type: "text", text: "Second reply." }] } },
-    "{torn line",
-  ];
-}
-
-function writeClaude(rows, name = `${SID}.jsonl`) {
-  const file = path.join(dir, "claude", "projects", "-work-proj", name);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${rows.map((row) => (typeof row === "string" ? row : JSON.stringify(row))).join("\n")}\n`);
-  return file;
-}
-
-function codexRows({ subagent = false, source = "vscode" } = {}) {
-  return [
-    { type: "session_meta", timestamp: "2026-10-06T07:00:00.000Z", payload: { id: "codex-session", cwd: "/work/codex", source: subagent ? { subagent: { thread_spawn: {} } } : source } },
-    { type: "response_item", timestamp: "2026-10-06T07:00:00.100Z", payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "dev" }] } },
-    { type: "event_msg", timestamp: "2026-10-06T07:00:01.000Z", payload: { type: "task_started", turn_id: "t1" } },
-    { type: "response_item", timestamp: "2026-10-06T07:00:01.100Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions for /work/codex\n..." }] } },
-    { type: "response_item", timestamp: "2026-10-06T07:00:01.200Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>x</environment_context>" }] } },
-    { type: "response_item", timestamp: "2026-10-06T07:00:01.300Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "codex prompt one" }] } },
-    { type: "response_item", timestamp: "2026-10-06T07:00:02.000Z", payload: { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "working" }] } },
-    { type: "response_item", timestamp: "2026-10-06T07:00:03.000Z", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "codex answer one" }] } },
-    { type: "event_msg", timestamp: "2026-10-06T07:00:03.100Z", payload: { type: "task_complete", turn_id: "t1", last_agent_message: "codex answer one" } },
-    { type: "turn_context", timestamp: "2026-10-06T07:01:00.000Z", payload: { cwd: "/work/codex/sub" } },
-    { type: "event_msg", timestamp: "2026-10-06T07:01:00.100Z", payload: { type: "task_started", turn_id: "t2" } },
-    { type: "response_item", timestamp: "2026-10-06T07:01:00.200Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "codex prompt two" }] } },
-    { type: "event_msg", timestamp: "2026-10-06T07:01:05.000Z", payload: { type: "task_complete", turn_id: "t2", last_agent_message: "fallback answer two" } },
-    // A goal continuation: Codex writes it as a user message; nobody typed it.
-    { type: "event_msg", timestamp: "2026-10-06T07:02:00.000Z", payload: { type: "task_started", turn_id: "t3" } },
-    { type: "response_item", timestamp: "2026-10-06T07:02:00.100Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<codex_internal_context source=\"goal\">Continue working toward the goal.</codex_internal_context>" }] } },
-    { type: "event_msg", timestamp: "2026-10-06T07:02:09.000Z", payload: { type: "task_complete", turn_id: "t3", last_agent_message: "autonomous work" } },
-  ];
-}
-
-describe("readClaudeSession", () => {
-  it("keeps typed prompts and each turn's final reply, nothing else", async () => {
-    const session = await readClaudeSession(writeClaude(claudeRows()));
-    expect(session).toMatchObject({ client: "claude", sessionId: SID, cwd: "/work/proj", skip: null, automated: false });
-    expect(session.entries).toEqual([
-      { role: "user", text: "first prompt", occurredAt: "2026-09-01T10:00:00.000Z", cwd: "/work/proj" },
-      { role: "assistant", text: "Final part one.\nFinal part two.", occurredAt: "2026-09-01T10:00:05.000Z", cwd: "/work/proj" },
-      { role: "user", text: "second prompt", occurredAt: "2026-09-01T10:02:00.000Z", cwd: "/work/proj" },
-      { role: "assistant", text: "Second reply.", occurredAt: "2026-09-01T10:02:01.000Z", cwd: "/work/proj" },
-    ]);
-  });
-
-  it("does not give a slash command's or notification's reply to the prompt before it", async () => {
-    const base = { sessionId: SID, cwd: "/work/proj" };
-    const human = { entrypoint: "cli", promptSource: "typed", origin: { kind: "human" } };
-    const rows = [
-      { ...base, ...human, type: "user", timestamp: "2026-09-01T10:00:00.000Z", message: { role: "user", content: "explain the parser" } },
-      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:01.000Z", message: { id: "m1", role: "assistant", content: [{ type: "text", text: "Reply A." }] } },
-      { ...base, ...human, type: "user", timestamp: "2026-09-01T10:01:00.000Z", message: { role: "user", content: "<command-name>/review</command-name>" } },
-      { ...base, type: "user", isMeta: true, timestamp: "2026-09-01T10:01:00.100Z", message: { role: "user", content: "Review the branch." } },
-      { ...base, type: "assistant", timestamp: "2026-09-01T10:01:05.000Z", message: { id: "m2", role: "assistant", content: [{ type: "text", text: "Reply B." }] } },
-      { ...base, type: "user", origin: { kind: "task-notification" }, timestamp: "2026-09-01T10:02:00.000Z", message: { role: "user", content: "<task-notification>done</task-notification>" } },
-      { ...base, type: "assistant", timestamp: "2026-09-01T10:02:01.000Z", message: { id: "m3", role: "assistant", content: [{ type: "text", text: "Noted." }] } },
-    ];
-    const session = await readClaudeSession(writeClaude(rows));
-    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
-      ["user", "explain the parser"],
-      ["assistant", "Reply A."],
-    ]);
-  });
-
-  it("keeps a turn open across a loaded skill or Stop-hook feedback", async () => {
-    const base = { sessionId: SID, cwd: "/work/proj" };
-    const human = { entrypoint: "cli", promptSource: "typed", origin: { kind: "human" } };
-    const rows = [
-      { ...base, ...human, type: "user", timestamp: "2026-09-01T10:00:00.000Z", message: { role: "user", content: "start" } },
-      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:01.000Z", message: { id: "m1", role: "assistant", content: [{ type: "text", text: "Starting." }] } },
-      { ...base, type: "user", isMeta: true, timestamp: "2026-09-01T10:00:02.000Z", message: { role: "user", content: [{ type: "text", text: "Base directory for this skill: /skills/x" }] } },
-      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:03.000Z", message: { id: "m2", role: "assistant", content: [{ type: "text", text: "Skill loaded." }] } },
-      { ...base, type: "user", isMeta: true, timestamp: "2026-09-01T10:00:04.000Z", message: { role: "user", content: "Stop hook feedback:\nkeep going" } },
-      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:05.000Z", message: { id: "m3", role: "assistant", content: [{ type: "text", text: "Done." }] } },
-    ];
-    const session = await readClaudeSession(writeClaude(rows));
-    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
-      ["user", "start"],
-      ["assistant", "Done."],
-    ]);
-  });
-
-  it("marks a session no person typed in as automated", async () => {
-    const session = await readClaudeSession(writeClaude(claudeRows({ promptSource: "sdk", entrypoint: "sdk-py" })));
-    expect(session.automated).toBe(true);
-  });
-
-  it("lists top-level transcripts only, not subagent folders or symlinks", () => {
-    const main = writeClaude(claudeRows());
-    writeClaude(claudeRows(), path.join(SID, "subagents", "agent-1.jsonl"));
-    fs.symlinkSync(main, path.join(path.dirname(main), "link.jsonl"));
-    expect(listClaudeSessionFiles(path.join(dir, "claude", "projects"))).toEqual([main]);
-  });
-});
-
-describe("readCodexSession", () => {
-  it("marks codex exec runs as automated", async () => {
-    const file = writeJsonl(path.join(dir, "codex", "sessions", "rollout-exec.jsonl"), codexRows({ source: "exec" }));
-    expect((await readCodexSession(file)).automated).toBe(true);
-  });
-
-  it("keeps the typed prompt and final answer per turn, without injected context or goal turns", async () => {
-    const file = writeJsonl(path.join(dir, "codex", "sessions", "2026", "10", "06", "rollout-a.jsonl"), codexRows());
-    const session = await readCodexSession(file);
-    expect(session).toMatchObject({ client: "codex", sessionId: "codex-session", cwd: "/work/codex", skip: null, automated: false });
-    expect(session.entries).toEqual([
-      { role: "user", text: "codex prompt one", occurredAt: "2026-10-06T07:00:01.300Z", cwd: "/work/codex" },
-      { role: "assistant", text: "codex answer one", occurredAt: "2026-10-06T07:00:03.000Z", cwd: "/work/codex" },
-      { role: "user", text: "codex prompt two", occurredAt: "2026-10-06T07:01:00.200Z", cwd: "/work/codex/sub" },
-      { role: "assistant", text: "fallback answer two", occurredAt: "2026-10-06T07:01:05.000Z", cwd: "/work/codex/sub" },
-    ]);
-  });
-
-  it("skips threads spawned by another agent", async () => {
-    const file = writeJsonl(path.join(dir, "rollout-sub.jsonl"), codexRows({ subagent: true }));
-    expect((await readCodexSession(file)).skip).toBe("subagent session");
-  });
-
-  it("finds rollouts in dated and archived folders", () => {
-    const dated = writeJsonl(path.join(dir, "codex", "sessions", "2026", "10", "06", "rollout-a.jsonl"), []);
-    const archived = writeJsonl(path.join(dir, "codex", "archived_sessions", "rollout-b.jsonl"), []);
-    writeJsonl(path.join(dir, "codex", "sessions", "2026", "10", "06", "other.jsonl"), []);
-    const found = listCodexSessionFiles([path.join(dir, "codex", "sessions"), path.join(dir, "codex", "archived_sessions")]);
-    expect(found.sort()).toEqual([archived, dated].sort());
-  });
-});
 
 function fakeReaders(sessions) {
   return {
@@ -504,42 +336,38 @@ describe("import CLI", () => {
   }
 
   it("parses and validates options", () => {
-    expect(parseImportArgs(["--client", "claude", "--since", "2026-09-01", "--apply"])).toMatchObject({
-      clients: ["claude"], since: "2026-09-01T00:00:00.000Z", apply: true, yes: false, dream: false,
+    const readers = fakeReaders([]);
+    expect(parseImportArgs(["--client", "fake", "--since", "2026-09-01", "--apply"], readers)).toMatchObject({
+      clients: ["fake"], since: "2026-09-01T00:00:00.000Z", apply: true, yes: false, dream: false,
     });
-    expect(() => parseImportArgs(["--client", "nope"])).toThrow(/unsupported client/);
-    expect(() => parseImportArgs(["--since", "yesterday"])).toThrow(/--since/);
+    expect(parseImportArgs([], readers).clients).toEqual(["fake"]);
+    expect(() => parseImportArgs(["--client", "nope"], readers)).toThrow(/unsupported client/);
+    expect(() => parseImportArgs(["--since", "yesterday"], readers)).toThrow(/--since/);
   });
 
   it("accepts --flag=value and rejects unknown arguments, so no filter is dropped", () => {
-    expect(parseImportArgs(["--since=2026-09-01", "--client=claude", "--apply"])).toMatchObject({
-      clients: ["claude"], since: "2026-09-01T00:00:00.000Z", apply: true,
+    expect(parseImportArgs(["--since=2026-09-01", "--client=fake", "--apply"], fakeReaders([]))).toMatchObject({
+      clients: ["fake"], since: "2026-09-01T00:00:00.000Z", apply: true,
     });
     expect(() => parseImportArgs(["--sinse", "2026-09-01", "--apply"])).toThrow(/unknown argument: --sinse/);
     expect(() => parseImportArgs(["--since"])).toThrow(/--since requires a value/);
     expect(() => parseImportArgs(["--client=", "--apply"])).toThrow(/--client requires a value/);
   });
 
+  function applyFixture() {
+    return fakeReaders([session({ lastWrittenMs: Date.now() - ACTIVE_SESSION_MS * 2 })]);
+  }
+
   it("previews offline without uploading", async () => {
     const err = capture();
     const out = capture();
-    const file = writeClaude(claudeRows());
-    const old = new Date(Date.now() - ACTIVE_SESSION_MS * 2);
-    fs.utimesSync(file, old, old);
-    const readers = { claude: { list: () => [file], read: readClaudeSession } };
-    const code = await runImportCli(["--client", "claude", "--offline"], { readers, err, out });
+    const code = await runImportCli(["--client", "fake", "--offline"], { readers: applyFixture(), err, out });
     expect(code).toBe(0);
-    expect(err.text).toContain("claude: 1 session(s), 2 prompt(s) + 2 reply(ies) = 4 entries");
+    expect(err.text).toContain("fake: 1 session(s), 2 prompt(s) + 2 reply(ies) = 4 entries");
     expect(err.text).toContain("Preview only");
     expect(out.text).toBe("");
   });
 
-  function applyFixture() {
-    const file = writeClaude(claudeRows());
-    const old = new Date(Date.now() - ACTIVE_SESSION_MS * 2);
-    fs.utimesSync(file, old, old);
-    return { claude: { list: () => [file], read: readClaudeSession } };
-  }
 
   function fakeApi(results) {
     const posts = [];
@@ -556,10 +384,10 @@ describe("import CLI", () => {
   it("refuses --apply without a terminal or --yes, and stops when declined", async () => {
     const { apiFor, posts } = fakeApi([]);
     const err = capture();
-    expect(await runImportCli(["--client", "claude", "--apply"], { readers: applyFixture(), err, out: capture(), apiFor, isTTY: false })).toBe(2);
+    expect(await runImportCli(["--client", "fake", "--apply"], { readers: applyFixture(), err, out: capture(), apiFor, isTTY: false })).toBe(2);
     expect(err.text).toContain("needs confirmation");
     const declined = capture();
-    expect(await runImportCli(["--client", "claude", "--apply"], {
+    expect(await runImportCli(["--client", "fake", "--apply"], {
       readers: applyFixture(), err: declined, out: capture(), apiFor, isTTY: true, confirmFn: async () => false,
     })).toBe(1);
     expect(declined.text).toContain("Nothing was uploaded");
@@ -569,7 +397,7 @@ describe("import CLI", () => {
   it("uploads with --yes and reports the credits it needs", async () => {
     const { apiFor, posts } = fakeApi([]);
     const err = capture();
-    const code = await runImportCli(["--client", "claude", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
+    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
     expect(code).toBe(0);
     expect(err.text).toContain("this import needs 4 credits");
     expect(err.text).toContain("Imported 4 entries from 1 session(s)");
@@ -579,7 +407,7 @@ describe("import CLI", () => {
   it("stops at once with exit 1 and how to resume when credits run out", async () => {
     const { apiFor, posts } = fakeApi(["ok", "outOfCredits"]);
     const err = capture();
-    const code = await runImportCli(["--client", "claude", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
+    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
     expect(code).toBe(1);
     expect(posts).toHaveLength(2);
     expect(err.text).toContain("out of credits");
@@ -592,27 +420,17 @@ describe("import CLI", () => {
     let calls = 0;
     api.listEpisodicForSession = async () => { calls += 1; throw new Error("API 429 listing session memories"); };
     const err = capture();
-    await runImportCli(["--client", "claude"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async (ms) => { waits.push(ms); } });
+    await runImportCli(["--client", "fake"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async (ms) => { waits.push(ms); } });
     expect(calls).toBe(3);
     expect(waits).toEqual([2000, 4000]);
     expect(err.text).toContain("could not check MidBrain (API 429");
   });
 
   it("stores each turn with its own directory's key and checks every destination", async () => {
-    const file = writeClaude(claudeRows());
-    const old = new Date(Date.now() - ACTIVE_SESSION_MS * 2);
-    fs.utimesSync(file, old, old);
-    const readers = {
-      claude: {
-        list: () => [file],
-        read: async (source) => {
-          const session = await readClaudeSession(source);
-          // The second turn ran after a cd into another project.
-          for (const entry of session.entries.slice(2)) entry.cwd = "/work/other";
-          return session;
-        },
-      },
-    };
+    const moved = session({ lastWrittenMs: Date.now() - ACTIVE_SESSION_MS * 2 });
+    // The second turn ran after a cd into another project.
+    for (const entry of moved.entries.slice(2)) entry.cwd = "/work/other";
+    const readers = fakeReaders([moved]);
     const apis = new Map();
     const listed = [];
     const apiFor = async ({ cwd }) => {
@@ -630,7 +448,7 @@ describe("import CLI", () => {
       return apis.get(cwd);
     };
     const err = capture();
-    expect(await runImportCli(["--client", "claude", "--apply", "--yes"], { readers, err, out: capture(), apiFor, wait: async () => {} })).toBe(0);
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers, err, out: capture(), apiFor, wait: async () => {} })).toBe(0);
     expect(listed.map(([cwd]) => cwd).sort()).toEqual(["/work/other", "/work/proj"]);
     expect(apis.get("/work/proj").posts.map((post) => post.cwd)).toEqual(["/work/proj", "/work/proj"]);
     expect(apis.get("/work/other").posts.map((post) => post.cwd)).toEqual(["/work/other", "/work/other"]);
@@ -640,7 +458,7 @@ describe("import CLI", () => {
   it("reports entries the firewall blocked", async () => {
     const { apiFor } = fakeApi(["ok", "blocked"]);
     const err = capture();
-    expect(await runImportCli(["--client", "claude", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} })).toBe(0);
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} })).toBe(0);
     expect(err.text).toContain("Imported 3 entries");
     expect(err.text).toContain("1 entry was blocked by MidBrain's firewall");
   });
@@ -650,7 +468,7 @@ describe("import CLI", () => {
     let calls = 0;
     api.listEpisodicForSession = async () => { calls += 1; throw new Error("more than 20 pages of memories for one session"); };
     const err = capture();
-    await runImportCli(["--client", "claude"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
+    await runImportCli(["--client", "fake"], { readers: applyFixture(), err, out: capture(), apiFor, wait: async () => {} });
     expect(calls).toBe(1);
     expect(err.text).toContain("could not check MidBrain (more than 20 pages");
   });
