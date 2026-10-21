@@ -20,6 +20,8 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+const codexDirs = () => [path.join(dir, "codex", "sessions"), path.join(dir, "codex", "archived_sessions")];
+
 function writeJsonl(file, rows) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
@@ -51,12 +53,12 @@ function codexRows({ subagent = false, source = "vscode" } = {}) {
 describe("readCodexSession", () => {
   it("marks codex exec runs as automated", async () => {
     const file = writeJsonl(path.join(dir, "codex", "sessions", "rollout-exec.jsonl"), codexRows({ source: "exec" }));
-    expect((await readCodexSession(file)).automated).toBe(true);
+    expect((await readCodexSession(file, codexDirs())).automated).toBe(true);
   });
 
   it("keeps the typed prompt and final answer per turn, without injected context or goal turns", async () => {
     const file = writeJsonl(path.join(dir, "codex", "sessions", "2026", "10", "06", "rollout-a.jsonl"), codexRows());
-    const session = await readCodexSession(file);
+    const session = await readCodexSession(file, codexDirs());
     expect(session).toMatchObject({ client: "codex", sessionId: "codex-session", cwd: "/work/codex", skip: null, automated: false });
     expect(session.entries).toEqual([
       { role: "user", text: "codex prompt one", occurredAt: "2026-10-06T07:00:01.300Z", cwd: "/work/codex" },
@@ -67,15 +69,30 @@ describe("readCodexSession", () => {
   });
 
   it("skips threads spawned by another agent", async () => {
-    const file = writeJsonl(path.join(dir, "rollout-sub.jsonl"), codexRows({ subagent: true }));
-    expect((await readCodexSession(file)).skip).toBe("subagent session");
+    const file = writeJsonl(path.join(dir, "codex", "sessions", "rollout-sub.jsonl"), codexRows({ subagent: true }));
+    expect((await readCodexSession(file, codexDirs())).skip).toBe("subagent session");
+  });
+
+  it("ends the turn at a corrupt row and refuses a rollout outside the history folders", async () => {
+    const rows = codexRows().slice(0, 7).map((row) => JSON.stringify(row));
+    // The final answer row of turn one is lost; nothing may stand in for it.
+    rows.push("{\"type\":\"response_item\",\"payload\":{\"type\":\"mess");
+    rows.push(JSON.stringify(codexRows()[8]));
+    const file = path.join(dir, "codex", "sessions", "rollout-c.jsonl");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${rows.join("\n")}\n`);
+    const session = await readCodexSession(file, codexDirs());
+    // Commentary is never a reply, and nothing after the gap is trusted as one.
+    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([["user", "codex prompt one"]]);
+    const outside = writeJsonl(path.join(dir, "rollout-out.jsonl"), codexRows());
+    await expect(readCodexSession(outside, codexDirs())).rejects.toMatchObject({ code: "EUNSAFE" });
   });
 
   it("finds rollouts in dated and archived folders", () => {
     const dated = writeJsonl(path.join(dir, "codex", "sessions", "2026", "10", "06", "rollout-a.jsonl"), []);
     const archived = writeJsonl(path.join(dir, "codex", "archived_sessions", "rollout-b.jsonl"), []);
     writeJsonl(path.join(dir, "codex", "sessions", "2026", "10", "06", "other.jsonl"), []);
-    const found = listCodexSessionFiles([path.join(dir, "codex", "sessions"), path.join(dir, "codex", "archived_sessions")]);
+    const found = listCodexSessionFiles(codexDirs());
     expect(found.sort()).toEqual([archived, dated].sort());
   });
 });
