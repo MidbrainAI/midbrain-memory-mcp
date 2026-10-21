@@ -2,11 +2,10 @@
  * Codex history reader (issue #75).
  */
 
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { jsonRows, regularFiles, validTimestamp } from "./common.mjs";
+import { CORRUPT_ROW, jsonRows, regularFiles, subdirectories, validTimestamp } from "./common.mjs";
 
 export function codexSessionDirs(env = process.env) {
   const home = env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
@@ -19,16 +18,7 @@ export function listCodexSessionFiles(dirs = codexSessionDirs()) {
   const files = [];
   const walk = (dir, depth) => {
     files.push(...regularFiles(dir, isRollout));
-    if (depth === 0) return;
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory()) walk(path.join(dir, entry.name), depth - 1);
-    }
+    if (depth > 0) for (const sub of subdirectories(dir)) walk(sub, depth - 1);
   };
   for (const dir of dirs) walk(dir, 3);
   return files;
@@ -48,7 +38,15 @@ function codexText(content, type) {
 }
 
 /** @returns {Promise<import("../plan.mjs").ImportSession>} */
-export async function readCodexSession(file) {
+/** The history folder (of `dirs`) a rollout is read from. */
+function rootOf(file, dirs) {
+  return dirs.find((dir) => {
+    const relative = path.relative(dir, file);
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
+  });
+}
+
+export async function readCodexSession(file, dirs = codexSessionDirs()) {
   const session = {
     client: "codex",
     file,
@@ -75,7 +73,12 @@ export async function readCodexSession(file) {
     turn = { prompt: "", promptAt: null, reply: "", replyAt: null, cwd };
   };
 
-  for await (const row of jsonRows(file)) {
+  for await (const row of jsonRows(file, rootOf(file, dirs))) {
+    if (row === CORRUPT_ROW) {
+      // A lost row may have started the next turn: end this one here.
+      closeTurn();
+      continue;
+    }
     const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
     const at = validTimestamp(row.timestamp);
     if (row.type === "session_meta") {
