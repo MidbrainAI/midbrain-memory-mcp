@@ -130,7 +130,7 @@ async function claudeBackendSessions(cwd, projectsDir) {
       const sessions = [];
       for (const file of regularFiles(dir, (name) => name.endsWith(".jsonl"))) {
         try {
-          const session = await readClaudeSession(file);
+          const session = await readClaudeSession(file, projectsDir);
           if (session.sessionId) sessions.push(session);
         } catch { /* unreadable: no link */ }
       }
