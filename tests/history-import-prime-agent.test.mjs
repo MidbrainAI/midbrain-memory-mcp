@@ -99,6 +99,23 @@ describe("readPrimeAgentSession", () => {
     await expect(listPrimeAgentSessionFiles(dir)).resolves.toEqual([log]);
   });
 
+  it("also reads the archive Prime Agent moves old sessions to, once per session", async () => {
+    const sessions = path.join(dir, "sessions");
+    const archive = path.join(dir, "sessions-archive");
+    fs.mkdirSync(sessions);
+    fs.mkdirSync(archive);
+    const live = path.join(sessions, "prime-1.jsonl");
+    const archived = path.join(archive, "prime-2.jsonl");
+    fs.writeFileSync(live, `${rows().map((row) => JSON.stringify(row)).join("\n")}\n`);
+    fs.writeFileSync(archived, `${rows().map((row) => JSON.stringify(row)).join("\n")}\n`);
+    // Mid-move copy: the sessions dir wins.
+    fs.copyFileSync(live, path.join(archive, "prime-1.jsonl"));
+    await expect(listPrimeAgentSessionFiles([sessions, archive])).resolves.toEqual([live, archived]);
+    const session = await readPrimeAgentSession(archived, [sessions, archive]);
+    expect(session.sessionId).toBe("prime-1");
+    expect(session.entries.length).toBeGreaterThan(0);
+  });
+
   it("leaves out replies after a corrupt line until the next prompt", async () => {
     const lines = rows().map((row) => JSON.stringify(row));
     lines[3] = "{\"type\":\"message\",\"message\":{\"role\":\"us"; // prompt one is lost
