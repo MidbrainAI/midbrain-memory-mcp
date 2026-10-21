@@ -137,6 +137,31 @@ describe("trimAgainstServer", () => {
     expect(complete.skip).toBe("already imported");
   });
 
+  it("skips a session whose earlier import no longer matches the reader, so no turn gets a second reply", async () => {
+    const planned = session();
+    const stored = planned.entries.map((entry) => ({
+      occurred_at: "2026-10-13T00:00:00",
+      memory_metadata: { origin: IMPORT_ORIGIN, import_id: importId(planned, entry) },
+    }));
+    // An earlier version kept another reply for turn two; the reader now keeps r2.
+    stored[3] = { occurred_at: "2026-10-13T00:00:00", memory_metadata: { origin: IMPORT_ORIGIN, import_id: "old-reply-two" } };
+    const [trimmed] = await trimAgainstServer([planned], oneDestination(stored));
+    expect(trimmed.skip).toBe("changed since an earlier import (left as stored)");
+    expect(trimmed.changedSinceImport).toBe(1);
+  });
+
+  it("does not count an earlier import outside --since as changed", async () => {
+    const readers = fakeReaders([session()]);
+    const [planned] = await planImport({ readers, clients: ["fake"], since: "2026-09-02T00:00:00.000Z", now: Date.parse("2026-10-20T00:00:00Z"), mtimeMs: () => 0 });
+    expect(planned.entries.map((entry) => entry.text)).toEqual(["p2", "r2"]);
+    const outside = session().entries[0];
+    const [trimmed] = await trimAgainstServer([planned], oneDestination([
+      { occurred_at: "2026-10-13T00:00:00", memory_metadata: { origin: IMPORT_ORIGIN, import_id: importId(planned, outside) } },
+    ]));
+    expect(trimmed.skip).toBeNull();
+    expect(trimmed.entries).toHaveLength(2);
+  });
+
   it("leaves out a turn live capture stored a few minutes after it happened", async () => {
     const [trimmed] = await trimAgainstServer([session()], oneDestination([
       // The second prompt, stored 4 minutes after it was typed.

@@ -131,6 +131,9 @@ export async function planImport({
       }
       if (!session.skip && session.automated) session.skip = "automated (started by a program, not typed)";
       if (!session.skip) {
+        // Every entry the reader produces, before --since narrows them: an
+        // earlier import's entry outside the range is not a changed one.
+        session.importIds = new Set(session.entries.map((entry) => importId(session, entry)));
         session.entries = session.entries.filter((entry) => !since || entry.occurredAt >= since);
         if (session.entries.length === 0) session.skip = "no turns in range";
       }
@@ -150,6 +153,10 @@ export async function planImport({
  *   Live capture stores a turn up to CAPTURE_LAG_MS after it happened, so
  *   the cut is made that much earlier: a turn in that window is left out
  *   rather than risk storing it twice.
+ * - A session holding an imported entry the reader no longer produces is
+ *   skipped whole: an earlier version read it differently (say, kept another
+ *   reply for a turn), and importing the new reading would store a second
+ *   reply beside the old one.
  *
  * @param {any[]} sessions planned sessions (mutated)
  * @param {(session: any) => Promise<Array<{entries: any[], existing: Array<{occurred_at: string, memory_metadata?: Record<string,string>}>}>>} listExisting
@@ -168,12 +175,16 @@ export async function trimAgainstServer(sessions, listExisting) {
     const checked = new Set();
     const captured = new Set();
     const imported = new Set();
+    const known = session.importIds ?? new Set(session.entries.map((entry) => importId(session, entry)));
+    let changed = 0;
     for (const { entries, existing } of destinations) {
       const importIds = new Set();
       let firstCaptured = Infinity;
       for (const memory of existing) {
         if (memory.memory_metadata?.origin === IMPORT_ORIGIN) {
-          if (memory.memory_metadata.import_id) importIds.add(memory.memory_metadata.import_id);
+          const id = memory.memory_metadata.import_id;
+          if (id) importIds.add(id);
+          if (!id || !known.has(id)) changed += 1;
           continue;
         }
         const time = validTime(memory.occurred_at);
@@ -188,6 +199,11 @@ export async function trimAgainstServer(sessions, listExisting) {
     }
     if (session.entries.some((entry) => !checked.has(entry))) {
       session.skip = "could not check MidBrain (an entry has no destination)";
+      continue;
+    }
+    if (changed) {
+      session.changedSinceImport = changed;
+      session.skip = "changed since an earlier import (left as stored)";
       continue;
     }
     // Keep whole turns only: when the prompt or the reply was captured live,

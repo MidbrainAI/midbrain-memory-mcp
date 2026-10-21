@@ -314,7 +314,9 @@ Supported sources (`--client` takes the id):
   `--apply` and a confirmation (`--yes` skips it).
 - **No duplicates.** Turns MidBrain already captured live, and entries an
   earlier import stored, are skipped, so an interrupted import resumes when
-  you run the same command again.
+  you run the same command again. A session an earlier version imported
+  differently (for example, with another reply for a turn) is skipped and
+  listed, so no turn ends up with two replies.
 - **Keys and credits.** Each turn is stored with the key live capture would
   use for its directory, and uses one MidBrain credit. When credits run out,
   the import stops and says how many entries it stored; add credits and run
