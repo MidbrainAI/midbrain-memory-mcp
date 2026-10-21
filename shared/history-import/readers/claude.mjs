@@ -2,11 +2,10 @@
  * Claude Code history reader (issue #75).
  */
 
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { jsonRows, regularFiles, validTimestamp } from "./common.mjs";
+import { CORRUPT_ROW, jsonRows, regularFiles, subdirectories, validTimestamp } from "./common.mjs";
 
 export function claudeProjectsDir(env = process.env) {
   const configDir = env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), ".claude");
@@ -19,15 +18,7 @@ export function claudeProjectsDir(env = process.env) {
  * in subdirectories and are not listed.
  */
 export function listClaudeSessionFiles(root = claudeProjectsDir()) {
-  let projects;
-  try {
-    projects = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return projects
-    .filter((entry) => entry.isDirectory())
-    .flatMap((entry) => regularFiles(path.join(root, entry.name), (name) => name.endsWith(".jsonl")));
+  return subdirectories(root).flatMap((dir) => regularFiles(dir, (name) => name.endsWith(".jsonl")));
 }
 
 // User rows Claude Code writes on the user's behalf: slash-command echoes,
@@ -64,7 +55,7 @@ function isToolResult(row) {
 }
 
 /** @returns {Promise<import("../plan.mjs").ImportSession>} */
-export async function readClaudeSession(file) {
+export async function readClaudeSession(file, root = claudeProjectsDir()) {
   const session = {
     client: "claude",
     file,
@@ -75,7 +66,7 @@ export async function readClaudeSession(file) {
     automated: false,
   };
   let turn = null;
-  let interactivePrompts = 0;
+  let typed = false;
   const closeTurn = () => {
     if (!turn) return;
     session.entries.push({ role: "user", text: turn.prompt, occurredAt: turn.at, cwd: turn.cwd });
@@ -86,7 +77,13 @@ export async function readClaudeSession(file) {
     turn = null;
   };
 
-  for await (const row of jsonRows(file)) {
+  for await (const row of jsonRows(file, root)) {
+    if (row === CORRUPT_ROW) {
+      // A lost row may have been the next prompt: end the turn here rather
+      // than give its reply to this one.
+      closeTurn();
+      continue;
+    }
     if (!session.sessionId && typeof row.sessionId === "string") session.sessionId = row.sessionId;
     if (row.isSidechain) continue;
     if (row.type === "user") {
@@ -94,9 +91,10 @@ export async function readClaudeSession(file) {
       if (!prompt) {
         // A slash command, notification or interrupt starts a turn nobody
         // typed: what answers it is not the earlier prompt's reply. A tool
-        // result and a meta row (a loaded skill, Stop-hook feedback) stay
-        // inside the current turn.
-        if (!isToolResult(row) && !row.isMeta) closeTurn();
+        // result, a meta row (a loaded skill, Stop-hook feedback) and an
+        // automatic compaction summary stay inside the current turn: Claude
+        // keeps working on the same prompt after compacting.
+        if (!isToolResult(row) && !row.isMeta && !row.isCompactSummary) closeTurn();
         continue;
       }
       const at = validTimestamp(row.timestamp);
@@ -106,7 +104,7 @@ export async function readClaudeSession(file) {
       // prompts `promptSource: sdk`; a person's prompt is typed, queued, etc.
       const programmatic = row.promptSource === "sdk"
         || (typeof row.entrypoint === "string" && row.entrypoint.startsWith("sdk"));
-      if (!programmatic) interactivePrompts += 1;
+      if (!programmatic) typed = true;
       const cwd = typeof row.cwd === "string" ? row.cwd : session.cwd;
       if (!session.cwd && cwd) session.cwd = cwd;
       turn = { prompt, at, cwd, replyId: null, replyParts: [], replyAt: null };
@@ -125,7 +123,7 @@ export async function readClaudeSession(file) {
     }
   }
   closeTurn();
-  session.automated = session.entries.length > 0 && interactivePrompts === 0;
+  session.automated = session.entries.length > 0 && !typed;
   if (!session.sessionId) session.skip = "no session id";
   return session;
 }
