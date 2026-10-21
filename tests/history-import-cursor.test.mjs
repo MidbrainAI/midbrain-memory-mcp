@@ -198,6 +198,17 @@ describe("Cursor agent transcripts", () => {
     ]);
   });
 
+  it("ends the turn at a corrupt row and refuses a transcript outside the projects folder", async () => {
+    const file = writeTranscript("p", "cli-c", [row("user", "<user_query>\nfirst\n</user_query>"), row("assistant", "one")]);
+    // Prompt two is lost; its reply must not replace reply one.
+    fs.appendFileSync(file, "{\"role\":\"us\n" + JSON.stringify(row("assistant", "answer to the lost prompt")) + "\n");
+    const session = await readCursorSession(file, { userDir, home });
+    expect(session.entries.map((entry) => entry.text)).toEqual(["first", "one"]);
+    const outside = path.join(home, "cli-x.jsonl");
+    fs.writeFileSync(outside, `${JSON.stringify(row("user", "<user_query>\nx\n</user_query>"))}\n`);
+    await expect(readCursorSession(outside, { userDir, home })).rejects.toMatchObject({ code: "EUNSAFE" });
+  });
+
   it("times a transcript without <timestamp> from the chat start, so ids do not move as it grows", async () => {
     const file = writeTranscript("p", "cli-2", [row("user", "<user_query>\nfirst\n</user_query>"), row("assistant", "one")]);
     fs.mkdirSync(path.join(home, "chats", "h", "cli-2"), { recursive: true });

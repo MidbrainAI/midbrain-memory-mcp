@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 
 import { userQuery } from "../../../plugins/cursor/common.mjs";
 import {
-  databaseSource, jsonRows, loadSqlite, parseDatabaseSource, regularFiles, withReadOnlyDatabase,
+  CORRUPT_ROW, databaseSource, jsonRows, loadSqlite, parseDatabaseSource, regularFiles, withReadOnlyDatabase,
 } from "./common.mjs";
 
 const DATABASE_NAME = "state.vscdb";
@@ -377,7 +377,11 @@ async function readTranscript(file, home) {
   session.automated = isTemp(session.cwd);
   const turns = [];
   let turn = null;
-  for await (const row of jsonRows(file)) {
+  for await (const row of jsonRows(file, path.join(home, "projects"))) {
+    if (row === CORRUPT_ROW) {
+      turn = null; // a lost row may have started the next turn: end this one here
+      continue;
+    }
     const text = transcriptText(row);
     if (!text) continue;
     if (row.role === "user") {
