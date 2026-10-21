@@ -12,12 +12,19 @@ export function codexSessionDirs(env = process.env) {
   return [path.join(home, "sessions"), path.join(home, "archived_sessions")];
 }
 
-/** Codex keeps `sessions/YYYY/MM/DD/rollout-*.jsonl` (and the same under `archived_sessions`, flat). */
+/**
+ * Codex keeps `sessions/YYYY/MM/DD/rollout-*.jsonl` (and the same under
+ * `archived_sessions`, flat). With `local_thread_store_compression` on, a
+ * rollout untouched for 7 days becomes `rollout-*.jsonl.zst`; while both
+ * exist (mid-compression, or reopened for append) the plain file is read.
+ */
 export function listCodexSessionFiles(dirs = codexSessionDirs()) {
-  const isRollout = (name) => name.startsWith("rollout-") && name.endsWith(".jsonl");
+  const isRollout = (name) => name.startsWith("rollout-") && (name.endsWith(".jsonl") || name.endsWith(".jsonl.zst"));
   const files = [];
   const walk = (dir, depth) => {
-    files.push(...regularFiles(dir, isRollout));
+    const found = regularFiles(dir, isRollout);
+    const plain = new Set(found.filter((file) => file.endsWith(".jsonl")));
+    files.push(...found.filter((file) => !file.endsWith(".zst") || !plain.has(file.slice(0, -".zst".length))));
     if (depth > 0) for (const sub of subdirectories(dir)) walk(sub, depth - 1);
   };
   for (const dir of dirs) walk(dir, 3);
