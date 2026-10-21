@@ -328,7 +328,7 @@ Supported sources (`--client` takes the id):
 |---|---|---|
 | Claude Code | `claude` | `~/.claude/projects/*/*.jsonl` (or `CLAUDE_CONFIG_DIR`) |
 | Codex | `codex` | `~/.codex/sessions` and `archived_sessions` (or `CODEX_HOME`), including compressed `.jsonl.zst` rollouts (Node 22.15+ or Bun) |
-| Prime Agent | `prime-agent` | `~/.prime/agent/sessions/*.jsonl` (or `PRIME_AGENT_SESSION_DIR`, the `sessionDir` setting); subagent sessions and a fork's copied parent history are skipped |
+| Prime Agent | `prime-agent` | `~/.prime/agent/sessions/*.jsonl` (or `PRIME_AGENT_SESSION_DIR`, the `sessionDir` setting) and `~/.prime/agent/sessions-archive`; subagent sessions and a fork's copied parent history are skipped |
 
 - **What is imported:** each prompt you typed and the reply that ended the
   turn, with its original time, labeled `origin: "import"`. Tool calls and
