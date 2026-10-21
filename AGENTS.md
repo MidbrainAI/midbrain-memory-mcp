@@ -508,7 +508,7 @@ Prime Agent:
 before installation. Code: `shared/history-import/` (`readers/`, `plan.mjs`,
 `cli.mjs`), dispatched from `index.js`. Each client has one reader module in
 `readers/` (`list()` and `read(source)`), registered in `readers/index.mjs`;
-shared helpers are in `readers/common.mjs`.
+the session shape is in `plan.mjs`.
 
 - Opt-in and preview-first: no upload without `--apply` plus a confirmation
   or `--yes`. Never run it from install, repair, or the MCP server.
