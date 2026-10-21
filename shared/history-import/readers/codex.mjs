@@ -67,8 +67,8 @@ export async function readCodexSession(file, dirs = codexSessionDirs()) {
   let cwd = null;
   const closeTurn = () => {
     if (!turn) return;
-    if (turn.prompt) {
-      session.entries.push({ role: "user", text: turn.prompt, occurredAt: turn.promptAt, cwd: turn.cwd });
+    if (turn.prompts.length) {
+      session.entries.push({ role: "user", text: turn.prompts.join("\n"), occurredAt: turn.promptAt, cwd: turn.cwd });
       if (turn.reply) {
         session.entries.push({ role: "assistant", text: turn.reply, occurredAt: turn.replyAt || turn.promptAt, cwd: turn.cwd });
       }
@@ -77,7 +77,7 @@ export async function readCodexSession(file, dirs = codexSessionDirs()) {
   };
   const openTurn = () => {
     closeTurn();
-    turn = { prompt: "", promptAt: null, reply: "", replyAt: null, cwd };
+    turn = { prompts: [], promptAt: null, reply: "", replyAt: null, cwd };
   };
 
   for await (const row of jsonRows(file, rootOf(file, dirs))) {
@@ -116,7 +116,13 @@ export async function readCodexSession(file, dirs = codexSessionDirs()) {
         const text = codexText(payload.content, "input_text").trim();
         if (!text || CODEX_INJECTED_PROMPT.test(text) || !at) continue;
         if (!turn) openTurn();
-        turn.prompt = turn.prompt ? `${turn.prompt}\n${text}` : text;
+        // Input typed while Codex works joins the running turn. Codex can
+        // deliver a cut-off copy of it just before the full text; keep only
+        // the text no other message of the turn already contains as a start.
+        if (!turn.prompts.some((earlier) => earlier.startsWith(text))) {
+          turn.prompts = turn.prompts.filter((earlier) => !text.startsWith(earlier));
+          turn.prompts.push(text);
+        }
         if (!turn.promptAt) turn.promptAt = at;
       } else if (payload.role === "assistant" && payload.phase === "final_answer" && turn) {
         const text = codexText(payload.content, "output_text").trim();
