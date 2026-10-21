@@ -74,6 +74,12 @@ describe("planImport", () => {
     ]);
   });
 
+  it("reports history it cannot list instead of showing none", async () => {
+    const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES", path: "/home/me/.fake" });
+    const [row] = await planImport({ readers: { fake: { list: () => { throw denied; }, read: async () => null } }, clients: ["fake"], now });
+    expect(row).toMatchObject({ client: "fake", entries: [], skip: "could not list history (EACCES: /home/me/.fake)" });
+  });
+
   it("skips active, automated and empty sessions", async () => {
     const planned = await planImport({
       readers: fakeReaders([

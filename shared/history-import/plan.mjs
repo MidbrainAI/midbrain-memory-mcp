@@ -86,7 +86,9 @@ export function prepareText(text) {
  * Read and filter local sessions. Pure apart from reading the session files.
  *
  * @param {object} opts
- * @param {Record<string, {list: () => string[], read: (file: string) => Promise<any>}>} opts.readers
+ * @param {Record<string, {list: () => string[] | Promise<string[]>, read: (file: string) => Promise<any>}>} opts.readers
+ *   `list()` returns [] when the client has no history and throws when its
+ *   history cannot be read.
  * @param {string[]} opts.clients
  * @param {string|null} [opts.since] ISO date; entries before it are left out.
  * @param {number} [opts.now]
@@ -103,7 +105,17 @@ export async function planImport({
   for (const client of clients) {
     const reader = readers[client];
     if (!reader) continue;
-    for (const file of reader.list()) {
+    let files;
+    try {
+      files = await reader.list();
+    } catch (error) {
+      // History that exists but cannot be read is reported, never shown as
+      // empty. A reader returns [] only when the client has no history.
+      const where = error.path ? `: ${error.path}` : "";
+      sessions.push({ client, file: error.path ?? "", sessionId: null, cwd: null, entries: [], skip: `could not list history (${error.code || "error"}${where})` });
+      continue;
+    }
+    for (const file of files) {
       let session;
       try {
         session = await reader.read(file);
