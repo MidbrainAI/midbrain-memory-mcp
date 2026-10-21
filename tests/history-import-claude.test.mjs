@@ -46,6 +46,9 @@ function claudeRows({ promptSource = "typed", entrypoint = "cli" } = {}) {
   ];
 }
 
+const projects = () => path.join(dir, "claude", "projects");
+const readClaude = (file) => readClaudeSession(file, projects());
+
 function writeClaude(rows, name = `${SID}.jsonl`) {
   const file = path.join(dir, "claude", "projects", "-work-proj", name);
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -55,7 +58,7 @@ function writeClaude(rows, name = `${SID}.jsonl`) {
 
 describe("readClaudeSession", () => {
   it("keeps typed prompts and each turn's final reply, nothing else", async () => {
-    const session = await readClaudeSession(writeClaude(claudeRows()));
+    const session = await readClaude(writeClaude(claudeRows()));
     expect(session).toMatchObject({ client: "claude", sessionId: SID, cwd: "/work/proj", skip: null, automated: false });
     expect(session.entries).toEqual([
       { role: "user", text: "first prompt", occurredAt: "2026-09-01T10:00:00.000Z", cwd: "/work/proj" },
@@ -77,7 +80,7 @@ describe("readClaudeSession", () => {
       { ...base, type: "user", origin: { kind: "task-notification" }, timestamp: "2026-09-01T10:02:00.000Z", message: { role: "user", content: "<task-notification>done</task-notification>" } },
       { ...base, type: "assistant", timestamp: "2026-09-01T10:02:01.000Z", message: { id: "m3", role: "assistant", content: [{ type: "text", text: "Noted." }] } },
     ];
-    const session = await readClaudeSession(writeClaude(rows));
+    const session = await readClaude(writeClaude(rows));
     expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
       ["user", "explain the parser"],
       ["assistant", "Reply A."],
@@ -95,15 +98,78 @@ describe("readClaudeSession", () => {
       { ...base, type: "user", isMeta: true, timestamp: "2026-09-01T10:00:04.000Z", message: { role: "user", content: "Stop hook feedback:\nkeep going" } },
       { ...base, type: "assistant", timestamp: "2026-09-01T10:00:05.000Z", message: { id: "m3", role: "assistant", content: [{ type: "text", text: "Done." }] } },
     ];
-    const session = await readClaudeSession(writeClaude(rows));
+    const session = await readClaude(writeClaude(rows));
     expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
       ["user", "start"],
       ["assistant", "Done."],
     ]);
   });
 
+  it("keeps a turn open across automatic compaction", async () => {
+    const base = { sessionId: SID, cwd: "/work/proj" };
+    const human = { entrypoint: "cli", promptSource: "typed", origin: { kind: "human" } };
+    const rows = [
+      { ...base, ...human, type: "user", timestamp: "2026-09-01T10:00:00.000Z", message: { role: "user", content: "migrate the schema" } },
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:01.000Z", message: { id: "m1", role: "assistant", content: [{ type: "text", text: "Working." }] } },
+      // As Claude Code writes it: a boundary, then the summary as a user row (no isMeta).
+      { ...base, type: "system", subtype: "compact_boundary", compactMetadata: { trigger: "auto" }, timestamp: "2026-09-01T10:30:00.000Z" },
+      { ...base, type: "user", isCompactSummary: true, isVisibleInTranscriptOnly: true, timestamp: "2026-09-01T10:30:01.000Z", message: { role: "user", content: "This session is being continued from a previous conversation." } },
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:31:00.000Z", message: { id: "m2", role: "assistant", content: [{ type: "text", text: "Finished." }] } },
+    ];
+    const session = await readClaude(writeClaude(rows));
+    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["user", "migrate the schema"],
+      ["assistant", "Finished."],
+    ]);
+  });
+
+  it("ends the turn at a corrupt row instead of giving the next reply to the wrong prompt", async () => {
+    const base = { sessionId: SID, cwd: "/work/proj" };
+    const human = { entrypoint: "cli", promptSource: "typed", origin: { kind: "human" } };
+    const rows = [
+      { ...base, ...human, type: "user", timestamp: "2026-09-01T10:00:00.000Z", message: { role: "user", content: "prompt A" } },
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:00:01.000Z", message: { id: "m1", role: "assistant", content: [{ type: "text", text: "Answer A." }] } },
+      "{\"type\":\"user\",\"message\":{\"content\":\"prompt B",
+      { ...base, type: "assistant", timestamp: "2026-09-01T10:01:01.000Z", message: { id: "m2", role: "assistant", content: [{ type: "text", text: "Answer B." }] } },
+    ];
+    const session = await readClaude(writeClaude(rows));
+    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["user", "prompt A"],
+      ["assistant", "Answer A."],
+    ]);
+  });
+
+  it("refuses a transcript swapped for a symlink after it was listed", async () => {
+    const file = writeClaude(claudeRows());
+    expect(listClaudeSessionFiles(projects())).toEqual([file]);
+    const outside = path.join(dir, "outside.jsonl");
+    fs.writeFileSync(outside, `${JSON.stringify({ type: "user", sessionId: SID })}\n`);
+    fs.rmSync(file);
+    fs.symlinkSync(outside, file);
+    await expect(readClaude(file)).rejects.toMatchObject({ code: "EUNSAFE" });
+  });
+
+  it("refuses a transcript whose project folder was swapped for a symlink", async () => {
+    const file = writeClaude(claudeRows());
+    const elsewhere = path.join(dir, "elsewhere");
+    fs.renameSync(path.dirname(file), elsewhere);
+    fs.symlinkSync(elsewhere, path.dirname(file));
+    await expect(readClaude(file)).rejects.toMatchObject({ code: "EUNSAFE" });
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reports a history folder it cannot read instead of listing nothing", () => {
+    const file = writeClaude(claudeRows());
+    fs.chmodSync(path.dirname(file), 0o000);
+    try {
+      expect(() => listClaudeSessionFiles(projects())).toThrow(expect.objectContaining({ code: "EACCES" }));
+    } finally {
+      fs.chmodSync(path.dirname(file), 0o755);
+    }
+    expect(listClaudeSessionFiles(path.join(dir, "missing"))).toEqual([]);
+  });
+
   it("marks a session no person typed in as automated", async () => {
-    const session = await readClaudeSession(writeClaude(claudeRows({ promptSource: "sdk", entrypoint: "sdk-py" })));
+    const session = await readClaude(writeClaude(claudeRows({ promptSource: "sdk", entrypoint: "sdk-py" })));
     expect(session.automated).toBe(true);
   });
 
@@ -122,7 +188,7 @@ describe("import CLI with Claude Code history", () => {
     const file = writeClaude(claudeRows());
     const old = new Date(Date.now() - ACTIVE_SESSION_MS * 2);
     fs.utimesSync(file, old, old);
-    const readers = { claude: { list: () => [file], read: readClaudeSession } };
+    const readers = { claude: { list: () => [file], read: readClaude } };
     const posts = [];
     const api = {
       effectiveApiBase: "https://example.test",
