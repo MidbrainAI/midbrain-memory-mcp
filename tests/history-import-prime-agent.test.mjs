@@ -60,7 +60,7 @@ function rows() {
 
 describe("readPrimeAgentSession", () => {
   it("keeps prompts, sent prompts and final replies, without tool summaries", async () => {
-    const session = await readPrimeAgentSession(writeLog("prime-1.jsonl", rows()));
+    const session = await readPrimeAgentSession(writeLog("prime-1.jsonl", rows()), dir);
     expect(session).toMatchObject({ client: "prime-agent", sessionId: "prime-1", cwd: "/work/prime", skip: null });
     expect(session.entries).toEqual([
       { role: "user", text: "prime prompt one", occurredAt: "2026-10-12T09:00:01.000Z", cwd: "/work/prime" },
@@ -72,7 +72,7 @@ describe("readPrimeAgentSession", () => {
   });
 
   it("skips subagent sessions", async () => {
-    const session = await readPrimeAgentSession(writeLog("sub.jsonl", [header({ rlmDepth: 1 }), ...rows().slice(1)]));
+    const session = await readPrimeAgentSession(writeLog("sub.jsonl", [header({ rlmDepth: 1 }), ...rows().slice(1)]), dir);
     expect(session.skip).toBe("subagent session");
     expect(session.entries).toEqual([]);
   });
@@ -87,7 +87,7 @@ describe("readPrimeAgentSession", () => {
       },
       message("2026-10-13T00:00:05.000Z", { role: "user", content: [{ type: "text", text: "fork prompt" }] }),
     ];
-    const session = await readPrimeAgentSession(writeLog("fork.jsonl", forked));
+    const session = await readPrimeAgentSession(writeLog("fork.jsonl", forked), dir);
     expect(session.entries.map((entry) => entry.text)).toEqual(["fork prompt"]);
   });
 
@@ -99,12 +99,22 @@ describe("readPrimeAgentSession", () => {
     await expect(listPrimeAgentSessionFiles(dir)).resolves.toEqual([log]);
   });
 
+  it("leaves out replies after a corrupt line until the next prompt", async () => {
+    const lines = rows().map((row) => JSON.stringify(row));
+    lines[3] = "{\"type\":\"message\",\"message\":{\"role\":\"us"; // prompt one is lost
+    const file = path.join(dir, "torn.jsonl");
+    fs.writeFileSync(file, `${lines.join("\n")}\n`);
+    const session = await readPrimeAgentSession(file, dir);
+    expect(session.entries.map((entry) => entry.text)).not.toContain("prime answer one");
+    expect(session.entries.map((entry) => entry.text)).toContain("sent prompt");
+  });
+
   it("plans from a reader whose list() is async", async () => {
     const log = writeLog("prime-1.jsonl", rows());
     const old = new Date(Date.now() - 3_600_000);
     fs.utimesSync(log, old, old);
     const [planned] = await planImport({
-      readers: { "prime-agent": { list: async () => [log], read: readPrimeAgentSession } },
+      readers: { "prime-agent": { list: async () => [log], read: (file) => readPrimeAgentSession(file, dir) } },
       clients: ["prime-agent"],
     });
     expect(planned).toMatchObject({ sessionId: "prime-1", skip: null });

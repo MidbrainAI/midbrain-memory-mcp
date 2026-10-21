@@ -12,7 +12,7 @@
 
 import { primeSessionsDir } from "../../clients/prime-agent.mjs";
 import { applyEntry, messageText, newSessionState } from "../../../plugins/prime-agent/common.mjs";
-import { jsonRows, regularFiles, validTimestamp } from "./common.mjs";
+import { CORRUPT_ROW, jsonRows, regularFiles, validTimestamp } from "./common.mjs";
 
 /** Session logs directly in the sessions dir. */
 export async function listPrimeAgentSessionFiles(dir) {
@@ -21,7 +21,8 @@ export async function listPrimeAgentSessionFiles(dir) {
 }
 
 /** @returns {Promise<import("../plan.mjs").ImportSession>} */
-export async function readPrimeAgentSession(file) {
+export async function readPrimeAgentSession(file, dir) {
+  const root = dir ?? await primeSessionsDir();
   const session = {
     client: "prime-agent",
     file,
@@ -31,7 +32,14 @@ export async function readPrimeAgentSession(file) {
     skip: null,
   };
   const state = newSessionState();
-  for await (const entry of jsonRows(file)) {
+  // After a corrupt line, a reply may answer a prompt that was lost with it:
+  // replies are left out until the next prompt.
+  let gap = false;
+  for await (const entry of jsonRows(file, root)) {
+    if (entry === CORRUPT_ROW) {
+      gap = true;
+      continue;
+    }
     const captures = applyEntry(state, entry);
     if (entry.type === "session") {
       session.sessionId = state.sessionId ?? null;
@@ -47,6 +55,8 @@ export async function readPrimeAgentSession(file) {
     for (const capture of captures) {
       // The reply is the message's own text; anything else is the tool summary.
       if (capture.role === "assistant" && capture.text !== messageText(entry.message)) continue;
+      if (capture.role === "user") gap = false;
+      else if (gap) continue;
       session.entries.push({ role: capture.role, text: capture.text, occurredAt: at, cwd: session.cwd ?? undefined });
     }
   }
