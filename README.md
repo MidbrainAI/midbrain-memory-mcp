@@ -308,6 +308,7 @@ Supported sources (`--client` takes the id):
 | Codex | `codex` | `~/.codex/sessions` and `archived_sessions` (or `CODEX_HOME`), including compressed `.jsonl.zst` rollouts (Node 22.15+ or Bun) |
 | Prime Agent | `prime-agent` | `~/.prime/agent/sessions/*.jsonl` (or `PRIME_AGENT_SESSION_DIR`, the `sessionDir` setting) and `~/.prime/agent/sessions-archive`; subagent sessions and a fork's copied parent history are skipped |
 | OpenClaw | `openclaw` | `~/.openclaw/agents/*/agent/openclaw-agent.sqlite` (or `OPENCLAW_STATE_DIR`, `OPENCLAW_PROFILE`), read-only; cron, hook, plugin and spawned sessions, and heartbeat turns, are skipped. A session on the claude-cli backend is imported once, as the OpenClaw session. Needs Node 22.15+ (`node:sqlite` and zstd) |
+| OpenCode | `opencode` | `~/.local/share/opencode/opencode.db` (or `XDG_DATA_HOME`), read-only; subagent sessions are skipped, and `opencode run` sessions count as automated (OpenCode marks the whole session, so a run session continued in the TUI counts too). Archived sessions are read. Needs Node 22.13+ |
 
 - **What is imported:** each prompt you typed and the reply that ended the
   turn, with its original time, labeled `origin: "import"`. Tool calls and
