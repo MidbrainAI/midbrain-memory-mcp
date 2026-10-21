@@ -337,6 +337,18 @@ describe("import CLI", () => {
     expect(posts).toEqual([]);
   });
 
+  it("reports folders without a project key once, by the key used instead", async () => {
+    const { api } = fakeApi([]);
+    const apiFor = async ({ cwd }) => ({ ...api, projectFallbackNote: "no project key", requestedProjectDir: cwd, keyScope: "global" });
+    const twoFolders = fakeReaders([session({
+      lastWrittenMs: Date.now() - ACTIVE_SESSION_MS * 2,
+      entries: session().entries.map((entry, index) => ({ ...entry, cwd: index < 2 ? "/work/a" : "/work/b" })),
+    })]);
+    const err = capture();
+    expect(await runImportCli(["--client", "fake"], { readers: twoFolders, err, apiFor })).toBe(0);
+    expect(err.text).toContain("2 folders have no project key; their turns use your global key, as live capture does.");
+  });
+
   it("refuses --apply without a terminal or --yes, and stops when declined", async () => {
     const { apiFor, posts } = fakeApi([]);
     const err = capture();

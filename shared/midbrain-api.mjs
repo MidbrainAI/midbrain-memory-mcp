@@ -171,15 +171,17 @@ export class MidbrainApi {
    * Factory: resolve key from a client adapter, return ready-to-use instance.
    * @param {import('./clients/base.mjs').BaseClient} client
    * @param {string} [projectDir]
-   * @param {{clientLabel?: string}} [opts] `clientLabel` overrides `client.id`
+   * @param {{clientLabel?: string, quiet?: boolean}} [opts] `quiet` leaves out
+   *   the "no project key" warning (see BaseClient.resolveKey); the fallback is
+   *   still reported by `projectFallbackNote`. `clientLabel` overrides `client.id`
    *   as the UA client token; when omitted, a validated
    *   `MIDBRAIN_CAPTURE_CLIENT` runtime label wins. This supports clients whose
    *   reported identity can
    *   differ at runtime from their static adapter id (e.g. Claude Code
    *   running inside a NanoClaw container reports "nanoclaw", not "claude").
    */
-  static async create(client, projectDir, { clientLabel } = {}) {
-    const result = await client.resolveKey(projectDir, { includeScope: true });
+  static async create(client, projectDir, { clientLabel, quiet = false } = {}) {
+    const result = await client.resolveKey(projectDir, { includeScope: true, quiet });
     if (!result) throw new Error("No API key configured. Run: npx midbrain-memory-mcp install");
     // The project host config lives next to the project key, which may be in
     // a parent of the requested directory or in the main worktree.

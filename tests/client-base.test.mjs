@@ -147,6 +147,14 @@ describe("BaseClient.resolveKey — project→global WARN", () => {
     );
   });
 
+  it("leaves the WARN out with quiet, for a caller that reports the fallback itself", async () => {
+    process.env.MIDBRAIN_API_KEY = "fallback-key";
+    const result = await client.resolveKey(PROJECT_DIR, { quiet: true });
+
+    expect(result.key).toBe("fallback-key");
+    expect(errSpy).not.toHaveBeenCalledWith(expect.stringMatching(/no project key found/));
+  });
+
   it("does not emit WARN when no projectDir is provided", async () => {
     process.env.MIDBRAIN_API_KEY = "env-key";
     await client.resolveKey();

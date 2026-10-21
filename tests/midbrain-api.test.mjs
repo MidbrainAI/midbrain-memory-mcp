@@ -851,7 +851,7 @@ describe("MidbrainApi.create", () => {
     expect(api.credentialShadowNote).toBeNull();
     expect(mockClient.resolveKey).toHaveBeenCalledWith(
       "/some/dir",
-      { includeScope: true },
+      { includeScope: true, quiet: false },
     );
   });
 

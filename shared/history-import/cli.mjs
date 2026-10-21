@@ -63,6 +63,25 @@ export function parseImportArgs(argv, readers = READERS) {
   return { help: values.help, clients, since, apply: values.apply, yes: values.yes, dream: values.dream };
 }
 
+/**
+ * One line per key scope for the directories of pending entries that have no
+ * project key, in place of the warning key resolution prints for each.
+ */
+async function keyFallbackLine(sessions, apiFor) {
+  const fallbacks = new Map();
+  for (const session of sessions) {
+    for (const entry of session.entries) {
+      const api = await apiFor({ client: session.client, cwd: entryCwd(session, entry) });
+      if (api.projectFallbackNote && api.requestedProjectDir) fallbacks.set(api.requestedProjectDir, api.keyScope);
+    }
+  }
+  const byScope = {};
+  for (const scope of fallbacks.values()) byScope[scope] = (byScope[scope] || 0) + 1;
+  return Object.entries(byScope).map(([scope, count]) =>
+    `${count} folder${count === 1 ? " has" : "s have"} no project key; ${count === 1 ? "its" : "their"} turns use your ${scope} key, as live capture does.`,
+  ).join("\n");
+}
+
 function formatPreview(summary) {
   const lines = [];
   for (const [client, row] of Object.entries(summary)) {
@@ -96,7 +115,9 @@ function apiResolver() {
     if (!cache.has(cacheKey)) {
       const adapter = adapters[client];
       cache.set(cacheKey, adapter
-        ? MidbrainApi.create(adapter, cwd ?? undefined, { clientLabel: client })
+        // Quiet: one directory per turn would print a warning each; the
+        // preview reports the fallback once instead (keyFallbackLine).
+        ? MidbrainApi.create(adapter, cwd ?? undefined, { clientLabel: client, quiet: true })
         : Promise.reject(new Error(`no adapter for ${client}`)));
     }
     return cache.get(cacheKey);
@@ -153,6 +174,8 @@ export async function runImportCli(argv, {
   err.write(`\n${formatPreview(summarize(sessions))}\n\n`);
 
   const pending = sessions.filter((session) => !session.skip && session.entries.length);
+  const fallbackLine = await keyFallbackLine(pending, apiFor);
+  if (fallbackLine) err.write(`${fallbackLine}\n`);
   const total = pending.reduce((sum, session) => sum + session.entries.length, 0);
   // Each stored memory uses one MidBrain credit, as a live capture does.
   if (total) err.write(`Each entry uses one MidBrain credit: this import needs ${total} credits.\n`);
