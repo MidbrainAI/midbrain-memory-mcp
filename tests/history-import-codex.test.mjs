@@ -74,6 +74,26 @@ describe("readCodexSession", () => {
     expect((await readCodexSession(file, codexDirs())).skip).toBe("subagent session");
   });
 
+  it("keeps input typed while Codex works, without the cut-off copy Codex can deliver before it", async () => {
+    const user = (at, text) => ({ type: "response_item", timestamp: at, payload: { type: "message", role: "user", content: [{ type: "input_text", text }] } });
+    const rows = [
+      codexRows()[0],
+      { type: "event_msg", timestamp: "2026-10-13T11:10:00.000Z", payload: { type: "task_started", turn_id: "t1" } },
+      user("2026-10-13T11:10:00.100Z", "check the portal run"),
+      // Typed while the turn runs; delivered together, the cut-off copy first.
+      user("2026-10-13T11:10:56.150Z", "a new portal type appeared"),
+      user("2026-10-13T11:10:56.153Z", "regarding the document sharing, the setting is set in"),
+      user("2026-10-13T11:10:56.155Z", "regarding the document sharing, the setting is set in the knowledge base"),
+      { type: "event_msg", timestamp: "2026-10-13T11:12:00.000Z", payload: { type: "task_complete", turn_id: "t1", last_agent_message: "done" } },
+    ];
+    const file = writeJsonl(path.join(dir, "codex", "sessions", "rollout-steer.jsonl"), rows);
+    const session = await readCodexSession(file, codexDirs());
+    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["user", "check the portal run\na new portal type appeared\nregarding the document sharing, the setting is set in the knowledge base"],
+      ["assistant", "done"],
+    ]);
+  });
+
   it("ends the turn at a corrupt row and refuses a rollout outside the history folders", async () => {
     const rows = codexRows().slice(0, 7).map((row) => JSON.stringify(row));
     // The final answer row of turn one is lost; nothing may stand in for it.
