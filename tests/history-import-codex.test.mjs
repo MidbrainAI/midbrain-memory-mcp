@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -94,5 +95,28 @@ describe("readCodexSession", () => {
     writeJsonl(path.join(dir, "codex", "sessions", "2026", "10", "06", "other.jsonl"), []);
     const found = listCodexSessionFiles(codexDirs());
     expect(found.sort()).toEqual([archived, dated].sort());
+  });
+
+  it("lists compressed rollouts, and the plain copy when both exist", () => {
+    const day = path.join(dir, "codex", "sessions", "2026", "10", "06");
+    const compressed = writeJsonl(path.join(day, "rollout-z.jsonl.zst"), []);
+    const plain = writeJsonl(path.join(day, "rollout-both.jsonl"), []);
+    writeJsonl(path.join(day, "rollout-both.jsonl.zst"), []);
+    expect(listCodexSessionFiles(codexDirs()).sort()).toEqual([compressed, plain].sort());
+  });
+
+  it.skipIf(typeof zlib.zstdCompressSync !== "function")("reads a compressed rollout like the plain one", async () => {
+    const day = path.join(dir, "codex", "sessions", "2026", "10", "06");
+    const plain = writeJsonl(path.join(day, "rollout-a.jsonl"), codexRows());
+    const compressed = path.join(day, "rollout-b.jsonl.zst");
+    fs.writeFileSync(compressed, zlib.zstdCompressSync(fs.readFileSync(plain)));
+    const fromPlain = await readCodexSession(plain, codexDirs());
+    const fromCompressed = await readCodexSession(compressed, codexDirs());
+    expect(fromCompressed.entries).toEqual(fromPlain.entries);
+    expect(fromCompressed.sessionId).toBe("codex-session");
+    // A damaged archive is unreadable, never an empty session.
+    const damaged = path.join(day, "rollout-c.jsonl.zst");
+    fs.writeFileSync(damaged, Buffer.from("not zstd"));
+    await expect(readCodexSession(damaged, codexDirs())).rejects.toThrow();
   });
 });
