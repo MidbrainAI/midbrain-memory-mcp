@@ -203,7 +203,9 @@ export async function runImportCli(argv, {
     if (totals.blocked.length > 10) err.write(`  ...and ${totals.blocked.length - 10} more\n`);
   }
   if (totals.stopped) {
-    err.write(`Stopped early: ${totals.stopped}. Run the same command again to continue; entries already stored are skipped.\n`);
+    const next = { outOfCredits: "Add credits, then run", rateLimited: "Wait a few minutes, then run" }[totals.stoppedOn] ?? "Run";
+    err.write(`Stopped early: ${totals.stopped}, after storing ${totals.sent} of ${total} entries.\n`
+      + `${next} the same command again to continue; entries already stored are skipped.\n`);
     return 1;
   }
   return 0;

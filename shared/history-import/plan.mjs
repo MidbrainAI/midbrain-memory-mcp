@@ -267,7 +267,7 @@ export async function uploadImport({
   wait = sleep,
   importedAt = new Date().toISOString(),
 }) {
-  const totals = { sent: 0, sessions: 0, truncated: 0, blocked: [], stopped: null };
+  const totals = { sent: 0, sessions: 0, truncated: 0, blocked: [], stopped: null, stoppedOn: null };
   for (const session of sessions) {
     if (session.skip || session.entries.length === 0) continue;
     const key = sessionKey(session);
@@ -285,6 +285,7 @@ export async function uploadImport({
         totals.blocked.push({ client: session.client, sessionId: session.sessionId, role: entry.role, occurredAt: entry.occurredAt });
       } else if (result !== "ok") {
         totals.stopped = STOP_REASONS[result] ?? STOP_REASONS.unknown;
+        totals.stoppedOn = result;
         onProgress({ type: "stopped", session: key, reason: totals.stopped, totals });
         return totals;
       } else {

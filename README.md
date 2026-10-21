@@ -316,7 +316,9 @@ Supported sources (`--client` takes the id):
   earlier import stored, are skipped, so an interrupted import resumes when
   you run the same command again.
 - **Keys and credits.** Each turn is stored with the key live capture would
-  use for its directory, and uses one MidBrain credit.
+  use for its directory, and uses one MidBrain credit. When credits run out,
+  the import stops and says how many entries it stored; add credits and run
+  the same command to continue.
 - **Secrets.** Text is stored as written, as live capture stores it.
 - **Load.** Entries are sent one at a time, once each: any failure stops the
   import (run it again to resume). An entry MidBrain's firewall blocks is

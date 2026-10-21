@@ -206,7 +206,7 @@ describe("uploadImport", () => {
       wait: async () => {},
     });
     expect(calls).toBe(2);
-    expect(totals).toMatchObject({ sent: 1, stopped: "out of MidBrain credits" });
+    expect(totals).toMatchObject({ sent: 1, stopped: "out of MidBrain credits", stoppedOn: "outOfCredits" });
   });
 
   it.each([
@@ -335,8 +335,16 @@ describe("import CLI", () => {
     const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} });
     expect(code).toBe(1);
     expect(posts).toHaveLength(2);
-    expect(err.text).toContain("Stopped early: out of MidBrain credits");
-    expect(err.text).toContain("Run the same command again to continue");
+    expect(err.text).toContain("Stopped early: out of MidBrain credits, after storing 1 of 4 entries.");
+    expect(err.text).toContain("Add credits, then run the same command again to continue");
+  });
+
+  it("asks to wait before resuming after a rate limit", async () => {
+    const { apiFor } = fakeApi(["ok", "ok", "rateLimited"]);
+    const err = capture();
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(1);
+    expect(err.text).toContain("Stopped early: rate limited, after storing 2 of 4 entries.");
+    expect(err.text).toContain("Wait a few minutes, then run the same command again to continue");
   });
 
   it("stores each turn with its own directory's key and checks every destination", async () => {
