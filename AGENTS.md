@@ -764,6 +764,7 @@ Vitest tests live in `tests/`.
 | `tests/history-import-hermes.test.mjs` | `shared/history-import/readers/hermes.mjs` |
 | `tests/history-import-opencode.test.mjs` | `shared/history-import/readers/opencode.mjs` |
 | `tests/history-import-openclaw.test.mjs` | `shared/history-import/readers/openclaw.mjs`, SQLite helpers in `readers/common.mjs` |
+| `tests/hosted-plugins.test.mjs` | `hosted-plugins/` bundles |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.
