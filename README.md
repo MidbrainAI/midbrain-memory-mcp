@@ -304,6 +304,7 @@ Supported sources (`--client` takes the id):
 
 | Client | `--client` | Reads |
 |---|---|---|
+| Claude Code | `claude` | `~/.claude/projects/*/*.jsonl` (or `CLAUDE_CONFIG_DIR`) |
 
 - **What is imported:** each prompt you typed and the reply that ended the
   turn, with its original time, labeled `origin: "import"`. Tool calls and
