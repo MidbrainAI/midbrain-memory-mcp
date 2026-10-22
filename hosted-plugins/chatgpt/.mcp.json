@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "midbrain": {
+      "url": "https://memory.midbrain.ai/api/mcp"
+    }
+  }
+}
