@@ -39,6 +39,38 @@ function keyWaitPollMs() {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Cursor's Third-Party Imports (on by default) runs ~/.claude/settings.json
+// hooks with Cursor's own payload: hook_event_name "beforeSubmitPrompt" or
+// "stop", plus cursor_version on every event (#100).
+const CURSOR_EVENT_NAMES = new Set(["beforeSubmitPrompt", "stop"]);
+
+/** True when Cursor, not Claude Code, sent this hook payload. */
+export function isCursorPayload(input) {
+  const version = input?.cursor_version;
+  return (typeof version === "string" && version.trim() !== "") ||
+    CURSOR_EVENT_NAMES.has(input?.hook_event_name);
+}
+
+/**
+ * True when Cursor runs this Claude hook and the MidBrain Cursor hooks are
+ * installed: they capture the turn under client "cursor", so storing it here
+ * too would store each prompt twice (#100). Without the Cursor hooks this
+ * hook stays the only capture, so it keeps running. Never throws.
+ *
+ * @param {object} input - hook stdin payload
+ * @param {{ hasCursorHooks?: () => Promise<boolean> }} [deps]
+ */
+export async function cursorCapturesTurn(input, { hasCursorHooks } = {}) {
+  if (!isCursorPayload(input)) return false;
+  try {
+    if (hasCursorHooks) return await hasCursorHooks();
+    const { Cursor } = await import("../../shared/clients/cursor.mjs");
+    return await new Cursor().hasCaptureHooks();
+  } catch {
+    return false;
+  }
+}
+
 /** True only for the specific "no key resolved" throw, not other config errors. */
 export function isNoKeyError(err) {
   return Boolean(err && typeof err.message === "string" && err.message.includes(NO_KEY_ERROR_FRAGMENT));

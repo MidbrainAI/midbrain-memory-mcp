@@ -71,7 +71,10 @@ function buildEntry({ isDev = false, projectDir } = {}) {
 // Node upgrades. 30s timeout absorbs cold npx resolution inside the shim
 // (the 10s value starved exactly that path in the 2026-07 Hermes incident).
 const HOOK_TIMEOUT_SEC = 30;
+// SessionStart adds persona/profile once per session (and again after
+// /clear or compaction); the capture hooks never repeat it per turn (#61).
 const HOOK_EVENTS = {
+  SessionStart: 'session',
   UserPromptSubmit: 'user',
   Stop: 'assistant',
 };

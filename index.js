@@ -10,24 +10,30 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createServer } from "./mcp.mjs";
+import { createServer, loadServerInstructions } from "./mcp.mjs";
 import { PKG_VERSION, checkForUpdate, prepareCaptureClientMigration } from "./install.mjs";
 import { realpathSync } from "fs";
 import { fileURLToPath } from "url";
 
 export { createServer };
 
-/** Start the real MCP stdio path with only capture-label migration pre-ready. */
+/**
+ * Start the real MCP stdio path. Only the capture-label migration and the
+ * Cursor persona/profile read (bounded by the API timeout) run before
+ * readiness.
+ */
 export async function startMcpServer({
   serverFactory = createServer,
   transportFactory = () => new StdioServerTransport(),
   prepareCaptureClientMigrationFn = prepareCaptureClientMigration,
+  loadServerInstructionsFn = loadServerInstructions,
   checkForUpdateFn = checkForUpdate,
   prepareOptions,
   log = console.error,
 } = {}) {
   const preparation = await prepareCaptureClientMigrationFn(prepareOptions);
-  const server = serverFactory(PKG_VERSION);
+  const instructions = await loadServerInstructionsFn();
+  const server = serverFactory(PKG_VERSION, { instructions });
   const transport = transportFactory();
   await server.connect(transport);
   log(`MCP server running (midbrain-memory-mcp v${PKG_VERSION})`);
@@ -50,12 +56,16 @@ if (isMain) {
       await import("./plugins/claude-code/capture-user.mjs");
     } else if (client === "claude" && event === "assistant") {
       await import("./plugins/claude-code/capture-assistant.mjs");
+    } else if (client === "claude" && event === "session") {
+      await import("./plugins/claude-code/session-context.mjs");
     } else if (client === "codex" && event === "user") {
       await import("./plugins/codex/capture-user.mjs");
     } else if (client === "codex" && event === "assistant") {
       await import("./plugins/codex/capture-assistant.mjs");
     } else if (client === "codex" && event === "tool") {
       await import("./plugins/codex/capture-tool.mjs");
+    } else if (client === "codex" && event === "session") {
+      await import("./plugins/codex/session-context.mjs");
     } else if (client === "hermes" && event === "user") {
       await import("./plugins/hermes/capture-user.mjs");
     } else if (client === "hermes" && event === "assistant") {
@@ -72,7 +82,7 @@ if (isMain) {
       const { runCaptureCli } = await import("./plugins/prime-agent/common.mjs");
       await runCaptureCli(event);
     } else {
-      console.error("Usage: midbrain-memory-mcp hook claude user|assistant OR hook codex user|assistant|tool OR hook hermes user|assistant OR hook cursor user|assistant|tool|session-end OR hook prime-agent watch|sync");
+      console.error("Usage: midbrain-memory-mcp hook claude user|assistant|session OR hook codex user|assistant|tool|session OR hook hermes user|assistant OR hook cursor user|assistant|tool|session-end OR hook prime-agent watch|sync");
       process.exit(2);
     }
   } else if (process.argv[2] === "capture-user" || process.argv[2] === "capture-assistant") {

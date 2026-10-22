@@ -9,8 +9,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "fs/promises";
 
 import { makeTestEnv } from "./helpers/test-env.mjs";
+import { formatIdentityContext } from "../shared/identity-context.mjs";
 import plugin, {
-  PLUGIN_ID, createAgentEndHandler, extractTurn, messageText,
+  PLUGIN_ID, createAgentEndHandler, createPromptBuildHandler, extractTurn, messageText,
 } from "../plugins/openclaw/index.js";
 
 const user = (text, timestamp = 1) => ({ role: "user", content: [{ type: "text", text }], timestamp });
@@ -197,17 +198,97 @@ describe("createAgentEndHandler", () => {
   });
 });
 
+describe("createPromptBuildHandler", () => {
+  let api;
+  let createApi;
+  let logger;
+
+  beforeEach(() => {
+    api = {
+      getPersona: vi.fn(async () => "Be concise."),
+      getProfile: vi.fn(async () => "Works at CX2."),
+    };
+    createApi = vi.fn(async () => api);
+    logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  });
+
+  const handler = (extra = {}) => createPromptBuildHandler({ createApi, logger, ...extra });
+
+  it("appends the persona and profile to the system prompt", async () => {
+    const result = await handler()({ prompt: "hi", messages: [] }, CTX);
+    expect(createApi).toHaveBeenCalledWith(CTX.workspaceDir);
+    expect(result).toEqual({
+      appendSystemContext: formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }),
+    });
+  });
+
+  it("adds nothing when both fields are blank", async () => {
+    api.getPersona.mockResolvedValue(null);
+    api.getProfile.mockResolvedValue(null);
+    await expect(handler()({ prompt: "hi" }, CTX)).resolves.toBeUndefined();
+  });
+
+  it("skips cron and heartbeat runs", async () => {
+    const onBuild = handler();
+    await expect(onBuild({ prompt: "tick" }, { ...CTX, trigger: "heartbeat" })).resolves.toBeUndefined();
+    await expect(onBuild({ prompt: "job" }, { ...CTX, trigger: "cron" })).resolves.toBeUndefined();
+    expect(createApi).not.toHaveBeenCalled();
+  });
+
+  it("reads once per session and keeps the system text identical across turns (#61)", async () => {
+    const onBuild = handler();
+    const first = await onBuild({ prompt: "a" }, CTX);
+    api.getProfile.mockResolvedValue("Changed mid-session.");
+    const second = await onBuild({ prompt: "b" }, CTX);
+    expect(second).toEqual(first);
+    expect(createApi).toHaveBeenCalledTimes(1);
+    expect(api.getPersona).toHaveBeenCalledTimes(1);
+
+    const otherSession = await onBuild({ prompt: "c" }, { ...CTX, sessionId: "other-session" });
+    expect(otherSession.appendSystemContext).toContain("Changed mid-session.");
+    expect(createApi).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries the read on the next turn after a failure", async () => {
+    const onBuild = handler();
+    api.getPersona.mockRejectedValueOnce(new Error("down"));
+    api.getProfile.mockRejectedValueOnce(new Error("down"));
+    await expect(onBuild({ prompt: "a" }, CTX)).resolves.toBeUndefined();
+    await expect(onBuild({ prompt: "b" }, CTX)).resolves.toEqual({
+      appendSystemContext: formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }),
+    });
+    createApi.mockRejectedValueOnce(new Error("No API key configured"));
+    const fresh = handler();
+    await expect(fresh({ prompt: "c" }, CTX)).resolves.toBeUndefined();
+    await expect(fresh({ prompt: "d" }, CTX)).resolves.toEqual({
+      appendSystemContext: formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }),
+    });
+  });
+
+  it("adds nothing, with a log line, when the API cannot be created", async () => {
+    createApi.mockRejectedValueOnce(new Error("No API key configured"));
+    await expect(handler()({ prompt: "hi" }, CTX)).resolves.toBeUndefined();
+    expect(logger.error).toHaveBeenCalledWith("OPENCLAW IDENTITY ERROR: No API key configured");
+  });
+
+  it("adds nothing when the API does not resolve within the limit", async () => {
+    createApi.mockImplementationOnce(() => new Promise(() => {}));
+    await expect(handler({ timeLimitMs: 20 })({ prompt: "hi" }, CTX)).resolves.toBeUndefined();
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("not loaded after 20ms"));
+  });
+});
+
 describe("plugin entry", () => {
   let env;
   beforeEach(async () => { env = await makeTestEnv(); });
   afterEach(async () => { await env.restore(); });
 
-  it("registers one agent_end handler under the manifest id", () => {
+  it("registers the prompt-build and agent_end handlers under the manifest id", () => {
     const on = vi.fn();
     plugin.register({ on });
     expect(plugin.id).toBe(PLUGIN_ID);
-    expect(on).toHaveBeenCalledTimes(1);
-    expect(on).toHaveBeenCalledWith("agent_end", expect.any(Function));
+    expect(on.mock.calls.map(([event]) => event)).toEqual(["before_prompt_build", "agent_end"]);
+    for (const [, fn] of on.mock.calls) expect(fn).toEqual(expect.any(Function));
   });
 
   it("matches the manifest id and package entry OpenClaw loads", async () => {

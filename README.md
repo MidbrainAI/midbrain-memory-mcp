@@ -72,6 +72,9 @@ OpenCode / Claude Code / Codex / Cursor / OpenClaw / Prime Agent session
                        (auto-capture)     /api/v1/memories/episodic
 ```
 
+[docs/clients.md](docs/clients.md) lists what each client gets (search,
+capture, persona and profile, repair) and the gaps that are still open.
+
 **Search**: The LLM calls `memory_search` via MCP. The server queries the
 API and returns scored results as formatted text.
 
@@ -100,6 +103,25 @@ call `/api/v1/memories/search/procedural` or prepend procedural context unless
 `MIDBRAIN_ENABLE_PK_INJECTION=1` is explicitly set in the hook environment.
 There is no manual MCP tool for procedural knowledge; agents should use the
 normal memory tools for explicit recall.
+
+**Persona and profile**: MidBrain reads `GET /api/v1/persona` and
+`GET /api/v1/profile` and adds them **once per session**, never on every turn,
+so they cost their tokens once and keep the client's prompt cache stable:
+
+| Client | Where they go |
+|---|---|
+| Claude Code (and NanoClaw) | `SessionStart` hook context; Claude Code runs it again after `/clear` and compaction |
+| Codex | `SessionStart` hook context |
+| OpenCode | the system prompt (`experimental.chat.system.transform`), read once per session |
+| OpenClaw | the system prompt (`appendSystemContext`), read once per session |
+| Hermes | the first turn of the session (`pre_llm_call` with `is_first_turn`); Hermes keeps it in the session history |
+| Cursor | the MidBrain MCP server's instructions, read once when the server starts |
+
+They are not MCP tools, and nothing writes either field. Their length is set
+by the API; MidBrain passes them through unchanged. A
+blank field or a failed read adds nothing (OpenCode and OpenClaw retry on the
+next turn). A change to the persona or profile applies from the next session.
+Captured prompts and replies are stored as written.
 
 Over time, captured memory can consolidate into procedural knowledge: the
 experience layer that helps agents adapt how they work, not just recall what
@@ -631,10 +653,12 @@ Non-interactive installs always use the single shared (global) key.
 ```
 
 Claude Code global install also writes `UserPromptSubmit` and `Stop` capture
-hooks into `~/.claude/settings.json`. The hooks call a stable local shim
+hooks, plus a `SessionStart` hook that adds the persona and profile once per
+session, into `~/.claude/settings.json`. The hooks call a stable local shim
 (30-second timeout; the `Stop` hook is async):
 
 ```text
+~/.midbrain/bin/claude-hook session
 ~/.midbrain/bin/claude-hook user
 ~/.midbrain/bin/claude-hook assistant
 ```
@@ -656,7 +680,8 @@ MIDBRAIN_CLIENT = "codex"
 ```
 
 Codex global install also writes `~/.codex/hooks.json` with
-`UserPromptSubmit`, `PostToolUse`, and `Stop` capture hooks. Project setup
+`UserPromptSubmit`, `PostToolUse`, and `Stop` capture hooks and a
+`SessionStart` hook for the persona and profile. Project setup
 writes only `.codex/config.toml`; it does not write project-local hooks to
 avoid duplicate captures from multiple matching hook layers. Use `/hooks` in
 Codex to review and trust hook changes if prompted.
@@ -895,6 +920,11 @@ Limitations:
   Rules.
 - Capture hooks are global only; project setup does not write
   `<project>/.cursor/hooks.json`, which would capture every turn twice.
+- Cursor's Third-Party Imports setting (on by default) also runs the Claude
+  Code hooks in `~/.claude/settings.json`. When the MidBrain Cursor hooks are
+  installed, the MidBrain Claude Code hooks skip those Cursor runs, so each
+  turn is stored once, as `client: "cursor"`. Without the Cursor hooks, the
+  Claude Code hook still stores Cursor prompts.
 - Assistant capture stores the final response text only. MidBrain does not
   capture Cursor reasoning, so there is no reasoning/commentary summary.
 - Tool events run after the last `afterAgentResponse` of a generation are not
@@ -905,6 +935,16 @@ Limitations:
   only the final 4 MiB of a transcript under `~/.cursor/projects`.
 - Procedural-knowledge injection is not available: `beforeSubmitPrompt` cannot
   add context. `MIDBRAIN_ENABLE_PK_INJECTION` has no effect for Cursor.
+- Persona and profile come from the MidBrain MCP server's instructions, read
+  when the server starts (when Cursor loads the window). An edit shows up after
+  the server restarts, for example after a window reload. The hooks cannot
+  carry them: `beforeSubmitPrompt` cannot add context, and Cursor merges
+  `sessionStart` output only after the first prompt has gone to the model.
+  MidBrain sends native MCP instructions, including an explicit empty-state
+  message when neither field is available. If Cursor still shows old
+  instructions, remove and re-add the MidBrain MCP connection and start a new
+  chat. The server adds identity only when `MIDBRAIN_CLIENT` is `cursor`, so
+  other clients do not get it twice.
 - Latency: Cursor holds the prompt until the `beforeSubmitPrompt` hook process
   exits. MidBrain code in that hook returns at once and hands the store to a
   detached background process, which stops after 20 seconds and moves an
@@ -975,6 +1015,15 @@ What is captured: the plugin listens on OpenClaw's typed `agent_end` hook.
 newest user message and the final assistant text after it, once per session
 turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
 triggers; it captures runs with trigger `user` or no trigger.
+
+The same plugin also listens on `before_prompt_build`. On user-triggered runs
+it returns the persona and profile as `appendSystemContext`, so OpenClaw
+appends them to the system prompt. They are read once per session and reused,
+so the system text stays the same for the whole session. It waits at most 5
+seconds, a blank field or failed read adds nothing (and is retried next turn),
+and setting
+`plugins.entries["midbrain-memory"].hooks.allowPromptInjection` to `false`
+turns it off.
 
 Each capture sends `client: "openclaw"`, `session_id` from OpenClaw's
 `sessionId`, and `cwd` from the agent workspace directory. Capture is
@@ -1569,7 +1618,8 @@ branching inside MCP tools or hook scripts.
    global/project config writes, MCP coexistence tests when setup behavior is
    touched, and hook/plugin runtime tests for stdout safety, key resolution,
    capture, and procedural-knowledge injection.
-8. **Document it.** Update the client matrix, setup notes, troubleshooting, and
+8. **Document it.** Update the client matrix in
+   [docs/clients.md](docs/clients.md), setup notes, troubleshooting, and
    this architecture section. Do not document support until installer wiring,
    runtime capture, tests, and package contents are all present.
 

@@ -10,6 +10,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "fs/promises";
 import path from "path";
+import { spawnSync } from "node:child_process";
 
 import { makeTestEnv } from "./helpers/test-env.mjs";
 import {
@@ -98,6 +99,30 @@ describe("buildShimBody — NanoClaw state propagation", () => {
     expect(body).toContain(`MIDBRAIN_STATE_DIR='${stateDir}'`);
     expect(body).toContain("export MIDBRAIN_STATE_DIR");
     expect(body).toContain('hook claude "$@"');
+  });
+
+  it.skipIf(IS_WIN)("Codex shim restores durable state in an env-stripped hook", async () => {
+    const env = await makeTestEnv();
+    try {
+      const stateDir = path.join(env.home, "Codex's durable state", ".midbrain");
+      const probe = path.join(env.root, "probe");
+      await fs.mkdir(probe);
+      await fs.writeFile(path.join(probe, "index.js"), "process.stdout.write(JSON.stringify({state:process.env.MIDBRAIN_STATE_DIR}));");
+      const shim = path.join(env.root, "codex-hook");
+      await fs.writeFile(shim, buildShimBody("codex", { isDev: true, repoRoot: probe, stateDir }));
+      const child = spawnSync("sh", [shim, "user"], { env: env.childEnv(), encoding: "utf8" });
+      expect(child.status).toBe(0);
+      expect(JSON.parse(child.stdout)).toEqual({ state: stateDir });
+    } finally { await env.restore(); }
+  });
+
+  it("Codex installation propagates an explicitly relocated state root", async () => {
+    const env = await makeTestEnv();
+    try {
+      process.env.MIDBRAIN_STATE_DIR = path.join(env.home, ".codex/.midbrain");
+      await installShim("codex", { isDev: true });
+      expect(await fs.readFile(stableShimPath("codex"), "utf8")).toContain("export MIDBRAIN_STATE_DIR");
+    } finally { await env.restore(); }
   });
 
   it("sets the nonsecret state root in Windows Claude shims", () => {
@@ -279,15 +304,15 @@ describe("installShim (sandboxed)", () => {
     }
   });
 
-  it.skipIf(IS_WIN)("repair replaces the generated dev state assignment instead of leaving stale state effective", async () => {
+  it.skipIf(IS_WIN).each(["claude", "codex"])("%s repair replaces the generated dev state assignment", async (client) => {
     const env = await makeTestEnv();
     try {
       const firstState = path.join(env.home, "state-one");
       const secondState = path.join(env.home, "state-two");
-      await installShim("claude", { mode: "install", isDev: true, stateDir: firstState });
+      await installShim(client, { mode: "install", isDev: true, stateDir: firstState });
 
-      const result = await installShim("claude", { mode: "repair", stateDir: secondState });
-      const body = await fs.readFile(stableShimPath("claude"), "utf8");
+      const result = await installShim(client, { mode: "repair", stateDir: secondState });
+      const body = await fs.readFile(stableShimPath(client), "utf8");
 
       expect(result.written).toBe(true);
       expect(body.match(/^MIDBRAIN_STATE_DIR=/gm)).toHaveLength(1);
