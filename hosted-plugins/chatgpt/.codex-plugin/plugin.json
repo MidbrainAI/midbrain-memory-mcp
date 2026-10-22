@@ -1,0 +1,26 @@
+{
+  "name": "midbrain-memory",
+  "version": "0.1.0",
+  "description": "Use MidBrain as your memory: recall context and save what you ask it to remember, shared across your AI apps.",
+  "author": {
+    "name": "MidBrain",
+    "url": "https://midbrain.ai"
+  },
+  "apps": "./.app.json",
+  "interface": {
+    "displayName": "MidBrain Memory",
+    "shortDescription": "Your memory across AI apps",
+    "longDescription": "Use MidBrain as your memory: recall context and save what you ask it to remember, shared across your AI apps.",
+    "developerName": "MidBrain",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": "What do you remember about me?"
+  },
+  "keywords": [
+    "memory"
+  ],
+  "skills": "./skills"
+}
