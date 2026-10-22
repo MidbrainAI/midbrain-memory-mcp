@@ -5,7 +5,9 @@
  */
 
 import { listClaudeSessionFiles, readClaudeSession } from "./claude.mjs";
+import { listCodexSessionFiles, readCodexSession } from "./codex.mjs";
 
 export const READERS = {
   claude: { list: listClaudeSessionFiles, read: readClaudeSession },
+  codex: { list: listCodexSessionFiles, read: readCodexSession },
 };

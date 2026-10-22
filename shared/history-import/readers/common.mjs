@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import zlib from "node:zlib";
 
 import { openTranscript } from "../../claude-transcript.mjs";
 
@@ -38,13 +39,24 @@ export const CORRUPT_ROW = Object.freeze({ type: "corrupt" });
  * reached without symlinks (a file swapped for a link after listing is
  * refused). A corrupt line yields CORRUPT_ROW, so a reader can end the turn
  * it was building instead of pairing the next reply with the wrong prompt;
- * a torn last line (a write cut short) is skipped.
+ * a torn last line (a write cut short) is skipped. A `.zst` file is
+ * decompressed; a runtime without zstd (Node before 22.15) throws, so the
+ * file is reported as unreadable instead of being left out.
  */
 export async function* jsonRows(file, root) {
   const source = openTranscript(file, root);
   if (!source) throw Object.assign(new Error(`not a regular file inside ${root}`), { code: "EUNSAFE", path: file });
-  const stream = fs.createReadStream(file, { fd: source.fd, encoding: "utf8" });
-  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const stream = fs.createReadStream(file, { fd: source.fd });
+  let input = stream;
+  if (file.endsWith(".zst")) {
+    if (typeof zlib.createZstdDecompress !== "function") {
+      stream.destroy();
+      throw Object.assign(new Error("reading a .zst file needs Node 22.15 or later"), { code: "ENOZSTD", path: file });
+    }
+    input = stream.pipe(zlib.createZstdDecompress());
+    stream.on("error", (error) => input.destroy(error));
+  }
+  const lines = readline.createInterface({ input, crlfDelay: Infinity });
   try {
     let corrupt = false;
     for await (const line of lines) {
@@ -59,6 +71,7 @@ export async function* jsonRows(file, root) {
     }
   } finally {
     lines.close();
+    input.destroy();
     stream.destroy();
   }
 }
