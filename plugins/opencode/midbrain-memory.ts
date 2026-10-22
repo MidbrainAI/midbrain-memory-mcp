@@ -17,13 +17,16 @@
  * - Exactly 1 API POST per message (no backlog dumps, no history scans)
  * - Directory-based instance filtering (only matching instance processes)
  * - Fire-and-forget: never blocks chat on API response
+ * - Persona and profile go into the system prompt once per session
+ *   (experimental.chat.system.transform), read once and cached, so the
+ *   system text stays byte-stable across the session's requests (#61)
  * - Opt-in PK injection: silent fallthrough on any error or timeout
  */
 
 import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
 import { MidbrainApi, makeLogger, logFile, homeRelativePath, buildCaptureMetadata, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext,
-  hookProjectDir, logProjectFallback,
+  hookProjectDir, logProjectFallback, loadIdentityContext,
 } from "./midbrain-shared.mjs";
 
 const OPENCODE_HISTORY_TIMEOUT_MS = 500;
@@ -95,7 +98,41 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
 
   const storedMessages = new Set<string>();
 
+  // Persona/profile per session, read once (#61). Reusing the first read keeps
+  // the system text identical on every request, so the prompt cache holds and
+  // a later profile edit applies from the next session. Bounded for a
+  // long-running OpenCode server.
+  const identityBySession = new Map<string, Promise<string>>();
+  const IDENTITY_SESSION_CACHE_MAX = 200;
+  function sessionIdentity(sessionID: string): Promise<string> {
+    let cached = identityBySession.get(sessionID);
+    if (!cached) {
+      cached = loadIdentityContext(api).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error(`IDENTITY ERROR: ${msg}`);
+        return "";
+      });
+      // Keep only a non-empty result: a blank or failed read adds no system
+      // text, so the next request retries it without changing the prompt.
+      cached.then((text: string) => { if (!text) identityBySession.delete(sessionID); });
+      identityBySession.set(sessionID, cached);
+      if (identityBySession.size > IDENTITY_SESSION_CACHE_MAX) {
+        const oldest = identityBySession.keys().next().value;
+        if (oldest !== undefined) identityBySession.delete(oldest);
+      }
+    }
+    return cached;
+  }
+
   return {
+    // --- Persona and profile: once per session, in the system prompt ---
+    "experimental.chat.system.transform": async (input, output) => {
+      const sessionID = (input as Record<string, unknown>).sessionID;
+      if (typeof sessionID !== "string" || !sessionID) return;
+      const identity = await sessionIdentity(sessionID);
+      if (identity) output.system.push(identity);
+    },
+
     // --- User messages: captured directly from hook (parts are inline) ---
     "chat.message": async (input, output) => {
       const msg = output.message as Record<string, unknown>;

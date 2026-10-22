@@ -26,7 +26,10 @@ import { existsSync } from 'fs';
 import path from 'path';
 
 const HOOK_TIMEOUT_SEC = 10;
+// SessionStart adds persona/profile once per session; the capture hooks
+// never repeat it per prompt (#61).
 const HOOK_EVENTS = {
+  SessionStart: 'session',
   UserPromptSubmit: 'user',
   PostToolUse: 'tool',
   Stop: 'assistant',
@@ -237,17 +240,23 @@ export class Codex extends BaseClient {
     try {
       const data = (await readJson(hooksPath())) || {};
       let hasMidbrainHook = false;
+      let missingEvent = false;
       for (const [event, hookName] of Object.entries(HOOK_EVENTS)) {
         const groups = data.hooks?.[event];
-        if (!Array.isArray(groups) || groups.length === 0) continue;
-        const commands = groups.flatMap((group) => group.hooks || [])
+        const commands = (Array.isArray(groups) ? groups : []).flatMap((group) => group.hooks || [])
           .map((hook) => typeof hook?.command === 'string' ? hook.command : '');
-        if (!commands.some((command) => isMidbrainHook({ command }))) continue;
+        if (!commands.some((command) => isMidbrainHook({ command }))) {
+          // An install that predates an event (e.g. SessionStart, #61) is
+          // stale once any MidBrain hook is present.
+          missingEvent = true;
+          continue;
+        }
         hasMidbrainHook = true;
         if (commands.some((command) => isLegacyHookCommand(command))) return false;
         if (!commands.some((command) => command === buildHookCommand(hookName))) return false;
       }
       if (!hasMidbrainHook) return true;
+      if (missingEvent) return false;
       return (await shimStatus('codex')).fresh;
     } catch { return true; }
   }

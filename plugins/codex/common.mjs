@@ -15,6 +15,7 @@ import { makeLogger, logFile } from "../../shared/logger.mjs";
 import { getClient } from "../../shared/clients/registry.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled, scrubInjectedPkContext } from "../../shared/pk-inject.mjs";
+import { loadIdentityContext } from "../../shared/identity-context.mjs";
 const ASSISTANT_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-assistant-turns");
 const TOOL_BUFFER_DIR = path.join(os.tmpdir(), "midbrain-codex-tool-events");
 const TURN_BUFFER_TTL_MS = 24 * 60 * 60 * 1000;
@@ -78,6 +79,32 @@ export async function captureUser(input, deps = makeDefaultDeps()) {
     safeLog(deps.logger, `PK INJECT ERROR: ${errorMessage(err)}`);
   }
   return undefined;
+}
+
+/**
+ * SessionStart: add the MidBrain persona and user profile once per session
+ * (issue #61), instead of repeating them on every prompt. Codex fires
+ * SessionStart for new and resumed threads. Never throws.
+ *
+ * @returns {Promise<object|undefined>} Stdout payload, or undefined.
+ */
+export async function sessionStartContext(input, deps = makeDefaultDeps()) {
+  const projectDir = typeof input?.cwd === "string" && input.cwd.trim() ? input.cwd : undefined;
+  try {
+    const api = await deps.createApi(projectDir);
+    const context = await loadIdentityContext(api);
+    if (!context) return undefined;
+    safeLog(deps.logger, `IDENTITY: session=${input?.session_id || "-"} source=${input?.source || "-"} len=${context.length}`, "info");
+    return {
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: context,
+      },
+    };
+  } catch (err) {
+    safeLog(deps.logger, `IDENTITY ERROR: ${errorMessage(err)}`);
+    return undefined;
+  }
 }
 
 export async function captureAssistant(input, deps = makeDefaultDeps()) {

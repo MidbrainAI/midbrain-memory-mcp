@@ -28,6 +28,7 @@ shared/
   agent-rules.mjs                MidBrain rules block writer for AGENTS.md/CLAUDE.md
   midbrain-api.mjs               MidbrainApi client; all HTTP calls go here
   pk-inject.mjs                  Procedural-knowledge context helpers
+  identity-context.mjs           Persona and profile session-context helpers
   logger.mjs                     Leveled file logger + platform log dir
   plugin-entry.mjs               esbuild bundle entry point
   clients/
@@ -303,11 +304,15 @@ Offline episodic cache discipline (issue #53):
 Codex:
 
 - `plugins/codex/*.mjs` run in Node 20.
-- Hooks capture `UserPromptSubmit`, `PostToolUse`, and `Stop`.
+- Hooks capture `UserPromptSubmit`, `PostToolUse`, and `Stop`; `SessionStart`
+  adds persona/profile once per session.
 - Installer-written Codex hooks call the stable
   `~/.midbrain/bin/codex-hook` shim, not package-cache capture script paths.
   Codex may require one `/hooks` approval after shim migration; normal package
   and Node updates should not change the hook command after that.
+- When `MIDBRAIN_STATE_DIR` is explicitly set, the Codex shim exports it
+  for env-stripped hooks (including a NanoClaw Codex durable mount). Unset
+  preserves the historical shim body.
 - `Stop` and `PostToolUse` wrappers must write `{}` to stdout on success.
 - Assistant capture stores a clean answer separately from bounded reasoning and
   tool summaries.
@@ -323,6 +328,13 @@ Cursor:
   no legacy forms.
 - `beforeSubmitPrompt` must always write `{"continue": true}`; the other
   wrappers write `{}`. Every path exits 0 (Cursor fails open by default).
+- Persona and profile reach Cursor through the MCP server `instructions`:
+  `startMcpServer` calls `loadServerInstructions()` before readiness, which
+  reads them only when `MIDBRAIN_CLIENT` is `cursor` and is fail-open.
+  Blank/failed reads return explicit neutral instructions. Never populate
+  Cursor's per-project caches: their metadata does not prove an API binding.
+  Do not use `sessionStart`: Cursor fires it with the first prompt and merges
+  its `additional_context` after that prompt reached the model (measured).
 - Cursor holds the prompt until the `beforeSubmitPrompt` process exits, so the
   user hook does no network work: it writes the mapped fields to a private
   0600 job file and starts a detached `plugins/cursor/store-user.mjs` child
@@ -416,8 +428,10 @@ OpenClaw:
 
 - `plugins/openclaw/index.js` runs in-process in the OpenClaw gateway and
   imports runtime helpers from `./midbrain-shared.mjs` (the installed copy
-  receives the built bundle). It registers one handler on the typed
-  `agent_end` hook; `memory_search` stays in the MCP server.
+  receives the built bundle). It registers a `before_prompt_build` handler
+  (persona/profile as `appendSystemContext`, read once per session, user or
+  no trigger only, 5 s limit, fail-open) and an `agent_end` capture handler; `memory_search`
+  stays in the MCP server.
 - `agent_end` carries the whole session history: the handler stores only the
   newest user message and the final assistant text after it, once per session
   turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
@@ -551,6 +565,27 @@ Rules:
   per entry, and 6,000 characters total. Marker-like text is escaped.
 - Use helpers in `shared/pk-inject.mjs`; do not duplicate marker parsing.
 
+Persona and profile (`GET /api/v1/persona`, `GET /api/v1/profile`) are
+read-only, not MCP tools, and added **once per session**, never per turn, so
+the text costs its tokens once and the session prefix stays cache-stable:
+
+- Claude Code / NanoClaw: `SessionStart` hook (`hook claude session`,
+  `plugins/claude-code/session-context.mjs`); Claude Code re-runs it after
+  `/clear` and compaction. Cursor-hosted runs are skipped.
+- Codex: `SessionStart` hook (`hook codex session`, `sessionStartContext`).
+- OpenCode: `experimental.chat.system.transform`, cached per session id.
+- OpenClaw: `before_prompt_build` `appendSystemContext`, cached per session.
+- Hermes: `pre_llm_call` only when `extra.is_first_turn` is true (Hermes
+  replays it with the history); a Hermes without the field keeps per-turn.
+- Cursor: MCP server instructions at server start (`loadServerInstructions`
+  in `mcp.mjs`).
+
+Rules: do not move identity back onto the per-turn prompt hooks. Session
+caches keep only a non-empty result (a blank or failed read is retried). The
+text is plain (no markers, nonces or signatures) and nothing strips it from
+captures; length is the API's, with no client-side limit. Adding a hook event to
+`HOOK_EVENTS` makes installs without it stale, so repair adds it.
+
 ## Memory-First Agent Rules
 
 Public-safe agent instructions should say:
@@ -664,6 +699,7 @@ Vitest tests live in `tests/`.
 |---|---|
 | `tests/midbrain-api.test.mjs` | `shared/midbrain-api.mjs` |
 | `tests/pk-inject.test.mjs` | `shared/pk-inject.mjs` |
+| `tests/identity-context.test.mjs` | `shared/identity-context.mjs` |
 | `tests/logger.test.mjs` | `shared/logger.mjs` |
 | `tests/client-opencode.test.mjs` | `shared/clients/opencode.mjs` |
 | `tests/client-claude.test.mjs` | `shared/clients/claude.mjs` |

@@ -222,11 +222,12 @@ describe("Codex.installGlobal", () => {
     expect(entry.args[0]).toContain("index.js");
   });
 
-  it("writes stable shim hooks.json for UserPromptSubmit, PostToolUse, and Stop", async () => {
+  it("writes stable shim hooks.json for SessionStart, UserPromptSubmit, PostToolUse, and Stop", async () => {
     await codex.installGlobal();
 
     const hooks = writtenHooks().hooks;
-    for (const event of ["UserPromptSubmit", "PostToolUse", "Stop"]) {
+    expect(hooks.SessionStart[0].hooks[0].command).toBe(`'${PATHS.codexShim}' session`);
+    for (const event of ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"]) {
       expect(hooks[event]).toHaveLength(1);
       const hook = hooks[event][0].hooks[0];
       expect(hook.type).toBe("command");
@@ -468,6 +469,7 @@ describe("Codex hook freshness and repair", () => {
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
+          SessionStart: [{ hooks: [{ command: `'${PATHS.codexShim}' session` }] }],
           UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
           PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
           Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
@@ -481,11 +483,29 @@ describe("Codex hook freshness and repair", () => {
     await expect(codex.isFresh()).resolves.toBe(true);
   });
 
+  it("isFresh returns false for an install without the SessionStart hook (#61)", async () => {
+    existsFor(PATHS.codexHooks, PATHS.codexShim);
+    readFileReturns({
+      [PATHS.codexHooks]: JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
+          PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
+          Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
+        },
+      }),
+      [PATHS.codexShim]: buildShimBody("codex"),
+    });
+    statFor(PATHS.codexShim);
+
+    await expect(codex.isFresh()).resolves.toBe(false);
+  });
+
   it("isFresh returns false when the shim body is stale even though the file exists (B14)", async () => {
     existsFor(PATHS.codexHooks, PATHS.codexShim);
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
+          SessionStart: [{ hooks: [{ command: `'${PATHS.codexShim}' session` }] }],
           UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
           PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
           Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],

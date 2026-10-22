@@ -13,8 +13,10 @@ import {
   captureAssistant,
   captureToolUse,
   captureUser,
+  sessionStartContext,
 } from "../plugins/codex/common.mjs";
 import { formatPkContext } from "../shared/pk-inject.mjs";
+import { formatIdentityContext } from "../shared/identity-context.mjs";
 import { sandboxHomeEnv } from "./helpers/sandboxed-child-env.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -111,6 +113,39 @@ describe("Codex hook capture", () => {
     expect(result.hookSpecificOutput.additionalContext).toContain("<!-- mb:ctx-start -->");
     expect(result.hookSpecificOutput.additionalContext).toContain("Python");
     expect(result.hookSpecificOutput.additionalContext).toContain("<!-- mb:pk 2 -->");
+  });
+
+  it("captureUser never repeats persona and profile on a prompt (#61)", async () => {
+    deps.api.getPersona = vi.fn().mockResolvedValue("Be concise.");
+    deps.api.getProfile = vi.fn().mockResolvedValue("Works at CX2.");
+
+    const result = await captureUser({ prompt: "hello", cwd: "/repo" }, deps);
+
+    expect(result).toBeUndefined();
+    expect(deps.api.getPersona).not.toHaveBeenCalled();
+    expect(firstStore(deps)[0]).toBe("hello");
+  });
+
+  it("sessionStartContext adds persona and profile once at SessionStart", async () => {
+    deps.api.getPersona = vi.fn().mockResolvedValue("Be concise.");
+    deps.api.getProfile = vi.fn().mockResolvedValue("Works at CX2.");
+
+    const result = await sessionStartContext({ session_id: "s1", source: "startup", cwd: "/repo" }, deps);
+
+    expect(result.hookSpecificOutput.hookEventName).toBe("SessionStart");
+    expect(result.hookSpecificOutput.additionalContext).toBe(
+      formatIdentityContext({ persona: "Be concise.", profile: "Works at CX2." }),
+    );
+    expect(deps.api.storeEpisodic).not.toHaveBeenCalled();
+  });
+
+  it("sessionStartContext adds nothing when blank or when the API cannot be created", async () => {
+    deps.api.getPersona = vi.fn().mockResolvedValue(null);
+    deps.api.getProfile = vi.fn().mockResolvedValue(null);
+    await expect(sessionStartContext({ cwd: "/repo" }, deps)).resolves.toBeUndefined();
+
+    deps.createApi = vi.fn().mockRejectedValue(new Error("no key"));
+    await expect(sessionStartContext({ cwd: "/repo" }, deps)).resolves.toBeUndefined();
   });
 
   it("captureUser returns undefined when no PK entries match", async () => {
