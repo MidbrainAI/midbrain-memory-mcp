@@ -311,6 +311,44 @@ See [Configuration Reference](#configuration-reference) below for the
 full config format. Create the key file, add a project-level MCP config
 with `MIDBRAIN_PROJECT_DIR`, and restart.
 
+### Import Earlier Conversations
+
+Live capture starts when MidBrain is installed. To bring in conversations from
+before that, import them from the clients' local history (opt-in, preview
+first):
+
+```sh
+npx midbrain-memory-mcp@latest import                       # preview only
+npx midbrain-memory-mcp@latest import --since 2026-09-01 --apply
+```
+
+Supported sources (`--client` takes the id):
+
+| Client | `--client` | Reads |
+|---|---|---|
+
+- **What is imported:** each prompt you typed and the reply that ended the
+  turn, with its original time, labeled `origin: "import"`. Tool calls and
+  output, injected context, subagent threads, sessions a program started, and
+  sessions written in the last 10 minutes are left out.
+- **Preview first.** The preview reads local files and sends MidBrain only
+  session ids, to find what it already has. Nothing is uploaded without
+  `--apply` and a confirmation (`--yes` skips it).
+- **No duplicates.** Turns MidBrain already captured live, and entries an
+  earlier import stored, are skipped, so an interrupted import resumes when
+  you run the same command again. A session an earlier version imported
+  differently (for example, with another reply for a turn) is skipped and
+  listed, so no turn ends up with two replies.
+- **Keys and credits.** Each turn is stored with the key live capture would
+  use for its directory, and uses one MidBrain credit. When credits run out,
+  the import stops and says how many entries it stored; add credits and run
+  the same command to continue.
+- **Secrets.** Text is stored as written, as live capture stores it.
+- **Load.** Entries are sent one at a time, once each: any failure stops the
+  import (run it again to resume). An entry MidBrain's firewall blocks is
+  skipped and listed. MidBrain's per-memory processing is skipped for the bulk
+  load (`X-Skip-Dream: 1`); `--dream` turns it on.
+
 ---
 
 ## Auto-Update
@@ -1501,6 +1539,7 @@ mcp.mjs                        MCP tool definitions (createServer factory)
 install.mjs                    Installer CLI + --project mode + auto-repair
 shared/
   midbrain-api.mjs             MidbrainApi class: ALL API calls go here
+  history-import/              `import` command: readers, plan/dedupe/upload, CLI
   diagnostics.mjs              Secret-free auth/capture report assembly
   logger.mjs                   makeLogger(), logFile(), logDir()
   plugin-entry.mjs             esbuild bundle entry point

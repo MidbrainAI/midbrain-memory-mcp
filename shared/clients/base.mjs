@@ -118,14 +118,16 @@ export class BaseClient {
    * error (code PROJECT_KEY_REQUIRED) instead of a fallthrough.
    *
    * @param {string} [projectDir] - Explicit project directory (overrides MIDBRAIN_PROJECT_DIR env).
-   * @param {{includeScope?: boolean, skipProject?: boolean}} [opts] - `includeScope`
+   * @param {{includeScope?: boolean, skipProject?: boolean, quiet?: boolean}} [opts] - `includeScope`
    * adds the selected resolution scope (and, for a project key, the directory
    * it was found in) for installer bookkeeping without bypassing this
    * resolver. `skipProject` resolves the client/global chain only, ignoring
-   * both the argument and MIDBRAIN_PROJECT_DIR.
+   * both the argument and MIDBRAIN_PROJECT_DIR. `quiet` leaves out the
+   * "no project key" warning, for a caller that reports the fallback itself
+   * (the history import resolves many directories at once).
    * @returns {Promise<{key: string, source: string, scope?: string, projectRoot?: string} | null>}
    */
-  async resolveKey(projectDir, { includeScope = false, skipProject = false } = {}) {
+  async resolveKey(projectDir, { includeScope = false, skipProject = false, quiet = false } = {}) {
     const project = skipProject ? { dir: undefined, unresolved: false } : effectiveProjectDir(projectDir);
     if (project.unresolved) {
       console.error(
@@ -143,7 +145,7 @@ export class BaseClient {
         return includeScope ? { ...key, scope: 'project', projectRoot: root, ...context } : key;
       }
       if (isStrictProject()) throw projectKeyRequired(project.dir, issue);
-      console.error(
+      if (!quiet) console.error(
         `WARN: no project key found in "${project.dir}" or its parent directories, falling through to global key.`,
       );
     }

@@ -41,6 +41,8 @@ function buildEndpoints(apiBase) {
     SEARCH_LEXICAL:    `${apiV1}/memories/search/lexical`,
     SEARCH_PROCEDURAL: `${apiV1}/memories/search/procedural`,
     EPISODIC:          `${apiV1}/memories/episodic`,
+    // v1 and v2 are deprecated; new callers use v3 server-managed memory.
+    EPISODIC_V3:       `${apiBase}/api/v3/mm/memories/episodic`,
     SEMANTIC_FILES:    `${apiV1}/memories/semantic/files`,
     PROCEDURAL:        `${apiV1}/memories/procedural`,
     PERSONA:           `${apiV1}/persona`,
@@ -171,15 +173,17 @@ export class MidbrainApi {
    * Factory: resolve key from a client adapter, return ready-to-use instance.
    * @param {import('./clients/base.mjs').BaseClient} client
    * @param {string} [projectDir]
-   * @param {{clientLabel?: string}} [opts] `clientLabel` overrides `client.id`
+   * @param {{clientLabel?: string, quiet?: boolean}} [opts] `quiet` leaves out
+   *   the "no project key" warning (see BaseClient.resolveKey); the fallback is
+   *   still reported by `projectFallbackNote`. `clientLabel` overrides `client.id`
    *   as the UA client token; when omitted, a validated
    *   `MIDBRAIN_CAPTURE_CLIENT` runtime label wins. This supports clients whose
    *   reported identity can
    *   differ at runtime from their static adapter id (e.g. Claude Code
    *   running inside a NanoClaw container reports "nanoclaw", not "claude").
    */
-  static async create(client, projectDir, { clientLabel } = {}) {
-    const result = await client.resolveKey(projectDir, { includeScope: true });
+  static async create(client, projectDir, { clientLabel, quiet = false } = {}) {
+    const result = await client.resolveKey(projectDir, { includeScope: true, quiet });
     if (!result) throw new Error("No API key configured. Run: npx midbrain-memory-mcp install");
     // The project host config lives next to the project key, which may be in
     // a parent of the requested directory or in the main worktree.
@@ -397,6 +401,86 @@ export class MidbrainApi {
     } catch {
       return "failed";
     }
+  }
+
+  /**
+   * One history-import entry (issue #75) to the v3 episodic endpoint, with
+   * its original time and `X-Skip-Dream: 1` (per-memory dream processing is
+   * optional for bulk ingestion). One attempt, never retried: a write that
+   * fails mid-flight may still have been stored. The result says whether the
+   * memory was stored, definitely not stored, or may have been stored:
+   *
+   * - `ok`: stored.
+   * - `outOfCredits` (402), `rateLimited` (429): refused; nothing stored.
+   * - `blocked`: an HTML 403 from the edge firewall. The request never reached
+   *   the API, so nothing was stored, and the same text is blocked again.
+   * - `rejected`: any other 4xx; refused, nothing stored.
+   * - `unknown`: a 5xx or a dropped connection; it may have been stored.
+   *
+   * Never throws.
+   *
+   * @param {string} text
+   * @param {"user"|"assistant"} role
+   * @param {Record<string,string>} memoryMetadata
+   * @param {{occurredAt?: string, skipDream?: boolean}} [opts]
+   * @returns {Promise<"ok"|"outOfCredits"|"rateLimited"|"blocked"|"rejected"|"unknown">}
+   */
+  async postImportedEpisodic(text, role, memoryMetadata, { occurredAt, skipDream = true } = {}) {
+    const headers = this.#headers({ json: true });
+    if (skipDream) headers["X-Skip-Dream"] = "1";
+    const body = { text, role, memory_metadata: memoryMetadata };
+    if (occurredAt) body.occurred_at = occurredAt;
+    let response;
+    try {
+      response = await fetch(this.#endpoints.EPISODIC_V3, { method: "POST", headers, body: JSON.stringify(body) });
+    } catch {
+      return "unknown";
+    }
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    await response.text().catch(() => undefined);
+    if (response.ok) return "ok";
+    if (response.status === 402) return "outOfCredits";
+    if (response.status === 429) return "rateLimited";
+    if (response.status === 403 && contentType.includes("text/html")) return "blocked";
+    if (response.status >= 400 && response.status < 500) return "rejected";
+    return "unknown";
+  }
+
+  /**
+   * Every episodic memory stored for one harness session, matched on
+   * `memory_metadata.session_id` (the API's exact-match metadata filter), via
+   * v3. Used by history import (issue #75) to skip turns that live capture or
+   * an earlier import already stored. Quiet: no request logging.
+   *
+   * Fails closed: a non-2xx response, an unexpected response shape, or more
+   * pages than `maxPages` throws, so the caller skips the session instead of
+   * treating a partial list as complete and importing duplicates.
+   *
+   * @param {string} sessionId
+   * @param {{maxPages?: number}} [opts]
+   * @returns {Promise<Array<{role: string, occurred_at: string, memory_metadata?: Record<string,string>}>>}
+   */
+  async listEpisodicForSession(sessionId, { maxPages = 20 } = {}) {
+    const items = [];
+    let after = null;
+    for (let page = 0; page < maxPages; page += 1) {
+      const url = new URL(this.#endpoints.EPISODIC_V3);
+      url.searchParams.set("memory_metadata.session_id", sessionId);
+      url.searchParams.set("limit", "1000");
+      url.searchParams.set("with_total", "false");
+      if (after) url.searchParams.set("after", after);
+      const response = await fetch(url.toString(), { method: "GET", headers: this.#headers() });
+      if (!response.ok) {
+        await response.text().catch(() => undefined);
+        throw new Error(`API ${response.status} listing session memories (host=${this.#apiBase})`);
+      }
+      const data = await response.json();
+      if (!Array.isArray(data?.items)) throw new Error("unexpected response listing session memories");
+      items.push(...data.items);
+      after = data.next_cursor || null;
+      if (!after) return items;
+    }
+    throw new Error(`more than ${maxPages} pages of memories for one session`);
   }
 
   /**
