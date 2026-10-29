@@ -1,6 +1,7 @@
 /** Helpers shared by the history readers (issue #75). */
 
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import readline from "node:readline";
 import zlib from "node:zlib";
@@ -80,4 +81,58 @@ export function validTimestamp(value) {
   if (typeof value !== "string") return null;
   const time = Date.parse(value);
   return Number.isNaN(time) ? null : new Date(time).toISOString();
+}
+
+// ------------------------------------------------------------------- SQLite
+
+let sqliteModule;
+
+/**
+ * Node's built-in SQLite (`node:sqlite`, without a flag from Node 22.13), or
+ * null when this Node has none. Its one-time "experimental" warning is not shown.
+ */
+export function loadSqlite() {
+  if (sqliteModule !== undefined) return sqliteModule;
+  const emit = process.emitWarning;
+  process.emitWarning = (warning, ...rest) => {
+    const text = typeof warning === "string" ? warning : warning?.message;
+    if (/SQLite/i.test(String(text))) return;
+    emit.call(process, warning, ...rest);
+  };
+  try {
+    sqliteModule = createRequire(import.meta.url)("node:sqlite");
+  } catch {
+    sqliteModule = null;
+  } finally {
+    process.emitWarning = emit;
+  }
+  return sqliteModule;
+}
+
+/**
+ * Open a client's database read-only, in place, and run `fn(db)`. SQLite
+ * lets this reader run next to the client that writes it. Throws when this
+ * Node has no SQLite or the file cannot be opened.
+ */
+export function withReadOnlyDatabase(file, fn) {
+  const sqlite = loadSqlite();
+  if (!sqlite) throw Object.assign(new Error("needs Node 22.13 or later (node:sqlite)"), { code: "NO_SQLITE" });
+  const db = new sqlite.DatabaseSync(file, { readOnly: true });
+  try {
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+/** `<database>#<id>`: the `file` of a session stored in a database. */
+export function databaseSource(file, id) {
+  return `${file}#${id}`;
+}
+
+/** Split a source made by `databaseSource`. */
+export function parseDatabaseSource(source) {
+  const at = source.lastIndexOf("#");
+  if (at < 0) return { file: source, id: "" };
+  return { file: source.slice(0, at), id: source.slice(at + 1) };
 }

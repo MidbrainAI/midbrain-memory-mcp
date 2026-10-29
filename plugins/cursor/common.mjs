@@ -368,7 +368,8 @@ function contentText(entry) {
 const WRAPPED_QUERY = /^\s*(?:<timestamp>[\s\S]*?<\/timestamp>\s*)?<user_query>\r?\n?([\s\S]*?)\r?\n?<\/user_query>\s*$/;
 const LEADING_TIMESTAMP = /^\s*<timestamp>[\s\S]*?<\/timestamp>/;
 
-function userQuery(value) {
+/** The prompt inside Cursor's wrapper; also used by the history import (#75). */
+export function userQuery(value) {
   const wrapped = WRAPPED_QUERY.exec(value);
   return (wrapped ? wrapped[1] : value.replace(LEADING_TIMESTAMP, "")).trim();
 }
