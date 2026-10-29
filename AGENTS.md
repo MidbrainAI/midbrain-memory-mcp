@@ -519,10 +519,20 @@ Prime Agent:
 ## History Import
 
 `npx midbrain-memory-mcp@latest import` (issue #75) imports conversations from
-before installation. Code: `shared/history-import/` (`readers/`, `plan.mjs`,
-`cli.mjs`), dispatched from `index.js`. Each client has one reader module in
-`readers/` (`list()` and `read(source)`), registered in `readers/index.mjs`;
-the session shape is in `plan.mjs`.
+before installation. Code: `shared/history-import/` (`readers/`,
+`plan.mjs`, `cli.mjs`), dispatched from `index.js`. Each client has one
+reader module in `readers/` (`list()` and `read(source)`), registered in
+`readers/index.mjs`; shared helpers are in `readers/common.mjs`. Readers
+of SQLite stores open the client's database read-only, in place
+(`withReadOnlyDatabase`; never copy it, never write), use `<db>#<id>`
+sources, and give each session's `lastWrittenMs`. Opening a WAL database
+read-only makes SQLite create its `-wal`/`-shm` side files when they are
+missing; no data is written. An unreadable database is listed as is, so the
+preview reports it instead of finding nothing. `node:sqlite` returns
+text that starts with a NUL byte as "" (Hermes stores `\0json:` content):
+select such columns `CAST(... AS BLOB)` and decode them. `node:sqlite` needs Node
+22.13+ (OpenClaw's zstd events need 22.15+); on older Node the preview lists those databases as unreadable
+(`NO_SQLITE`).
 
 - Opt-in and preview-first: no upload without `--apply` plus a confirmation
   or `--yes`. Never run it from install, repair, or the MCP server.
@@ -745,6 +755,12 @@ Vitest tests live in `tests/`.
 | `tests/docs-regression.test.mjs` | docs regression scripts |
 | `tests/agent-rules.test.mjs` | `shared/agent-rules.mjs` |
 | `tests/history-import.test.mjs` | `shared/history-import/*.mjs` |
+| `tests/history-import-claude.test.mjs` | `shared/history-import/readers/claude.mjs` |
+| `tests/history-import-codex.test.mjs` | `shared/history-import/readers/codex.mjs` |
+| `tests/history-import-prime-agent.test.mjs` | `shared/history-import/readers/prime-agent.mjs` |
+| `tests/history-import-hermes.test.mjs` | `shared/history-import/readers/hermes.mjs` |
+| `tests/history-import-opencode.test.mjs` | `shared/history-import/readers/opencode.mjs` |
+| `tests/history-import-openclaw.test.mjs` | `shared/history-import/readers/openclaw.mjs`, SQLite helpers in `readers/common.mjs` |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.
