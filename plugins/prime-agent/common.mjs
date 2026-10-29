@@ -86,11 +86,12 @@ export function applyEntry(state, entry) {
     return [];
   }
   if (state.depth > 0) return [];
+  // A fork (`--fork`, header `parentSession`) starts with a copy of the
+  // parent's entries, which keep their original, earlier timestamps; that
+  // includes `prime-agent send` prompts (custom_message rows).
+  if (state.startedAt !== undefined && Date.parse(entry?.timestamp ?? "") < state.startedAt) return [];
   if (entry?.type === "custom_message") return applyCustomMessage(state, entry);
   if (entry?.type !== "message") return [];
-  // A fork (`--fork`, header `parentSession`) starts with a copy of the
-  // parent's entries, which keep their original, earlier timestamps.
-  if (state.startedAt !== undefined && Date.parse(entry.timestamp ?? "") < state.startedAt) return [];
   const message = entry.message;
   if (message?.role === "user") {
     state.tools = [];
