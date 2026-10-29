@@ -253,7 +253,13 @@ function pushTurn(session, turn, cwd) {
 function readComposer(file, id, userDir) {
   const session = { client: "cursor", file: databaseSource(file, id), sessionId: id, cwd: null, entries: [], skip: null, automated: false };
   withReadOnlyDatabase(file, (db) => {
-    const data = parseJson(db.prepare("SELECT value FROM cursorDiskKV WHERE key = ?").get(`composerData:${id}`)?.value);
+    const value = db.prepare("SELECT value FROM cursorDiskKV WHERE key = ?").get(`composerData:${id}`)?.value;
+    // Cursor leaves a NULL row for a chat it opened but never wrote.
+    if (value == null) {
+      session.skip = "empty (never sent)";
+      return;
+    }
+    const data = parseJson(value);
     if (!data) {
       session.skip = "unreadable composer data";
       return;

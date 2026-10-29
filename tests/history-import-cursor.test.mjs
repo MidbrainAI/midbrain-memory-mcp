@@ -153,11 +153,17 @@ describe.skipIf(!sqlite)("Cursor desktop composers", () => {
     addComposer(db, "sub", [user("x")], { subagentInfo: { parentComposerId: "c1" } });
     addComposer(db, "draft", []);
     addComposer(db, "bg", [user("x")], { createdFromBackgroundAgent: { id: "bc-1" } });
+    // Cursor's placeholder for a chat it opened but never wrote; a value that
+    // is not JSON is damage, not an empty chat.
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, NULL)").run("composerData:placeholder");
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run("composerData:broken", "{not json");
     db.close();
 
     const read = (id) => readCursorSession(`${dbFile}#${id}`, { userDir, home });
     expect((await read("sub")).skip).toBe("subagent session");
     expect((await read("draft")).skip).toBe("empty (never sent)");
+    expect((await read("placeholder")).skip).toBe("empty (never sent)");
+    expect((await read("broken")).skip).toBe("unreadable composer data");
     expect((await read("bg")).automated).toBe(true);
   });
 });
