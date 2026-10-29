@@ -42,7 +42,13 @@ function isContained(root, target) {
     !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-function openTranscript(target, rootPath) {
+/**
+ * Open `target` read-only when it is a regular file contained in `rootPath`,
+ * reached without symlinks; the identity is re-checked after opening. Returns
+ * `{ fd, ... }` (the caller closes `fd`) or null when the file is not trusted.
+ * History import (issue #75) reads whole files through it.
+ */
+export function openTranscript(target, rootPath) {
   let fd;
   try {
     if (typeof target !== "string" || !target.trim() || !path.isAbsolute(target)) return null;
