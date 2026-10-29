@@ -137,7 +137,10 @@ export async function planImport({
         // earlier import's entry outside the range is not a changed one.
         session.importIds = new Set(session.entries.map((entry) => importId(session, entry)));
         session.entries = session.entries.filter((entry) => !since || entry.occurredAt >= since);
-        if (session.entries.length === 0) session.skip = "no turns in range";
+        // No prompt at all (Cursor keeps chats that hold only replies) is not
+        // the same as turns that all fall before --since.
+        if (session.importIds.size === 0) session.skip = "no prompts";
+        else if (session.entries.length === 0) session.skip = "no turns in range";
       }
       sessions.push(session);
     }

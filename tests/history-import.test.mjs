@@ -86,6 +86,7 @@ describe("planImport", () => {
         session({ sessionId: "active" }),
         session({ sessionId: "auto", automated: true }),
         session({ sessionId: "old" }),
+        session({ sessionId: "replies-only", entries: [] }),
       ]),
       clients: ["fake"],
       now,
@@ -96,6 +97,7 @@ describe("planImport", () => {
       ["active", "active (written in the last 10 minutes)"],
       ["auto", "automated (started by a program, not typed)"],
       ["old", "no turns in range"],
+      ["replies-only", "no prompts"],
     ]);
   });
 });
