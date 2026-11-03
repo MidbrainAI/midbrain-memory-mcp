@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -54,7 +55,7 @@ function addComposer(db, id, bubbles, extra = {}) {
 function addWorkspace(id, folder, composerIds) {
   const dir = path.join(userDir, "workspaceStorage", id);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "workspace.json"), JSON.stringify({ folder: `file://${folder}` }));
+  fs.writeFileSync(path.join(dir, "workspace.json"), JSON.stringify({ folder: pathToFileURL(folder).href }));
   const db = new sqlite.DatabaseSync(path.join(dir, "state.vscdb"));
   db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)");
   db.prepare("INSERT INTO ItemTable VALUES ('composer.composerData', ?)")
@@ -109,10 +110,12 @@ describe.skipIf(!sqlite)("Cursor desktop composers", () => {
     const db = makeGlobalDb();
     addComposer(db, "old", [user("old prompt"), reply("old answer")], { _v: 9, lastUpdatedAt: undefined });
     db.close();
-    addWorkspace("ws-old", "/work/legacy", ["old"]);
+    // A real absolute path: on Windows a file URL needs a drive letter.
+    const legacy = path.resolve("/work/legacy");
+    addWorkspace("ws-old", legacy, ["old"]);
 
     const session = await readCursorSession(`${dbFile}#old`, { userDir, home });
-    expect(session.cwd).toBe("/work/legacy");
+    expect(session.cwd).toBe(legacy);
     expect(session.entries.map((entry) => [entry.role, entry.occurredAt])).toEqual([
       ["user", "2026-10-01T09:00:00.000Z"],
       ["assistant", "2026-10-01T09:00:00.001Z"],
