@@ -266,7 +266,7 @@ export function summarize(sessions) {
     row.sessions += 1;
     for (const entry of session.entries) {
       row[entry.role] += 1;
-      row.chars += entry.text.length;
+      row.chars += prepareText(entry.text).text.length;
       if (!row.first || entry.occurredAt < row.first) row.first = entry.occurredAt;
       if (!row.last || entry.occurredAt > row.last) row.last = entry.occurredAt;
     }

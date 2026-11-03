@@ -299,6 +299,12 @@ describe("summarize", () => {
     const summary = summarize([session(), session({ skip: "already imported" })]);
     expect(summary.fake).toMatchObject({ sessions: 1, user: 2, assistant: 2, first: "2026-09-01T10:00:00.000Z", skipped: { "already imported": 1 } });
   });
+
+  it("counts the characters that will be stored, without MidBrain's blocks", () => {
+    const text = "<!-- mb:identity-start -->\n## User profile\nLikes jazz.\n<!-- mb:identity-end -->\n\nhi";
+    const summary = summarize([session({ entries: [{ role: "user", text, occurredAt: "2026-09-01T10:00:00.000Z" }] })]);
+    expect(summary.fake.chars).toBe(2);
+  });
 });
 
 describe("import CLI", () => {
