@@ -364,10 +364,12 @@ Supported sources (`--client` takes the id):
   the import stops and says how many entries it stored; add credits and run
   the same command to continue.
 - **Secrets.** Text is stored as written, as live capture stores it.
-- **Load.** Entries are sent one at a time, once each: any failure stops the
-  import (run it again to resume). An entry MidBrain's firewall blocks is
-  skipped and listed. MidBrain's per-memory processing is skipped for the bulk
-  load (`X-Skip-Dream: 1`); `--dream` turns it on.
+- **Load.** Up to 8 entries are in flight at once (`--concurrency`, 1-8), at
+  most 8 started per second, each sent once: any failure stops new uploads
+  (run it again to resume). An entry MidBrain's firewall blocks is skipped and
+  listed. MidBrain's per-memory processing is skipped for the bulk load
+  (`X-Skip-Dream: 1`); `--dream` turns it on and uploads one entry at a time,
+  in order.
 
 ---
 
