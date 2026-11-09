@@ -22,6 +22,10 @@ function git(args, root = REPO_ROOT) {
   const r = spawnSync('git', args, { cwd: root, env: {PATH:process.env.PATH,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:os.devNull}, encoding: 'utf8' });
   return r.status === 0 ? r.stdout.trim() : null;
 }
+export function checkoutIdentity(root = REPO_ROOT) {
+  const status = git(['status', '--porcelain'], root);
+  return {sha: git(['rev-parse', 'HEAD'], root), dirty: status === null ? null : Boolean(status)};
+}
 
 export function snapshotFiles(root, { include = () => true } = {}) {
   const files = {};
@@ -76,7 +80,7 @@ export async function freezeReleaseCandidate({tarball:input,sha256,version,sourc
   assertFilesUnchanged(repoRoot,payloadFiles);
   const candidate={mode:'dev',source:'release-tarball',name:pkg.name,version:pkg.version,sha:sourceSha||null,shortSha:sourceSha?.slice(0,7)||null,
     sourceShaProvenance:'caller-supplied; tarball digest verified, source association not independently attested',
-    evaluatorSha:git(['rev-parse','HEAD'],evaluatorRoot),dirty:false,repoRoot,tarball,tarballSha256:sha256,sourceTarballSha256:sha256,payloadFiles,
+    evaluatorSha:git(['rev-parse','HEAD'],evaluatorRoot),dirty:null,repoRoot,tarball,tarballSha256:sha256,sourceTarballSha256:sha256,payloadFiles,
     dependencySource:'release-manifest-resolved-at-test-time',dependencyLockSha256:fileHash(path.join(installation,'package-lock.json')),
     files:snapshotFiles(repoRoot),harness:{directory:runnerRoot,files:snapshotFiles(runnerRoot,{include:file=>/\.(mjs|json|ts|py)$/.test(file)||path.basename(file)==='Dockerfile'})},
     frozenAt:new Date().toISOString(),installPolicy:'Unmodified archive; dependency lifecycle scripts disabled; product installer invoked explicitly in dev mode'};
@@ -88,8 +92,13 @@ export async function freezeReleaseCandidate({tarball:input,sha256,version,sourc
 export async function freezeCandidate({directory,env}={}) {
   const dir=directory||mkdtempSync(path.join(os.tmpdir(),'midbrain-smoke-candidate-'));
   mkdirSync(dir,{recursive:true,mode:0o700});
+  const identity = checkoutIdentity();
   command('npm',['run','build:plugin'],REPO_ROOT,env);
   const [pack]=JSON.parse(command('npm',['pack','--json','--ignore-scripts','--pack-destination',dir],REPO_ROOT,env));
-  return freezeReleaseCandidate({tarball:path.join(dir,pack.filename),sha256:fileHash(path.join(dir,pack.filename)),version:pack.version,
-    sourceSha:git(['rev-parse','HEAD']),directory:path.join(dir,'frozen'),env});
+  const candidate = await freezeReleaseCandidate({tarball:path.join(dir,pack.filename),sha256:fileHash(path.join(dir,pack.filename)),version:pack.version,
+    sourceSha:identity.sha,directory:path.join(dir,'frozen'),env});
+  Object.assign(candidate, {dirty:identity.dirty,sourceCheckout:true,
+    sourceShaProvenance:'Packed from the local checkout; commit identifies HEAD, not any uncommitted changes. The archive digest identifies tested bytes.'});
+  writeFileSync(path.join(path.dirname(candidate.tarball),'identity.json'),JSON.stringify(candidate,null,2)+'\n',{mode:0o600});
+  return candidate;
 }

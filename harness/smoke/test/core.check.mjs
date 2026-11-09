@@ -12,6 +12,9 @@ import {SMOKE_TOOLS,redactSmoke} from '../lib/dry-smoke-fixture.mjs';
 import {renderDrySmokeHtml,renderDrySmokeJUnit} from '../lib/dry-smoke-report.mjs';
 import {renderSmokeMarkdown} from '../lib/markdown.mjs';
 import {fileHash,assertFilesUnchanged,snapshotFiles} from '../lib/candidate.mjs';
+import * as candidateApi from '../lib/candidate.mjs';
+import {SMOKE_CLIENTS} from '../clients/index.mjs';
+import {SMOKE_KEYS} from '../lib/dry-smoke-fixture.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const temporary=action=>{
@@ -56,6 +59,29 @@ test('fingerprints the frozen inputs and detects a modified file',()=>temporary(
   assert.match(fileHash(file),/^[a-f0-9]{64}$/);assertFilesUnchanged(dir,before);
   fs.writeFileSync(file,'{"changed":true}');assert.throws(()=>assertFilesUnchanged(dir,before));
 }));
+test('source provenance distinguishes a clean commit, local edits and an unavailable checkout',()=>temporary(dir=>{
+  const git=args=>{const r=spawnSync('git',args,{cwd:dir,encoding:'utf8',env:{PATH:process.env.PATH,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:os.devNull}});assert.equal(r.status,0,r.stderr);return r.stdout.trim();};
+  git(['init','-q']);
+  fs.writeFileSync(path.join(dir,'source.mjs'),'export const value=1;');git(['add','source.mjs']);
+  git(['-c','user.name=Smoke fixture','-c','user.email=smoke@example.invalid','commit','-qm','fixture']);
+  const sha=git(['rev-parse','HEAD']);
+  assert.deepEqual(candidateApi.checkoutIdentity(dir),{sha,dirty:false});
+  fs.appendFileSync(path.join(dir,'source.mjs'),'\n// local edit');
+  assert.deepEqual(candidateApi.checkoutIdentity(dir),{sha,dirty:true});
+  const missing=path.join(dir,'not-a-checkout');
+  assert.deepEqual(candidateApi.checkoutIdentity(missing),{sha:null,dirty:null});
+}));
+test('failed run-local client installation saves redacted diagnostics beside the report',{skip:process.platform==='win32'},async()=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mcp-smoke-client-'));
+  try {
+    const ctx=createRunContext({root:dir});
+    fs.writeFileSync(path.join(ctx.dirs.toolsBin,'npm'),`#!${process.execPath}\nconsole.error(${JSON.stringify('fixture install failure '+SMOKE_KEYS.global)});process.exit(1);`,{mode:0o700});
+    await assert.rejects(SMOKE_CLIENTS.claude.preflight(ctx),/evidence\/claude\/dry-smoke\/client-setup.json/);
+    const evidence=fs.readFileSync(path.join(ctx.evidenceDir('claude','dry-smoke'),'client-setup.json'),'utf8');
+    assert.match(evidence,/fixture install failure/);assert.doesNotMatch(evidence,new RegExp(SMOKE_KEYS.global));
+    assert.equal(JSON.parse(evidence).code,1);
+  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+});
 test('renders failing observations as readable HTML, Markdown and JUnit',()=>{
   const report={run:{kind:'dry-smoke',runId:'unit',complete:true,modelCalls:0,promptCount:0},candidate:{},clients:[{id:'claude',displayName:'Claude'}],
     cells:[{row:'MCP tool contracts',scenario:'dry-smoke',client:'claude',status:'FAIL',checks:[{name:'Exact query preserved',ok:false,detail:'Wrong query <script>'}],evidence:[]}],

@@ -7,7 +7,7 @@ import { freezeCandidate, freezeReleaseCandidate, assertCandidate, snapshotFiles
 import { seedDetectionFixtures, writeGlobalKey, writeGlobalHostConfig, initProject, installCandidate, inspectInstall } from './home.mjs';
 import { selectManifests } from '../clients/index.mjs';
 import { snapshot, diff } from './tripwire.mjs';
-import { spawnCapture, whichSync, stopChildProcesses } from './proc.mjs';
+import { spawnCapture, whichSync, stopChildProcesses, beginChildProcessRun } from './proc.mjs';
 import { cell, blockedCells } from './cells.mjs';
 import { check, BlockedError } from './checks.mjs';
 import { renderSmokeMarkdown as renderMarkdown } from './markdown.mjs';
@@ -102,7 +102,18 @@ async function nativeCheck(ctx, m, project, installClients) {
 }
 
 /** Same candidate/home/report infrastructure as behavioral runs, without secrets or turns. */
-export async function runDrySmoke(flags, {prepareCandidate, verifyCandidate = assertCandidate, selectClients = selectManifests} = {}) {
+let activeRun = false;
+export async function runDrySmoke(flags, extensions = {}) {
+  // Signal handlers, process cleanup and host tripwires are process-wide.
+  if (activeRun) throw new Error('A smoke run is already active; run invocations sequentially.');
+  activeRun = true;
+  try {
+    beginChildProcessRun();
+    return await executeDrySmoke(flags, extensions);
+  } finally { activeRun = false; }
+}
+
+async function executeDrySmoke(flags, {prepareCandidate, verifyCandidate = assertCandidate, selectClients = selectManifests} = {}) {
   validateDrySmokeFlags(flags);
   const ids = flags.clients ? flags.clients.split(',').map(s => s.trim()) : DRY_SMOKE_CLIENTS;
   const manifests = selectClients(ids);
@@ -209,7 +220,7 @@ export async function runDrySmoke(flags, {prepareCandidate, verifyCandidate = as
           writeFileSync(path.join(ctx.dirs.run, nativeRef), redactSmoke(native));
           add('Native client discovery', [check('Native client proves MidBrain discovery', native.verdict.status === 'PASS', native.verdict.detail)], { status: native.verdict.status, blockedReason: native.verdict.status === 'BLOCKED' ? native.verdict.detail : null, evidence: [nativeRef], notes: `Evidence level: ${nativeProbe(m.id).level}. ${native.verdict.detail}` });
         } catch (e) {
-          if (e.blocked) cells.push(...blockedCells(['Native client discovery'], 'dry-smoke', m, e.message));
+          if (e.blocked) cells.push(...blockedCells(['Native client discovery'], 'dry-smoke', m, e.message, {evidence:[e.evidence].filter(Boolean)}));
           else add('Native client discovery', [check('Native probe completed', false, e.message)]);
         }
         stage = 'Configuration preservation';

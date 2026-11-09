@@ -5,6 +5,10 @@ import { createWriteStream } from 'node:fs';
 
 const children = new Map();
 let stopping = false;
+export function beginChildProcessRun() {
+  if (children.size) throw new Error('A child process run is already active; wait for cleanup.');
+  stopping = false;
+}
 export async function stopChildProcesses() {
   stopping = true;
   const active = [...children.values()];

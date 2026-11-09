@@ -10,6 +10,10 @@ a loopback API and a read-only Actions token. No model or service credentials ar
 required. Superseded runs are cancelled. Four jobs execute by default: package
 build, two client jobs, and the report gate.
 
+The smoke runner supports Linux and macOS. Windows native smoke is blocked until
+its client launchers are implemented and validated; the repository's existing
+Windows product tests remain separate.
+
 ## Read results
 
 Open the PR check's **Details**, then the Actions **Summary**. Each client has a
@@ -55,6 +59,9 @@ backend failures, recovery, account-key rollback, project/global key isolation,
 restart, shutdown, and native connection/discovery. Native discovery is labelled
 separately from direct SDK tool calls. Results do not establish production service
 availability, retrieval quality, or agent reasoning/capture quality.
+Client installation diagnostics are saved in `evidence/<client>/dry-smoke/client-setup.json`,
+including failed setup attempts. Local source runs record whether the checkout
+includes uncommitted changes; an archive-only run cannot attest to clean source.
 
 ## Reuse and extension API
 
@@ -89,3 +96,8 @@ installing the repository's dependencies; its inputs are defined in that file.
 Protocol tests, fixtures, contracts and report rendering belong here. Review
 contract updates against the actual MCP implementation. Add adapters through the
 documented hooks rather than copying the smoke engine.
+
+Call `runDrySmoke` sequentially within a Node process. Cleanup completes before
+the next invocation; overlapping invocations are rejected because signal handling,
+child-process tracking and host-state monitoring are process-wide. Use separate
+processes or the CI client matrix for parallel runs.

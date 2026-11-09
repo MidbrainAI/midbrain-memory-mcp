@@ -12,6 +12,8 @@ export function renderSmokeMarkdown(report) {
     '| Field | Value |','| --- | --- |',`| Candidate | ${esc(candidate.name)} ${esc(candidate.version)} |`,
     `| Candidate source | ${candidate.source==='release-tarball'?'Frozen release archive':'Frozen source package'} |`,
     `| Tested archive SHA-256 | ${esc(candidate.tarballSha256)} |`, `| Source commit | ${esc(candidate.sha)} |`,
+    `| Source state | ${candidate.dirty === true ? 'Includes local changes' : candidate.dirty === false ? 'Clean checkout' : 'Not independently verified'} |`,
+    `| Source provenance | ${esc(candidate.sourceShaProvenance || 'Not recorded')} |`,
     `| Model calls | ${run.modelCalls} |`,`| Prompts | ${run.promptCount} |`,
     `| Isolation | ${isolation?.ok?'PASS':'FAIL'} |`,'','## What needs attention','',smokeFindingsMarkdown(report),'',
     '## Client matrix','',`| Check | ${clients.map(c=>esc(c.displayName)).join(' | ')} |`,
