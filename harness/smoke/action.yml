@@ -1,0 +1,50 @@
+name: MidBrain MCP package smoke
+description: Test a checksum-bound MCP package using synthetic data and no model calls.
+inputs:
+  tarball:
+    description: Absolute path to the candidate npm archive
+    required: true
+  sha256:
+    description: Expected SHA-256 of that exact archive
+    required: true
+  version:
+    description: Expected package version
+    required: true
+  source-sha:
+    description: Full candidate source commit
+    required: true
+  client:
+    description: One supported installed client
+    default: claude
+  root:
+    description: Private temporary run directory
+    required: true
+  install-clients:
+    description: Install pinned clients into the run directory, overriding host binaries
+    default: 'true'
+outputs:
+  run-dir:
+    description: Directory containing readable reports and selected evidence
+    value: ${{ steps.smoke.outputs.run_dir }}
+runs:
+  using: composite
+  steps:
+    - name: Run MCP package checks
+      id: smoke
+      shell: bash
+      env:
+        SMOKE_DIR: ${{ github.action_path }}
+        SMOKE_TARBALL: ${{ inputs.tarball }}
+        SMOKE_DIGEST: ${{ inputs.sha256 }}
+        SMOKE_VERSION: ${{ inputs.version }}
+        SMOKE_SOURCE_SHA: ${{ inputs.source-sha }}
+        SMOKE_CLIENT: ${{ inputs.client }}
+        SMOKE_ROOT: ${{ inputs.root }}
+        SMOKE_INSTALL: ${{ inputs.install-clients }}
+      run: |
+        set -euo pipefail
+        args=()
+        if [[ "$SMOKE_INSTALL" == true ]]; then args+=(--install-clients); fi
+        node "$SMOKE_DIR/cli.mjs" --clients "$SMOKE_CLIENT" --root "$SMOKE_ROOT" \
+          --candidate-tarball "$SMOKE_TARBALL" --candidate-sha256 "$SMOKE_DIGEST" \
+          --candidate-version "$SMOKE_VERSION" --candidate-source-sha "$SMOKE_SOURCE_SHA" "${args[@]}"

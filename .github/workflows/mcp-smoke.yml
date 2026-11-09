@@ -1,0 +1,145 @@
+name: MCP PR smoke
+on:
+  pull_request: {}
+permissions:
+  contents: read
+concurrency:
+  group: mcp-smoke-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      artifact_name: ${{ steps.pack.outputs.artifact_name }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      version: ${{ steps.pack.outputs.version }}
+      source_sha: ${{ steps.pack.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.3.0
+          cache: npm
+      - run: npm ci
+      - name: Verify reusable smoke component
+        run: node --test harness/smoke/test/*.check.mjs
+      - run: npm run build:plugin
+      - name: Pack the candidate once
+        id: pack
+        run: |-
+          mkdir -p "$RUNNER_TEMP/release-output"
+          npm pack --json --pack-destination "$RUNNER_TEMP/release-output" > "$RUNNER_TEMP/release-pack.json"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import {createHash} from 'node:crypto';
+          const dir=path.join(process.env.RUNNER_TEMP,'release-output');
+          const [pack]=JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP,'release-pack.json')));
+          const bytes=fs.readFileSync(path.join(dir,pack.filename));
+          fs.writeFileSync(path.join(dir,'candidate.tgz'),bytes);
+          const values={artifact_name:'mcp-release-candidate',sha256:createHash('sha256').update(bytes).digest('hex'),version:pack.version,source_sha:process.env.GITHUB_SHA};
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,Object.entries(values).map(([key,value])=>key+'='+value).join('\n')+'\n');
+          JS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-output/candidate.tgz
+          if-no-files-found: error
+          retention-days: 7
+  smoke:
+    name: MCP smoke (${{ matrix.client }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        client:
+          - claude
+          - codex
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.3.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-input
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test exact MCP archive
+        uses: ./harness/smoke
+        with:
+          tarball: ${{ runner.temp }}/release-input/candidate.tgz
+          sha256: ${{ needs.build.outputs.sha256 }}
+          version: ${{ needs.build.outputs.version }}
+          source-sha: ${{ needs.build.outputs.source_sha }}
+          client: ${{ matrix.client }}
+          root: ${{ runner.temp }}/release-smoke
+      - name: Retain reports and selected evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-smoke-${{ matrix.client }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |-
+            ${{ runner.temp }}/release-smoke/runs/*/report.html
+            ${{ runner.temp }}/release-smoke/runs/*/report.md
+            ${{ runner.temp }}/release-smoke/runs/*/results.json
+            ${{ runner.temp }}/release-smoke/runs/*/junit.xml
+            ${{ runner.temp }}/release-smoke/runs/*/candidate.json
+            ${{ runner.temp }}/release-smoke/runs/*/isolation.json
+            ${{ runner.temp }}/release-smoke/runs/*/evidence/
+  gate:
+    name: MCP release smoke gate
+    if: always()
+    needs:
+      - build
+      - smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Record client job outcome
+        env:
+          OUTCOME: ${{ needs.smoke.result }}
+        run: >
+          echo "## MCP client jobs: $OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Model-free checks. Open the client jobs for details and download
+          their HTML/JSON reports from this run's artifacts." >>
+          "$GITHUB_STEP_SUMMARY"
+
+          echo "Run:
+          $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >>
+          "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.3.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-dry-smoke-*
+          path: ${{ runner.temp }}/release-evidence
+      - name: Validate coverage and candidate identity across all clients
+        if: always()
+        env:
+          RELEASE_JOB_RESULT: ${{ needs.smoke.result }}
+          RELEASE_SHA256: ${{ needs.build.outputs.sha256 }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          RELEASE_CLIENTS: '["claude","codex"]'
+        run: node harness/smoke/scripts/release-summary.mjs
+          "$RUNNER_TEMP/release-evidence"
