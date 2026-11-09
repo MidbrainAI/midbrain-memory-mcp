@@ -231,7 +231,7 @@ use get_episodic_memories_by_date with today's date to retrieve recent context.`
         return { content: [{ type: "text", text: lines.join("\n") + (hint || "") }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Memory search failed: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Memory search failed: ${msg}` }] };
       }
     }
   );
@@ -274,9 +274,9 @@ Use for exact or pattern-based matches (names, IDs, code, URLs).`,
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("400")) {
-          return { content: [{ type: "text", text: `Regex error: ${msg}` }] };
+          return { isError: true, content: [{ type: "text", text: `Regex error: ${msg}` }] };
         }
-        return { content: [{ type: "text", text: `Grep failed: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Grep failed: ${msg}` }] };
       }
     }
   );
@@ -302,7 +302,7 @@ when continuing previous work.`,
       try {
         const start = new Date(date);
         if (isNaN(start.getTime())) {
-          return { content: [{ type: "text", text: `Invalid date format: '${date}'. Use ISO format, e.g. '2025-06-01'.` }] };
+          return { isError: true, content: [{ type: "text", text: `Invalid date format: '${date}'. Use ISO format, e.g. '2025-06-01'.` }] };
         }
         const end = new Date(start);
         end.setDate(end.getDate() + Math.max(offset_days ?? 1, 1));
@@ -337,7 +337,7 @@ when continuing previous work.`,
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Failed to retrieve episodic memories: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Failed to retrieve episodic memories: ${msg}` }] };
       }
     }
   );
@@ -367,7 +367,7 @@ Use this to discover what knowledge files are available.`,
         return { content: [{ type: "text", text: `Files (${docs.length}):\n${lines.join("\n")}` + (hint || "") }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Failed to list files: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Failed to list files: ${msg}` }] };
       }
     }
   );
@@ -405,9 +405,9 @@ after memory_search to read context around a search hit.`,
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("404")) {
-          return { content: [{ type: "text", text: `No content found for '${file_path}' at line ${start_line ?? 1}.` }] };
+          return { isError: true, content: [{ type: "text", text: `No content found for '${file_path}' at line ${start_line ?? 1}.` }] };
         }
-        return { content: [{ type: "text", text: `Failed to read file: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Failed to read file: ${msg}` }] };
       }
     }
   );
@@ -455,7 +455,7 @@ full context if needed.`,
         return { content: [{ type: "text", text: summary }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Failed to check session status: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Failed to check session status: ${msg}` }] };
       }
     }
   );
@@ -484,7 +484,7 @@ probe, pending capture cache counts, safe locations, and actionable next steps.`
         return { content: [{ type: "text", text }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Diagnostics failed: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Diagnostics failed: ${msg}` }] };
       }
     },
   );
@@ -505,7 +505,7 @@ probe, pending capture cache counts, safe locations, and actionable next steps.`
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Error: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Error: ${msg}` }] };
       }
     }
   );
@@ -538,7 +538,7 @@ user API key. Read-only; safe to call whenever the user asks which agents exist.
         return { content: [{ type: "text", text: `Agents:\n${lines.join("\n")}` }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Failed to list agents: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Failed to list agents: ${msg}` }] };
       }
     }
   );
@@ -568,10 +568,23 @@ user API key.`,
         await readGlobalKeystore();
 
         const agent = await account.createAgent({ name, description });
-        const keyRes = await account.createKey({
-          agent_id: agent.agent_id,
-          key_alias: `${name} key`,
-        });
+        let keyRes;
+        try {
+          keyRes = await account.createKey({
+            agent_id: agent.agent_id,
+            key_alias: `${name} key`,
+          });
+        } catch {
+          // Agent creation succeeded; failed or ambiguous minting must not
+          // silently leave it behind. Deleting the agent also revokes its keys.
+          let rolledBack = false;
+          try { await account.deleteAgent(agent.agent_id); rolledBack = true; }
+          catch { /* Report the orphan for explicit cleanup. */ }
+          const detail = rolledBack
+            ? `Agent "${name}" was created but key minting failed; the agent and any keys were rolled back. Retry after the account service recovers.`
+            : `Agent "${name}" (${agent.agent_id}) was created but key minting failed and automatic rollback also failed. Delete agent ${agent.agent_id} in the MidBrain dashboard before retrying.`;
+          return { isError: true, content: [{ type: "text", text: detail }] };
+        }
 
         // Catalog the agent + its key locally; never echo the raw secret.
         // Serialized read-modify-write so a concurrent tool call can't clobber.
@@ -598,6 +611,7 @@ user API key.`,
 
           if (rolledBack) {
             return {
+              isError: true,
               content: [{
                 type: "text",
                 text: `Agent "${name}" was created but its key could not be stored ` +
@@ -607,6 +621,7 @@ user API key.`,
             };
           }
           return {
+              isError: true,
             content: [{
               type: "text",
               text: `Agent "${name}" (${agent.agent_id}) was created and its key minted, ` +
@@ -627,7 +642,7 @@ user API key.`,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Failed to create agent: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Failed to create agent: ${msg}` }] };
       }
     }
   );
@@ -660,6 +675,7 @@ available agents are listed instead of guessing.`,
           const key = match.agent.agent_key;
           if (!key) {
             return {
+              isError: true,
               content: [{
                 type: "text",
                 text: `Agent "${match.agent.alias || match.agent.agent_id}" has no key stored ` +
@@ -676,6 +692,7 @@ available agents are listed instead of guessing.`,
           } catch (writeErr) {
             if (writeErr instanceof CredentialReplaceNotApprovedError) {
               return {
+              isError: true,
                 content: [{
                   type: "text",
                   text: `Project "${project_dir}" already has a .midbrain-key (possibly a ` +
@@ -704,10 +721,10 @@ available agents are listed instead of guessing.`,
         const reason = match.status === "ambiguous"
           ? `"${agent}" matches more than one agent. Please be more specific.`
           : `No agent matched "${agent}".`;
-        return { content: [{ type: "text", text: `${reason}\nAvailable agents:\n${listText}` }] };
+        return { isError: true, content: [{ type: "text", text: `${reason}\nAvailable agents:\n${listText}` }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Failed to set project agent: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Failed to set project agent: ${msg}` }] };
       }
     }
   );
@@ -739,7 +756,7 @@ server error when you next use them.`,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text", text: `Failed to set user API key: ${msg}` }] };
+        return { isError: true, content: [{ type: "text", text: `Failed to set user API key: ${msg}` }] };
       }
     }
   );

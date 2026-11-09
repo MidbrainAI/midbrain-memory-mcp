@@ -54,8 +54,10 @@
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run build:plugin && eslint . && vitest run && bash scripts/check-pinned-spec.sh && bash scripts/check-test-isolation.sh",
-    "prepublishOnly": "npm run build:plugin && node -e \"JSON.parse(require('fs').readFileSync('package.json','utf8'))\""
+    "check": "npm run build:plugin && eslint . && vitest run && bash scripts/check-pinned-spec.sh && bash scripts/check-test-isolation.sh && npm run smoke:test",
+    "prepublishOnly": "npm run build:plugin && node -e \"JSON.parse(require('fs').readFileSync('package.json','utf8'))\"",
+    "smoke:test": "node --test harness/smoke/test/*.check.mjs",
+    "smoke": "node harness/smoke/cli.mjs"
   },
   "lint-staged": {
     "*.{js,mjs}": "eslint --max-warnings 0"
