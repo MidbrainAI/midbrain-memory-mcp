@@ -434,6 +434,49 @@ describe("OpenCode plugin PK delivery helpers", () => {
     } finally { await cleanup(); vi.useRealTimers(); }
   });
 
+  it.each(["timeout", "rejection", "missing message"])("V2 releases the reservation after %s so a later event can recover", async (failure) => {
+    vi.useFakeTimers();
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    let finishFirstLookup;
+    let retry;
+    const firstLookup = new Promise((resolve) => { finishFirstLookup = resolve; });
+    const retryEvent = new Promise((resolve) => { retry = resolve; });
+    const message = [{ id: "msg_recovered", content: [{ type: "text", text: "Recovered answer" }] }];
+    const context = vi.fn()
+      .mockImplementationOnce(() => failure === "timeout" ? firstLookup
+        : failure === "rejection" ? Promise.reject(new Error("lookup failed")) : Promise.resolve([]))
+      .mockResolvedValue(message);
+    const event = { type: "session.step.ended", location: { directory: "/repo" }, created: 1,
+      data: { sessionID: "ses_one", assistantMessageID: "msg_recovered" } };
+    const cleanup = await plugin.setup({ location: { directory: "/repo" },
+      session: { hook: vi.fn(), context },
+      event: { subscribe: () => (async function* () {
+        yield event;
+        await retryEvent;
+        yield event;
+        yield event;
+      })() },
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(context).toHaveBeenCalledTimes(1);
+      retry();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(context).toHaveBeenCalledTimes(2);
+      // A timed-out lookup may finish later, but must not post a second copy.
+      finishFirstLookup(message);
+      await vi.advanceTimersByTimeAsync(0);
+      const posts = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/memories/episodic"));
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0][1].body).text).toBe("Recovered answer");
+    } finally {
+      retry();
+      finishFirstLookup([]);
+      await cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("V2 drops stale mention offsets only when PK injection rewrites the prompt", async () => {
     const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
     const hooks = {};

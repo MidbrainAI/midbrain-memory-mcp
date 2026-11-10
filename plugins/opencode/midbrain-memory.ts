@@ -270,9 +270,15 @@ export const MidBrainMemoryPlugin = async ({ client, directory }: { client: Capt
       try {
         const result = await client.session.message({
           path: { id: sessionID, messageID: msgID },
+        }).catch((err: unknown) => {
+          // This is only an in-flight reservation until the lookup succeeds.
+          // A timeout or read failure must not suppress a later recovery event.
+          storedMessages.delete(msgID);
+          throw err;
         });
 
         if (!result.data) {
+          storedMessages.delete(msgID);
           log.debug(`ASSISTANT: no data for ${msgID}`);
           return;
         }
