@@ -150,22 +150,37 @@ describe.skipIf(!sqlite || typeof zlib.zstdCompressSync !== "function")("readOpe
     expect((await readOpenClawSession(`${dbFile}#cli`)).linkedSessionIds).toEqual(["c3c3ef58-claude"]);
   });
 
-  it("links an unrecorded claude-cli backend session by prompt and time", async () => {
+  it("links no backend session without the id OpenClaw recorded", async () => {
+    // Two sessions in one workspace can share a prompt; linking by prompt
+    // skipped the whole Claude session, unrelated turns included.
     const db = makeDb();
-    addSession(db, "unlinked", { events: [header(), msg("2026-10-05T09:00:01.000Z", "user", "backend linked prompt")] });
+    addSession(db, "unlinked", { events: [header(), msg("2026-10-05T09:00:01.000Z", "user", "run the test suite")] });
     db.close();
-    const projects = path.join(stateDir, "claude-projects");
-    const dir = path.join(projects, "-work-claw");
-    fs.mkdirSync(dir, { recursive: true });
-    const row = (sessionId, at) => JSON.stringify({
-      type: "user", sessionId, cwd: "/work/claw", timestamp: at, origin: { kind: "human" },
-      message: { role: "user", content: "[Mon 2026-10-05 11:00 GMT+2] backend linked prompt" },
-    });
-    fs.writeFileSync(path.join(dir, "near.jsonl"), `${row("claude-near", "2026-10-05T09:00:03.000Z")}\n`);
-    fs.writeFileSync(path.join(dir, "far.jsonl"), `${row("claude-far", "2026-10-05T12:00:00.000Z")}\n`);
+    expect((await readOpenClawSession(`${dbFile}#unlinked`)).linkedSessionIds).toBeUndefined();
+  });
 
-    const session = await readOpenClawSession(`${dbFile}#unlinked`, { claudeProjects: projects });
-    expect(session.linkedSessionIds).toEqual(["claude-near"]);
+  it("ends the turn at a corrupt event, so the next reply answers no earlier prompt", async () => {
+    const db = makeDb();
+    addSession(db, "bad", {
+      events: [
+        header(),
+        msg("2026-10-05T09:00:01.000Z", "user", "first prompt"),
+        msg("2026-10-05T09:00:02.000Z", "assistant", [{ type: "text", text: "first answer" }]),
+      ],
+    });
+    // The lost event was the next prompt; its reply follows.
+    db.prepare("INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)").run("bad", 3, "{\"type\":\"mess", 1_500);
+    db.prepare("INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)")
+      .run("bad", 4, JSON.stringify(msg("2026-10-05T09:01:01.000Z", "assistant", [{ type: "text", text: "answer to the lost prompt" }])), 1_500);
+    db.prepare("INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)")
+      .run("bad", 5, JSON.stringify(msg("2026-10-05T09:02:00.000Z", "user", "third prompt")), 1_500);
+    db.close();
+    const session = await readOpenClawSession(`${dbFile}#bad`);
+    expect(session.entries.map((entry) => [entry.role, entry.text])).toEqual([
+      ["user", "first prompt"],
+      ["assistant", "first answer"],
+      ["user", "third prompt"],
+    ]);
   });
 
   it("drops the parent history a fork starts with", async () => {
@@ -196,5 +211,29 @@ describe.skipIf(!sqlite || typeof zlib.zstdCompressSync !== "function")("readOpe
     const corrupt = path.join(stateDir, "corrupt.sqlite");
     fs.writeFileSync(corrupt, "not a database");
     expect(listOpenClawSessions([corrupt])).toEqual([corrupt]);
+  });
+
+  it("does not list a database behind a symlinked folder", () => {
+    makeDb().close();
+    // "junction": a directory link Windows creates without admin rights.
+    const outside = path.join(stateDir, "outside");
+    fs.cpSync(path.join(stateDir, "agents", "main"), outside, { recursive: true });
+    fs.mkdirSync(path.join(stateDir, "agents", "linked"));
+    fs.symlinkSync(path.join(outside, "agent"), path.join(stateDir, "agents", "linked", "agent"), "junction");
+    expect(listOpenClawDatabases(stateDir)).toEqual([dbFile]);
+
+    const linkedState = path.join(stateDir, "linked-state");
+    fs.mkdirSync(linkedState);
+    fs.symlinkSync(path.join(stateDir, "agents"), path.join(linkedState, "agents"), "junction");
+    expect(listOpenClawDatabases(linkedState)).toEqual([]);
+
+    // A linked state dir is followed, as OpenClaw follows it.
+    const linkedRoot = path.join(stateDir, "..", `${path.basename(stateDir)}-link`);
+    fs.symlinkSync(stateDir, linkedRoot, "junction");
+    try {
+      expect(listOpenClawDatabases(linkedRoot)).toEqual([path.join(linkedRoot, "agents", "main", "agent", "openclaw-agent.sqlite")]);
+    } finally {
+      fs.rmSync(linkedRoot, { force: true });
+    }
   });
 });

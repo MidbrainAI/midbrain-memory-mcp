@@ -25,6 +25,20 @@ export function regularFiles(dir, test) {
     .map((entry) => path.join(dir, entry.name));
 }
 
+/**
+ * Whether `file` is a symlink. Listing skips symlinked entries (Dirent), but
+ * reading a fixed folder below the history root (`agents`, `profiles`)
+ * follows one: readers skip those too (AGENTS.md). The root itself is
+ * followed, as the client follows it.
+ */
+export function isSymlink(file) {
+  try {
+    return fs.lstatSync(file).isSymbolicLink();
+  } catch {
+    return false; // missing: listing finds nothing; other errors are reported there
+  }
+}
+
 /** Directories (no symlinks) directly inside `dir`. */
 export function subdirectories(dir) {
   return readDir(dir)

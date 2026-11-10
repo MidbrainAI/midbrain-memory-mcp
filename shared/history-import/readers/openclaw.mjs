@@ -14,14 +14,12 @@
  * stores only runs a person started.
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 
 import { openclawStateDir } from "../../clients/openclaw.mjs";
-import { claudeProjectsDir, readClaudeSession } from "./claude.mjs";
 import {
-  databaseSource, loadSqlite, parseDatabaseSource, regularFiles, validTimestamp, withReadOnlyDatabase,
+  databaseSource, isSymlink, loadSqlite, parseDatabaseSource, regularFiles, subdirectories, validTimestamp, withReadOnlyDatabase,
 } from "./common.mjs";
 
 const DATABASE_NAME = "openclaw-agent.sqlite";
@@ -38,15 +36,11 @@ const TIMESTAMP_ENVELOPE = /^\[[^\]\n]*\d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]\n]*\]\s
 /** Every agent's transcript database under the state dir. */
 export function listOpenClawDatabases(stateDir = openclawStateDir()) {
   const agents = path.join(stateDir, "agents");
-  let names;
-  try {
-    names = fs.readdirSync(agents, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return names
-    .filter((entry) => entry.isDirectory())
-    .flatMap((entry) => regularFiles(path.join(agents, entry.name, "agent"), (name) => name === DATABASE_NAME));
+  if (isSymlink(agents)) return [];
+  return subdirectories(agents)
+    .map((agent) => path.join(agent, "agent"))
+    .filter((dir) => !isSymlink(dir))
+    .flatMap((dir) => regularFiles(dir, (name) => name === DATABASE_NAME));
 }
 
 /**
@@ -77,7 +71,7 @@ function decodeEvent(row) {
   try {
     if (typeof row.event_json === "string") return JSON.parse(row.event_json);
     if (row.event_zstd) return JSON.parse(zlib.zstdDecompressSync(Buffer.from(row.event_zstd)).toString("utf8"));
-  } catch { /* a corrupt event is skipped */ }
+  } catch { /* corrupt: the caller ends the turn */ }
   return null;
 }
 
@@ -115,52 +109,8 @@ function skipReason(window, node) {
   return null;
 }
 
-const LINK_WINDOW_MS = 2 * 60_000;
-const backendSessions = new Map();
-
-/**
- * Claude Code sessions OpenClaw's claude-cli backend ran in `cwd`: Claude
- * Code keeps them under `projects/<cwd with non-alphanumerics as "-">`.
- * Read once per directory and run.
- */
-async function claudeBackendSessions(cwd, projectsDir) {
-  const dir = path.join(projectsDir, cwd.replace(/[^A-Za-z0-9]/g, "-"));
-  if (!backendSessions.has(dir)) {
-    backendSessions.set(dir, (async () => {
-      const sessions = [];
-      for (const file of regularFiles(dir, (name) => name.endsWith(".jsonl"))) {
-        try {
-          const session = await readClaudeSession(file, projectsDir);
-          if (session.sessionId) sessions.push(session);
-        } catch { /* unreadable: no link */ }
-      }
-      return sessions;
-    })());
-  }
-  return backendSessions.get(dir);
-}
-
-/**
- * Link the Claude Code session that holds one of this session's prompts,
- * written within two minutes of it (the backend adds an envelope). OpenClaw
- * does not always record the link (`cliSessionIds`).
- */
-async function linkClaudeBackend(session, projectsDir) {
-  if (!session.cwd || session.entries.length === 0 || session.linkedSessionIds?.length) return;
-  const prompts = session.entries.filter((entry) => entry.role === "user" && entry.text.length >= 12);
-  for (const backend of await claudeBackendSessions(session.cwd, projectsDir)) {
-    const match = backend.entries.some((entry) => entry.role === "user" && prompts.some((prompt) => (
-      entry.text.includes(prompt.text)
-      && Math.abs(Date.parse(entry.occurredAt) - Date.parse(prompt.occurredAt)) <= LINK_WINDOW_MS
-    )));
-    if (match && backend.sessionId !== session.sessionId) {
-      session.linkedSessionIds = [...new Set([...(session.linkedSessionIds ?? []), backend.sessionId])];
-    }
-  }
-}
-
 /** @returns {Promise<import("../plan.mjs").ImportSession>} */
-export async function readOpenClawSession(source, { claudeProjects = claudeProjectsDir() } = {}) {
+export async function readOpenClawSession(source) {
   const { file, id } = parseDatabaseSource(source);
   const session = { client: "openclaw", file: source, sessionId: id, cwd: null, entries: [], skip: null };
   withReadOnlyDatabase(file, (db) => {
@@ -180,7 +130,9 @@ export async function readOpenClawSession(source, { claudeProjects = claudeProje
     session.skip = skipReason(window, node);
     if (session.skip) return;
     // A session on a CLI backend (claude-cli) also lives in that client's own
-    // session, which its hooks may have captured live under that id.
+    // session, which its hooks may have captured live under that id. Only
+    // the id OpenClaw recorded links them: OpenClaw clears it on compaction
+    // and backend errors, so earlier backend sessions are not linked.
     const entry = parseEntry(node?.entry_json);
     const linked = Object.values(entry?.cliSessionIds ?? {}).filter((value) => typeof value === "string" && value && value !== id);
     if (linked.length) session.linkedSessionIds = [...new Set(linked)];
@@ -204,7 +156,12 @@ export async function readOpenClawSession(source, { claudeProjects = claudeProje
     };
     for (const row of rows) {
       const event = decodeEvent(row);
-      if (!event) continue;
+      if (!event) {
+        // A corrupt event may have been the next prompt: what follows must
+        // not answer the turn before it (as the Claude reader does).
+        closeTurn();
+        continue;
+      }
       if (event.type === "session") {
         if (typeof event.cwd === "string") session.cwd = event.cwd;
         startedAt = Date.parse(event.timestamp ?? "");
@@ -239,6 +196,5 @@ export async function readOpenClawSession(source, { claudeProjects = claudeProje
     }
     closeTurn();
   });
-  if (!session.skip) await linkClaudeBackend(session, claudeProjects);
   return session;
 }
