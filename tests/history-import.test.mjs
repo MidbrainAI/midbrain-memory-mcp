@@ -271,10 +271,26 @@ describe("uploadImport", () => {
 });
 
 describe("prepareText", () => {
-  it("strips injected MidBrain context and caps length", () => {
+  it("caps length", () => {
     const long = prepareText("x".repeat(MAX_TEXT_CHARS + 10));
     expect(long.truncated).toBe(true);
     expect(long.text.length).toBe(MAX_TEXT_CHARS);
+  });
+
+  it("strips blocks MidBrain added to a prompt, whatever process signed them", () => {
+    // Layout of a real OpenCode prompt from a 2026-10 build (persona and profile elided).
+    const identity = "<!-- mb:identity-start -->\n<!-- mb:identity-proof nonce=6f1c2a7e-0d2c-404b-82e8-1a2b3c4d5e6f sig="
+      + "a".repeat(64) + " -->\n## Agent persona\nShort sentences.\n\n## User profile\nLikes jazz.\n<!-- mb:identity-end -->";
+    const context = "<!-- mb:ctx-start -->\n## Procedural knowledge:\n<!-- mb:ctx-meta nonce=old sig=" + "b".repeat(64)
+      + " -->\n<!-- mb:pk 12 -->\n- Run the tests first.\n<!-- mb:ctx-end -->";
+    expect(prepareText(`${identity}\n\nIn one sentence: what is the capital of Portugal?`).text)
+      .toBe("In one sentence: what is the capital of Portugal?");
+    expect(prepareText(`${context}\n\nfix the build`).text).toBe("fix the build");
+    expect(prepareText(`${identity}\n${context}\nboth`).text).toBe("both");
+    // Lookalikes stay: a marker without its end, or a different block's end.
+    for (const text of ["what does <!-- mb:identity-start --> mean?", "<!-- mb:ctx-start --> a <!-- mb:identity-end --> b"]) {
+      expect(prepareText(text).text).toBe(text);
+    }
   });
 });
 
@@ -282,6 +298,12 @@ describe("summarize", () => {
   it("counts entries and skip reasons per client", () => {
     const summary = summarize([session(), session({ skip: "already imported" })]);
     expect(summary.fake).toMatchObject({ sessions: 1, user: 2, assistant: 2, first: "2026-09-01T10:00:00.000Z", skipped: { "already imported": 1 } });
+  });
+
+  it("counts the characters that will be stored, without MidBrain's blocks", () => {
+    const text = "<!-- mb:identity-start -->\n## User profile\nLikes jazz.\n<!-- mb:identity-end -->\n\nhi";
+    const summary = summarize([session({ entries: [{ role: "user", text, occurredAt: "2026-09-01T10:00:00.000Z" }] })]);
+    expect(summary.fake.chars).toBe(2);
   });
 });
 

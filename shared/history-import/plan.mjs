@@ -16,7 +16,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 
 import { buildCaptureMetadata } from "../capture-metadata.mjs";
-import { stripInjectedContext } from "../pk-inject.mjs";
 
 /**
  * The session shape every history reader returns (readers/).
@@ -78,8 +77,15 @@ export function importId(session, entry) {
 }
 
 /** Clean one entry's text the way it will be stored. */
+// Blocks MidBrain itself added to prompts: injected context (`mb:ctx`) and,
+// in builds from 2026-10-06 to 2026-10-16, the persona and profile
+// (`mb:identity`). Live capture checks a block's signature, but its key
+// lives only in the process that added the block, so history is matched by
+// the markers alone.
+const MIDBRAIN_BLOCKS = /<!-- mb:(ctx|identity)-start -->[\s\S]*?<!-- mb:\1-end -->/g;
+
 export function prepareText(text) {
-  const trimmed = stripInjectedContext(text).trim();
+  const trimmed = String(text ?? "").replace(MIDBRAIN_BLOCKS, "").trim();
   if (trimmed.length <= MAX_TEXT_CHARS) return { text: trimmed, truncated: false };
   return { text: trimmed.slice(0, MAX_TEXT_CHARS - TRUNCATED.length) + TRUNCATED, truncated: true };
 }
@@ -260,7 +266,7 @@ export function summarize(sessions) {
     row.sessions += 1;
     for (const entry of session.entries) {
       row[entry.role] += 1;
-      row.chars += entry.text.length;
+      row.chars += prepareText(entry.text).text.length;
       if (!row.first || entry.occurredAt < row.first) row.first = entry.occurredAt;
       if (!row.last || entry.occurredAt > row.last) row.last = entry.occurredAt;
     }
