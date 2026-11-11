@@ -1,0 +1,39 @@
+{
+  "description": "Save each Claude Code and Cowork turn to MidBrain through the plugin's own connector.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo MidBrain saves every turn of this session automatically. Do not call save_memory for what is said here; still search MidBrain before answering about the user."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:midbrain-memory:midbrain",
+            "tool": "save_memory",
+            "input": { "text": "${prompt}", "role": "user", "session_id": "${session_id}" }
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:midbrain-memory:midbrain",
+            "tool": "save_memory",
+            "input": { "text": "${last_assistant_message}", "role": "assistant", "session_id": "${session_id}" }
+          }
+        ]
+      }
+    ]
+  }
+}

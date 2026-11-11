@@ -34,6 +34,21 @@ describe("hosted plugins", () => {
     expect(skillVersion).toBe(claude.version);
   });
 
+  it("capture each Claude Code turn through the bundled connector", () => {
+    const { hooks } = json("claude/hooks/hooks.json");
+    const save = (event) => hooks[event][0].hooks[0];
+    for (const [event, role, text] of [["UserPromptSubmit", "user", "${prompt}"], ["Stop", "assistant", "${last_assistant_message}"]]) {
+      expect(save(event)).toEqual({
+        type: "mcp_tool",
+        server: "plugin:midbrain-memory:midbrain",
+        tool: "save_memory",
+        input: { text, role, session_id: "${session_id}" },
+      });
+    }
+    expect(Object.keys(json("claude/.mcp.json").mcpServers)).toEqual(["midbrain"]);
+    expect(json("claude/.claude-plugin/plugin.json").name).toBe("midbrain-memory");
+  });
+
   it("give Claude's directory listing its README, icon and links", () => {
     const claude = json("claude/.claude-plugin/plugin.json");
     // The directory blocks a plugin folder without a README of 40+ words (code excluded).

@@ -8,8 +8,11 @@ Claude recall what you told it before and save the facts that matter, in Chat
 
 - A remote MCP connector, `midbrain`, at `https://memory.midbrain.ai/api/mcp`.
 - The `memory-first` skill, which tells Claude when to search and when to save.
+- Hooks, used only in Claude Code and Cowork (Chat ignores them), that save
+  every turn through the connector.
 
-The plugin runs nothing on your computer.
+Its only local command prints one sentence at session start, telling Claude
+that the session is saved automatically.
 
 ## What it sends and where
 
@@ -17,7 +20,9 @@ Claude connects to `https://memory.midbrain.ai/api/mcp` after you sign in to
 MidBrain and approve the connection. It sends:
 
 - search queries, when Claude looks something up in your memory;
-- one short sentence per fact, when Claude saves a fact you shared.
+- one short sentence per fact, when Claude saves a fact you shared in Chat;
+- in Claude Code and Cowork, each prompt you send and each final reply, with
+  the session ID, so the whole conversation is kept.
 
 Saved facts are stored in your MidBrain account. Claude never sends secrets on
 purpose: the skill and the tools tell it not to save passwords, keys, or card
@@ -28,6 +33,9 @@ or ID numbers.
 1. Install the plugin.
 2. On the plugin's Connectors tab, connect `midbrain`, sign in to MidBrain and
    approve.
+
+If you also installed MidBrain's npm package for Claude Code, keep only one of
+the two, or each turn is saved twice.
 
 To stop using it, disconnect the connector or uninstall the plugin. You can see
 and revoke the connection in your MidBrain account.

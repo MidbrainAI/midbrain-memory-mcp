@@ -14,6 +14,13 @@ The skill only guides the assistant. The tools, their descriptions and the
 memory rules they carry (what to save, when to recall) live in the endpoint, so
 the connector alone works without the plugin.
 
+The Claude bundle also has hooks (`claude/hooks/hooks.json`) that save every
+Claude Code and Cowork turn. They are `mcp_tool` hooks: they call the bundled
+connector's `save_memory` with the turn's role and session ID, over the
+connection the user already signed in with, so nothing is installed and no API
+key is needed. Chat ignores hooks. The ChatGPT bundle has none, because OpenAI
+does not accept plugins with hooks.
+
 | Folder | Assistant | Published through |
 |---|---|---|
 | `claude/` | Claude | Anthropic's directory, from this public repository |
