@@ -240,6 +240,19 @@ to choose one of two effective paths:
 npx midbrain-memory-mcp install --non-interactive --key-source opencode
 ```
 
+To supply the default agent key during installation, pass it directly:
+
+```sh
+npx midbrain-memory-mcp install --non-interactive --default-key "sk-..."
+```
+
+This skips key selection and writes the global key. Existing project and
+client keys still take precedence. The forms `--default-key=sk-...` and
+`default-key=sk-...` are also accepted. If a different global key already exists,
+run without `--non-interactive` to confirm replacement (a backup is kept).
+Command-line arguments can appear in shell history
+and process listings.
+
 Project-scoped credentials are never eligible for global promotion. An existing
 global credential is preserved; `--key-source` cannot replace it. Run the
 installer interactively to approve a fresh credential replacement, which first

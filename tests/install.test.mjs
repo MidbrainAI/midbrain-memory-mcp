@@ -804,6 +804,29 @@ describe("main — per-client key writing", () => {
     });
   });
 
+  it.each([
+    ["--default-key", "sk-default-dummy"],
+    ["--default-key=sk-default-dummy"],
+    ["default-key=sk-default-dummy"],
+  ].map((args) => [args]))("installs the supplied global key with %j", async (args) => {
+    existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+    readFileReturns({
+      [PATHS.opencodeKey]: "oc-source-dummy\n",
+      [PATHS.claudeKey]: "cc-source-dummy\n",
+    });
+
+    await runInstallerCli(["--non-interactive", "--no-rules", ...args]);
+
+    expect(mocks.writeCredential).toHaveBeenCalledTimes(1);
+    expect(mocks.writeCredential).toHaveBeenCalledWith({
+      clientId: "generic",
+      scope: "global",
+      targetPath: PATHS.globalKey,
+      key: "sk-default-dummy",
+      replaceApproved: false,
+    });
+  });
+
   it("ignores --key-source when a global credential already exists", async () => {
     existsFor(PATHS.opencodeConfig);
     readFileReturns({
@@ -1532,6 +1555,73 @@ describe("runInstallerCli", () => {
     exitSpy.mockRestore();
     errSpy.mockRestore();
     logSpy.mockRestore();
+  });
+
+  it.each([
+    ["--default-key", "test-default-secret"],
+    ["--default-key=test-default-secret"],
+    ["default-key=test-default-secret"],
+  ])("installs a supplied global default with %j", async (...args) => {
+    existsFor(PATHS.opencodeConfig, PATHS.claudeJson);
+    readFileReturns({ [PATHS.opencodeKey]: "existing-client-key\n" });
+    await runInstallerCli([...args, "--non-interactive", "--no-rules"]);
+    expect(mocks.writeCredential).toHaveBeenCalledWith(expect.objectContaining({
+      scope: "global", key: "test-default-secret", replaceApproved: false,
+    }));
+    expect(mocks.writeCredential).toHaveBeenCalledTimes(1);
+    expect(mocks.createReadlineInterface).not.toHaveBeenCalled();
+    expect(mocks.deviceCodeLogin).not.toHaveBeenCalled();
+    expect([...logSpy.mock.calls, ...errSpy.mock.calls].flat().join("\n"))
+      .not.toContain("test-default-secret");
+  });
+
+  it.each([
+    ["--default-key"], ["--default-key="], ["default-key=   "],
+    ["--default-key", "--no-rules"],
+    ["--default-key=a", "default-key=b"],
+    ["--default-key=a", "--login"],
+    ["--default-key=a", "--key-source", "codex"],
+    ["--default-key=a", "--project", PROJECT_DIR],
+  ])("rejects invalid default-key arguments %j before writes", async (...args) => {
+    await expect(runInstallerCli(args)).rejects.toThrow("__EXIT__1");
+    expect(mocks.writeCredential).not.toHaveBeenCalled();
+    expect(fs.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses non-interactive replacement of a different default", async () => {
+    existsFor(PATHS.opencodeConfig);
+    readFileReturns({ [PATHS.globalKey]: "old-default\n" });
+    await expect(runInstallerCli(["--default-key=new-default", "--non-interactive"]))
+      .rejects.toThrow("__EXIT__1");
+    expect(mocks.writeCredential).not.toHaveBeenCalled();
+    expect(fs.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps an identical default without rewriting it", async () => {
+    existsFor(PATHS.opencodeConfig);
+    readFileReturns({ [PATHS.globalKey]: "same-default\n" });
+    await runInstallerCli(["--default-key=same-default", "--non-interactive", "--no-rules"]);
+    expect(mocks.writeCredential).not.toHaveBeenCalled();
+  });
+
+  it.each([['y', true], ['n', false]])("confirms existing default replacement: %s", async (answer, approved) => {
+    const restoreTTY = withStdinIsTTY(true);
+    try {
+      existsFor(PATHS.opencodeConfig);
+      readFileReturns({ [PATHS.globalKey]: "old-default\n" });
+      mocks.readlineAnswers = [answer];
+      await runInstallerCli(["--default-key=new-default", "--no-rules"]);
+      expect(mocks.readlineQuestions).toContain('Replace existing global credential? [y/N] ');
+      if (approved) {
+        expect(mocks.writeCredential).toHaveBeenCalledWith(expect.objectContaining({
+          scope: "global", key: "new-default", replaceApproved: true,
+        }));
+      } else {
+        expect(mocks.writeCredential).not.toHaveBeenCalled();
+      }
+    } finally {
+      restoreTTY();
+    }
   });
 
   it("--help prints help and exits 0", async () => {

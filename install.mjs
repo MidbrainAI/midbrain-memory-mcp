@@ -1124,6 +1124,7 @@ async function main(opts = {}) {
     forceLogin = false,
     noLogin = false,
     keySourceFlag,
+    defaultKey,
   } = opts;
   const clients = detectClients();
 
@@ -1134,13 +1135,29 @@ async function main(opts = {}) {
   }
 
   // Resolve and write keys
-  const { keys, perClient, existingClientKeys } =
-    await resolveKeys(clients, { nonInteractive, forceLogin, noLogin });
+  const keyLines = await installResolvedKeys(clients, { nonInteractive, forceLogin, noLogin, keySourceFlag, defaultKey });
+
+  await installClients(clients, keyLines, { isDev, nonInteractive, skipRules });
+}
+
+async function installResolvedKeys(clients, { nonInteractive, forceLogin, noLogin, keySourceFlag, defaultKey }) {
+  const { keys, perClient, existingClientKeys } = defaultKey !== undefined
+    ? { keys: new Map(clients.map((client) => [client.id, {
+      key: defaultKey, scope: 'entered', source: '--default-key',
+    }])), perClient: false, existingClientKeys: new Set() }
+    : await resolveKeys(clients, { nonInteractive, forceLogin, noLogin });
   if (keys.size === 0) throw new Error(NO_KEY_MESSAGE);
 
   const existingGlobal = await readKeyFile(globalKeyPath());
   const interactive = !nonInteractive && process.stdin.isTTY;
-  const decision = decideGlobalKey({
+  if (defaultKey !== undefined && existingGlobal && existingGlobal !== defaultKey && !interactive) {
+    throw new Error('A different global credential already exists. Run interactively to confirm replacement.');
+  }
+  const decision = defaultKey !== undefined
+    ? existingGlobal === defaultKey
+      ? { action: 'keep' }
+      : { action: existingGlobal ? 'confirm-replace' : 'write', key: defaultKey }
+    : decideGlobalKey({
     resolved: keys,
     existingGlobal,
     interactive,
@@ -1164,6 +1181,10 @@ async function main(opts = {}) {
     }
   }
 
+  return keyLines;
+}
+
+async function installClients(clients, keyLines, { isDev, nonInteractive, skipRules }) {
   // Install each detected client
   const clientSummaries = new Map();
   for (const client of clients) {
@@ -1327,6 +1348,7 @@ MidBrain Memory MCP — installer
 Usage:
   npx midbrain-memory-mcp install                            Interactive install
   npx midbrain-memory-mcp install --login                    Force browser-based login
+  npx midbrain-memory-mcp install --default-key <agent-key>  Set the global default agent key
   npx midbrain-memory-mcp install --project <absolute-path>  Per-project setup (non-interactive)
   npx midbrain-memory-mcp install --non-interactive           Non-interactive install (uses existing keys/env)
   npx midbrain-memory-mcp install --non-interactive --key-source <clientId>
@@ -1350,6 +1372,10 @@ Flags:
                       and CI environments.
   --key-source <id>   Explicitly select one detected client's eligible key for
                       global use when non-interactive candidates differ.
+  --default-key <key> Set the global default agent key without authentication
+                      prompts. Also accepts --default-key=<key> or default-key=<key>.
+                      Existing client/project keys take precedence. Replacing a
+                      different global key requires interactive confirmation.
   --no-rules          Skip writing MidBrain memory rules to AGENTS.md and
                       CLAUDE.md. Use when managing instruction files manually.
   --help, -h          Show this help text.
@@ -1372,6 +1398,24 @@ function flagValue(argv, flag) {
     throw new Error(`${flag} requires a client ID argument.`);
   }
   return value;
+}
+
+function defaultKeyValue(argv) {
+  let key;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg !== '--default-key' && !arg.startsWith('--default-key=') && !arg.startsWith('default-key=')) continue;
+    if (key !== undefined) throw new Error('Provide --default-key only once.');
+    const value = arg === '--default-key' ? argv[++i] : arg.slice(arg.indexOf('=') + 1);
+    if (!value?.trim() || value.trim().startsWith('-')) {
+      throw new Error('--default-key requires a non-empty API key argument.');
+    }
+    key = value.trim();
+  }
+  if (key !== undefined && ['--project', '--login', '--key-source'].some((flag) => argv.includes(flag))) {
+    throw new Error('--default-key cannot be combined with --project, --login, or --key-source.');
+  }
+  return key;
 }
 
 // ---------------------------------------------------------------------------
@@ -1399,6 +1443,13 @@ async function runInstallerCli(argv) {
   const skipRules = argv.includes('--no-rules');
   const forceLogin = argv.includes('--login');
   const noLogin = argv.includes('--no-login');
+  let defaultKey;
+  try {
+    defaultKey = defaultKeyValue(argv);
+  } catch (err) {
+    console.error('Fatal error:', err.message);
+    process.exit(1);
+  }
   const projectFlagIdx = argv.indexOf('--project');
   if (projectFlagIdx !== -1) {
     const projectArg = argv[projectFlagIdx + 1];
@@ -1427,6 +1478,7 @@ async function runInstallerCli(argv) {
         forceLogin,
         noLogin,
         keySourceFlag,
+        defaultKey,
       });
     } catch (err) {
       console.error('Fatal error:', err.message);
