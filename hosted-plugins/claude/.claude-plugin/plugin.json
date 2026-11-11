@@ -9,5 +9,10 @@
   },
   "homepage": "https://www.midbrain.ai",
   "repository": "https://github.com/MidbrainAI/midbrain-memory-mcp.git",
-  "license": "MIT"
+  "license": "MIT",
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://memory.midbrain.ai/app/docs/",
+  "supportUrl": "https://memory.midbrain.ai/app/docs/",
+  "privacyPolicyUrl": "https://www.midbrain.ai/privacy",
+  "termsOfServiceUrl": "https://www.midbrain.ai/terms"
 }

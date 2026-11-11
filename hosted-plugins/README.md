@@ -5,9 +5,10 @@ mobile and Claude Code) and ChatGPT. They are not part of the npm package.
 
 Each bundle points the assistant at MidBrain's hosted MCP endpoint,
 `https://memory.midbrain.ai/api/mcp`, and ships the `memory-first` skill. The
-endpoint and its sign-in live in the MidBrain API: the assistant identifies
-itself with its published client metadata document, so users only sign in to
-MidBrain and choose a space. No client ID, secret or API key is involved.
+endpoint is its own service (MidbrainAI/memory-mcp-hosted) and sign-in lives in
+the MidBrain API: the assistant identifies itself with its published client
+metadata document, so users only sign in to MidBrain and choose a space. No
+client ID, secret or API key is involved.
 
 The skill only guides the assistant. The tools, their descriptions and the
 memory rules they carry (what to save, when to recall) live in the endpoint, so
