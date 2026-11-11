@@ -23,7 +23,6 @@
  * - Opt-in PK injection: silent fallthrough on any error or timeout
  */
 
-import { type Plugin } from "@opencode-ai/plugin";
 // @ts-ignore — resolved via dev shim or bundled midbrain-shared.mjs at install time
 import { MidbrainApi, makeLogger, logFile, homeRelativePath, buildCaptureMetadata, getClient, extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext,
   hookProjectDir, logProjectFallback, loadIdentityContext,
@@ -33,6 +32,66 @@ const OPENCODE_HISTORY_TIMEOUT_MS = 500;
 
 type OpenCodePart = { type: string; text?: string };
 type OpenCodeMessage = { parts?: OpenCodePart[] };
+
+// Only the portions of each host contract this plugin consumes. Keeping these
+// structural avoids a runtime SDK dependency in the copied standalone plugin.
+interface CaptureClient {
+  session: {
+    messages(input: { path: { id: string } }): Promise<unknown>;
+    message(input: { path: { id: string; messageID: string } }): Promise<{ data?: OpenCodeMessage }>;
+  };
+}
+
+interface CaptureEvent {
+  type: string;
+  properties?: { info?: {
+    role: string; id: string; sessionID: string;
+    time?: { completed?: number }; path?: { cwd?: string };
+  } };
+}
+
+interface CaptureHooks {
+  "experimental.chat.system.transform"?: (input: { sessionID?: string }, output: { system: string[] }) => Promise<void>;
+  "chat.message"?: (input: { sessionID?: string }, output: { message: Record<string, unknown>; parts: OpenCodePart[] }) => Promise<void>;
+  event?: (input: { event: CaptureEvent }) => Promise<void>;
+}
+
+interface V2Message {
+  id: string;
+  content?: OpenCodePart[];
+  text?: string;
+}
+
+interface V2Attachment {
+  mention?: unknown;
+}
+
+interface V2Hooks {
+  prompt: {
+    sessionID: string; messageID: string;
+    prompt: { text: string; files?: V2Attachment[]; agents?: V2Attachment[]; skills?: V2Attachment[] };
+  };
+  context: { sessionID: string; system: OpenCodePart[] };
+}
+
+type V2StepType = "session.step.ended" | "session.step.failed";
+interface V2StepEvent {
+  type: V2StepType;
+  created: number;
+  location?: { directory: string };
+  data: { sessionID: string; assistantMessageID: string };
+}
+
+interface V2Context {
+  location: { directory: string };
+  session: {
+    context(input: { sessionID: string }): Promise<readonly V2Message[]>;
+    hook<K extends keyof V2Hooks>(name: K, callback: (event: V2Hooks[K]) => Promise<void>): Promise<unknown>;
+  };
+  event: {
+    subscribe(options: { types: V2StepType[]; signal: AbortSignal }): AsyncIterable<V2StepEvent>;
+  };
+}
 
 function normalizeHistoryMessages(history: unknown): OpenCodeMessage[] {
   if (Array.isArray(history)) return history as OpenCodeMessage[];
@@ -78,7 +137,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 
 // --- Plugin ---
 
-export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
+export const MidBrainMemoryPlugin = async ({ client, directory }: { client: CaptureClient; directory: string }): Promise<CaptureHooks> => {
   const log = makeLogger(logFile("midbrain-opencode.log"));
 
   let api: InstanceType<typeof MidbrainApi>;
@@ -211,9 +270,15 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
       try {
         const result = await client.session.message({
           path: { id: sessionID, messageID: msgID },
+        }).catch((err: unknown) => {
+          // This is only an in-flight reservation until the lookup succeeds.
+          // A timeout or read failure must not suppress a later recovery event.
+          storedMessages.delete(msgID);
+          throw err;
         });
 
         if (!result.data) {
+          storedMessages.delete(msgID);
           log.debug(`ASSISTANT: no data for ${msgID}`);
           return;
         }
@@ -247,4 +312,95 @@ export const MidBrainMemoryPlugin: Plugin = async ({ client, directory }) => {
   };
 };
 
-export default MidBrainMemoryPlugin;
+// V2 exposes active context rather than V1's individual-message API. Keep
+// that translation here instead of teaching the capture pipeline both shapes.
+function createV2CaptureClient(ctx: V2Context): CaptureClient {
+  return {
+    session: {
+      messages: async ({ path }) => {
+        const messages = await ctx.session.context({ sessionID: path.id });
+        return messages.map((message) => ({
+          parts: message.content ?? (message.text ? [{ type: "text", text: message.text }] : []),
+        }));
+      },
+      message: async ({ path }) => {
+        const messages = await withTimeout(
+          ctx.session.context({ sessionID: path.id }),
+          OPENCODE_HISTORY_TIMEOUT_MS,
+        );
+        const message = messages.find((item) => item.id === path.messageID);
+        return { data: message ? { parts: message.content ?? [] } : undefined };
+      },
+    },
+  };
+}
+
+async function registerV2Hooks(ctx: V2Context, hooks: Required<CaptureHooks>) {
+  await ctx.session.hook("prompt", async (event) => {
+    const parts = [{ type: "text", text: event.prompt.text ?? "" }];
+    await hooks["chat.message"]({ sessionID: event.sessionID }, {
+      message: { id: event.messageID }, parts,
+    });
+    const text = parts[0]?.text ?? event.prompt.text;
+    if (text !== event.prompt.text) {
+      // V2 resolves mentions after this hook. Without offsets, attachments
+      // remain attached but cannot replace the wrong span of the new text.
+      for (const attachment of [...(event.prompt.files ?? []), ...(event.prompt.agents ?? []), ...(event.prompt.skills ?? [])]) {
+        delete attachment.mention;
+      }
+      event.prompt.text = text;
+    }
+  });
+  await ctx.session.hook("context", async (event) => {
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]({ sessionID: event.sessionID }, output);
+    for (const text of output.system) event.system.push({ type: "text", text });
+  });
+}
+
+function subscribeV2AssistantEvents(ctx: V2Context, capture: NonNullable<CaptureHooks["event"]>) {
+  const controller = new AbortController();
+  const log = makeLogger(logFile("midbrain-opencode.log"));
+  const pending = new Set<Promise<void>>();
+  const subscription = (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ types: ["session.step.ended", "session.step.failed"], signal: controller.signal })) {
+        if (controller.signal.aborted) break;
+        if (!["session.step.ended", "session.step.failed"].includes(event.type) || event.location?.directory !== ctx.location.directory) continue;
+        // The V1 handler reserves the message ID before its first await,
+        // so concurrent lookups retain deduplication without blocking the stream.
+        const task = capture({ event: { type: "message.updated", properties: { info: {
+          role: "assistant", id: event.data.assistantMessageID, sessionID: event.data.sessionID,
+          time: { completed: event.created }, path: { cwd: ctx.location.directory },
+        } } } }).catch((err: unknown) => {
+          log.error(`ASSISTANT ERROR: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        pending.add(task);
+        void task.then(() => pending.delete(task));
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) log.error(`EVENT SUBSCRIPTION ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  })();
+  return async () => {
+    controller.abort();
+    await subscription;
+    // Lookups are bounded. Drain accepted callbacks before releasing their
+    // state; episodic POSTs retain the existing fire-and-forget semantics.
+    await Promise.all(pending);
+  };
+}
+
+// OpenCode 1.18.29+ calls server; OpenCode 2 calls setup.
+export default {
+  id: "midbrain-memory",
+  server: MidBrainMemoryPlugin,
+  async setup(ctx: V2Context) {
+    const hooks = await MidBrainMemoryPlugin({ client: createV2CaptureClient(ctx), directory: ctx.location.directory });
+    const prompt = hooks["chat.message"];
+    const context = hooks["experimental.chat.system.transform"];
+    if (!prompt || !context || !hooks.event) return;
+    await registerV2Hooks(ctx, { "chat.message": prompt, "experimental.chat.system.transform": context, event: hooks.event });
+    return subscribeV2AssistantEvents(ctx, hooks.event);
+  },
+};
