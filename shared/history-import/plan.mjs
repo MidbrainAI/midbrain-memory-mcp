@@ -45,6 +45,8 @@ import { stripInjectedContext } from "../pk-inject.mjs";
  * @property {string|null} skip   Why the whole session is skipped, if it is.
  * @property {boolean} [automated] Every prompt came from a program (an SDK
  *   or orchestrator), none from a person at the client's own interface.
+ * @property {string[]} [linkedSessionIds] Other ids live capture may have
+ *   stored this conversation under (checked for live captures too).
  * @property {number} [lastWrittenMs] When the session was last written, for
  *   sessions that are not one file (the planner uses the file's mtime
  *   otherwise).
@@ -139,6 +141,13 @@ export async function planImport({
       }
       sessions.push(session);
     }
+  }
+  // A conversation two clients recorded (OpenClaw on the claude-cli backend
+  // is also a Claude Code session) is imported once, as the session that
+  // links the other.
+  const linked = new Set(sessions.filter((session) => !session.skip).flatMap((session) => session.linkedSessionIds ?? []));
+  for (const session of sessions) {
+    if (!session.skip && linked.has(session.sessionId)) session.skip = "imported with its linked session";
   }
   return sessions;
 }
