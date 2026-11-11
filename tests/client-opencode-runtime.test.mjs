@@ -136,15 +136,12 @@ describe("OpenCode plugin bundle", () => {
     expect(pluginSrc).toContain('from "./midbrain-shared.mjs"');
   });
 
-  it("exports only callable plugin functions for OpenCode's loader", async () => {
+  it("exports a dual V1/V2 plugin definition", async () => {
     const plugin = await import(pathToFileURL(PLUGIN_PATH).href);
-    const exportedValues = Object.values(plugin);
-
-    expect(exportedValues.length).toBeGreaterThan(0);
-    expect(exportedValues.every((value) => typeof value === "function")).toBe(true);
     expect(typeof plugin.MidBrainMemoryPlugin).toBe("function");
-    expect(typeof plugin.default).toBe("function");
-    expect(plugin.default).toBe(plugin.MidBrainMemoryPlugin);
+    expect(plugin.default.id).toBe("midbrain-memory");
+    expect(plugin.default.server).toBe(plugin.MidBrainMemoryPlugin);
+    expect(typeof plugin.default.setup).toBe("function");
     expect(plugin.OPENCODE_HISTORY_TIMEOUT_MS).toBeUndefined();
     expect(plugin.normalizeHistoryMessages).toBeUndefined();
     expect(plugin.textPartsFromMessages).toBeUndefined();
@@ -260,6 +257,248 @@ describe("OpenCode plugin PK delivery helpers", () => {
     await hooks["experimental.chat.system.transform"](input, output);
     return output.system;
   }
+
+  it("registers V2 hooks, captures both sides and cleans up its event stream", async () => {
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const registered = {};
+    let signal;
+    let deliver;
+    const next = new Promise((resolve) => { deliver = resolve; });
+    const session = {
+      hook: async (name, fn) => { registered[name] = fn; },
+      context: vi.fn().mockResolvedValue([{
+        id: "msg_assistant", type: "assistant", content: [{ type: "text", text: "V2 answer" }],
+      }]),
+    };
+    const cleanup = await plugin.setup({
+      location: { directory: "/repo" }, session,
+      event: { subscribe: (options) => {
+        signal = options.signal;
+        return (async function* () { yield await next; })();
+      } },
+    });
+    await registered.prompt({ sessionID: "ses_one", messageID: "msg_user", prompt: { text: "V2 prompt" } });
+    deliver({ type: "session.step.ended", location: { directory: "/repo" }, created: 1,
+      data: { sessionID: "ses_one", assistantMessageID: "msg_assistant" } });
+    await vi.waitFor(() => {
+      const posts = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/memories/episodic"));
+      expect(posts.map(([, opts]) => JSON.parse(opts.body).text)).toEqual(["V2 prompt", "V2 answer"]);
+    });
+    await cleanup();
+    expect(signal.aborted).toBe(true);
+  });
+
+  it("V2 ignores foreign locations and duplicate assistant events", async () => {
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const session = {
+      hook: vi.fn(),
+      context: vi.fn().mockResolvedValue([{ id: "msg_one", content: [{ type: "text", text: "one answer" }] }]),
+    };
+    const event = (directory) => ({ type: "session.step.ended", location: { directory }, created: 1,
+      data: { sessionID: "ses_one", assistantMessageID: "msg_one" } });
+    const cleanup = await plugin.setup({ location: { directory: "/repo" }, session,
+      event: { subscribe: () => (async function* () { yield event("/other"); yield event("/repo"); yield event("/repo"); })() } });
+    await vi.waitFor(() => {
+      const posts = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/memories/episodic"));
+      expect(posts).toHaveLength(1);
+    });
+    expect(session.context).toHaveBeenCalledTimes(1);
+    await cleanup();
+  });
+
+  it("V2 adds cached identity to the system context", async () => {
+    fetchSpy.mockImplementation(async (url) => {
+      if (String(url).includes("/api/v1/persona")) return { ok: true, status: 200, json: async () => ({ description: "Be concise." }) };
+      if (String(url).includes("/api/v1/profile")) return { ok: true, status: 200, json: async () => ({ description: "Works at CX2." }) };
+      return { ok: false, status: 404, text: async () => "not found" };
+    });
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const hooks = {};
+    const cleanup = await plugin.setup({ location: { directory: "/repo" },
+      session: { hook: async (name, fn) => { hooks[name] = fn; }, context: vi.fn() },
+      event: { subscribe: () => (async function* () {})() },
+    });
+    const first = { sessionID: "ses_one", system: [] };
+    const second = { sessionID: "ses_one", system: [] };
+    await hooks.context(first);
+    await hooks.context(second);
+    expect(first.system).toEqual(second.system);
+    expect(first.system[0].text).toContain("Be concise.");
+    expect(first.system[0].text).toContain("Works at CX2.");
+    expect(profileReads()).toBe(1);
+    await cleanup();
+  });
+
+  it("V2 captures text from interrupted steps", async () => {
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    let subscribedTypes;
+    const cleanup = await plugin.setup({ location: { directory: "/repo" },
+      session: { hook: vi.fn(), context: vi.fn().mockResolvedValue([
+        { id: "msg_partial", content: [{ type: "text", text: "Partial answer" }] },
+      ]) },
+      event: { subscribe: ({ types }) => {
+        subscribedTypes = types;
+        return (async function* () {
+          yield { type: "session.step.failed", location: { directory: "/repo" }, created: 1,
+            data: { sessionID: "ses_one", assistantMessageID: "msg_partial" } };
+        })();
+      } },
+    });
+    try {
+      expect(subscribedTypes).toContain("session.step.failed");
+      await vi.waitFor(() => {
+        const posts = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/memories/episodic"));
+        expect(posts).toHaveLength(1);
+        expect(JSON.parse(posts[0][1].body).text).toBe("Partial answer");
+      });
+    } finally { await cleanup(); }
+  });
+
+  it("V2 cleanup awaits the subscription and in-flight assistant lookup", async () => {
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    let resolveContext;
+    let finishSubscription;
+    let signal;
+    const contextResult = new Promise((resolve) => { resolveContext = resolve; });
+    const subscriptionEnd = new Promise((resolve) => { finishSubscription = resolve; });
+    const context = vi.fn(() => contextResult);
+    const cleanup = await plugin.setup({ location: { directory: "/repo" },
+      session: { hook: vi.fn(), context },
+      event: { subscribe: (options) => {
+        signal = options.signal;
+        return (async function* () {
+          yield { type: "session.step.ended", location: { directory: "/repo" }, created: 1,
+            data: { sessionID: "ses_one", assistantMessageID: "msg_one" } };
+          await subscriptionEnd;
+        })();
+      } },
+    });
+    await vi.waitFor(() => expect(context).toHaveBeenCalledTimes(1));
+    let finished = false;
+    const disposing = Promise.resolve(cleanup()).then(() => { finished = true; });
+    try {
+      expect(signal.aborted).toBe(true);
+      await Promise.resolve();
+      expect(finished).toBe(false);
+      finishSubscription();
+      await Promise.resolve();
+      expect(finished).toBe(false);
+    } finally {
+      finishSubscription();
+      resolveContext([]);
+      await disposing;
+    }
+    expect(finished).toBe(true);
+  });
+
+  it("V2 reports subscription failure and still cleans up", async () => {
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const cleanup = await plugin.setup({ location: { directory: "/repo" },
+      session: { hook: vi.fn(), context: vi.fn() },
+      event: { subscribe: () => (async function* () {
+        yield* [];
+        throw new Error("test subscription failure");
+      })() },
+    });
+    await vi.waitFor(() => {
+      const log = fsSync.readFileSync(path.join(process.env.MIDBRAIN_LOG_DIR, "midbrain-opencode.log"), "utf8");
+      expect(log).toContain("EVENT SUBSCRIPTION ERROR: test subscription failure");
+    });
+    await cleanup();
+  });
+
+  it("V2 captures another session while a lookup stalls and bounds the stalled lookup", async () => {
+    vi.useFakeTimers();
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const context = vi.fn(({ sessionID }) => sessionID === "ses_stalled"
+      ? new Promise(() => {})
+      : Promise.resolve([{ id: "msg_ready", content: [{ type: "text", text: "Ready answer" }] }]));
+    const event = (sessionID, assistantMessageID) => ({ type: "session.step.ended",
+      location: { directory: "/repo" }, created: 1, data: { sessionID, assistantMessageID } });
+    const cleanup = await plugin.setup({ location: { directory: "/repo" },
+      session: { hook: vi.fn(), context },
+      event: { subscribe: () => (async function* () {
+        yield event("ses_stalled", "msg_stalled");
+        yield event("ses_ready", "msg_ready");
+      })() },
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(context).toHaveBeenCalledTimes(2);
+      const posts = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/memories/episodic"));
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0][1].body).text).toBe("Ready answer");
+      await vi.advanceTimersByTimeAsync(1000);
+      const log = fsSync.readFileSync(path.join(process.env.MIDBRAIN_LOG_DIR, "midbrain-opencode.log"), "utf8");
+      expect(log).toContain("ASSISTANT ERROR: OpenCode history fetch timed out");
+    } finally { await cleanup(); vi.useRealTimers(); }
+  });
+
+  it.each(["timeout", "rejection", "missing message"])("V2 releases the reservation after %s so a later event can recover", async (failure) => {
+    vi.useFakeTimers();
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    let finishFirstLookup;
+    let retry;
+    const firstLookup = new Promise((resolve) => { finishFirstLookup = resolve; });
+    const retryEvent = new Promise((resolve) => { retry = resolve; });
+    const message = [{ id: "msg_recovered", content: [{ type: "text", text: "Recovered answer" }] }];
+    const context = vi.fn()
+      .mockImplementationOnce(() => failure === "timeout" ? firstLookup
+        : failure === "rejection" ? Promise.reject(new Error("lookup failed")) : Promise.resolve([]))
+      .mockResolvedValue(message);
+    const event = { type: "session.step.ended", location: { directory: "/repo" }, created: 1,
+      data: { sessionID: "ses_one", assistantMessageID: "msg_recovered" } };
+    const cleanup = await plugin.setup({ location: { directory: "/repo" },
+      session: { hook: vi.fn(), context },
+      event: { subscribe: () => (async function* () {
+        yield event;
+        await retryEvent;
+        yield event;
+        yield event;
+      })() },
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(context).toHaveBeenCalledTimes(1);
+      retry();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(context).toHaveBeenCalledTimes(2);
+      // A timed-out lookup may finish later, but must not post a second copy.
+      finishFirstLookup(message);
+      await vi.advanceTimersByTimeAsync(0);
+      const posts = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/memories/episodic"));
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0][1].body).text).toBe("Recovered answer");
+    } finally {
+      retry();
+      finishFirstLookup([]);
+      await cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("V2 drops stale mention offsets only when PK injection rewrites the prompt", async () => {
+    const { default: plugin } = await import(pathToFileURL(PLUGIN_PATH).href);
+    const hooks = {};
+    const cleanup = await plugin.setup({ location: { directory: "/repo" },
+      session: { hook: async (name, fn) => { hooks[name] = fn; }, context: vi.fn().mockResolvedValue([]) },
+      event: { subscribe: () => (async function* () {})() },
+    });
+    const prompt = () => ({ text: "Ask @build about @file", files: [{ uri: "file:///repo/file", mention: { start: 17, end: 22 } }],
+      agents: [{ name: "build", mention: { start: 4, end: 10 } }] });
+    try {
+      const unchanged = { sessionID: "ses_one", messageID: "msg_plain", prompt: prompt() };
+      await hooks.prompt(unchanged);
+      expect(unchanged.prompt.files[0].mention).toBeDefined();
+      expect(unchanged.prompt.agents[0].mention).toBeDefined();
+      process.env[PK_ENV] = "1";
+      const changed = { sessionID: "ses_one", messageID: "msg_pk", prompt: prompt() };
+      await hooks.prompt(changed);
+      expect(changed.prompt.text).toContain("<!-- mb:ctx-start -->");
+      expect(changed.prompt.files[0]).toEqual({ uri: "file:///repo/file" });
+      expect(changed.prompt.agents[0]).toEqual({ name: "build" });
+    } finally { await cleanup(); }
+  });
 
   const profileReads = () => fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/v1/profile")).length;
 
