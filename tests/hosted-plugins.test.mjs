@@ -45,6 +45,8 @@ describe("hosted plugins", () => {
         input: { text, role, session_id: "${session_id}" },
       });
     }
+    // One quoted echo: an unquoted ";" in the sentence ran its second half as a command.
+    expect(hooks.SessionStart[0].hooks[0].command).toMatch(/^echo '[^']+'$/);
     expect(Object.keys(json("claude/.mcp.json").mcpServers)).toEqual(["midbrain"]);
     expect(json("claude/.claude-plugin/plugin.json").name).toBe("midbrain-memory");
   });

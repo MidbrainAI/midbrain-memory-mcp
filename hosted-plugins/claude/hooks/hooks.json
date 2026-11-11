@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo MidBrain saves every turn of this session automatically. Do not call save_memory for what is said here; still search MidBrain before answering about the user."
+            "command": "echo 'MidBrain saves every turn of this session automatically. Do not call save_memory for what is said here, but still search MidBrain before answering about the user.'"
           }
         ]
       }
