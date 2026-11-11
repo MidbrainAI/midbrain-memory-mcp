@@ -164,12 +164,15 @@ export async function runImportCli(argv, {
   err.write("Checking which sessions MidBrain already has (sends session ids only)...\n");
   // Each entry is checked against what its own destination holds. A failed
   // check skips the session (see trimAgainstServer); a re-run retries.
+  // Live capture may have stored the conversation under a linked id too
+  // (e.g. the Claude Code session an OpenClaw session ran on).
   await trimAgainstServer(sessions, async (session) => {
     const destinations = await sessionDestinations(session, apiFor);
-    return Promise.all(destinations.map(async ({ api, entries }) => ({
-      entries,
-      existing: await api.listEpisodicForSession(session.sessionId),
-    })));
+    const ids = [session.sessionId, ...(session.linkedSessionIds ?? [])];
+    return Promise.all(destinations.map(async ({ api, entries }) => {
+      const lists = await Promise.all(ids.map((id) => api.listEpisodicForSession(id)));
+      return { entries, existing: lists.flat() };
+    }));
   });
   err.write(`\n${formatPreview(summarize(sessions))}\n\n`);
 

@@ -87,7 +87,8 @@ export async function primeSessionsDir(env = process.env) {
   try {
     const settings = await readJson(path.join(primeAgentDir(env), 'settings.json'));
     const configured = settings?.sessionDir;
-    if (typeof configured === 'string' && configured.trim()) return expandHome(configured.trim());
+    // A relative sessionDir is under the agent dir, not the caller's cwd.
+    if (typeof configured === 'string' && configured.trim()) return path.resolve(primeAgentDir(env), expandHome(configured.trim()));
   } catch { /* unreadable settings: Prime Agent's default */ }
   return path.join(primeAgentDir(env), 'sessions');
 }
