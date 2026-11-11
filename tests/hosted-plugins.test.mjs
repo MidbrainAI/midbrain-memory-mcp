@@ -34,6 +34,17 @@ describe("hosted plugins", () => {
     expect(skillVersion).toBe(claude.version);
   });
 
+  it("give Claude's directory listing its README, icon and links", () => {
+    const claude = json("claude/.claude-plugin/plugin.json");
+    // The directory blocks a plugin folder without a README of 40+ words (code excluded).
+    const words = read("claude/README.md").replace(/```[\s\S]*?```/g, "").split(/\s+/).filter(Boolean);
+    expect(words.length).toBeGreaterThanOrEqual(40);
+    expect(existsSync(path.join(ROOT, "claude", claude.icon))).toBe(true);
+    for (const key of ["documentationUrl", "supportUrl", "privacyPolicyUrl", "termsOfServiceUrl"]) {
+      expect(claude[key]).toMatch(/^https:\/\//);
+    }
+  });
+
   it("give ChatGPT every file and review field its manifest references", () => {
     const codex = json("chatgpt/.codex-plugin/plugin.json");
     expect(codex.skills).toBe("./skills");
