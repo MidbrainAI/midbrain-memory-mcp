@@ -98,6 +98,7 @@ describe.skipIf(!sqlite)("Cursor desktop composers", () => {
     const session = await readCursorSession(`${dbFile}#c1`, { userDir, home });
     expect(session).toMatchObject({ client: "cursor", sessionId: "c1", cwd: "/work/cursor", skip: null, automated: false });
     expect(session.lastWrittenMs).toBe(Date.parse("2026-10-01T11:00:00.000Z"));
+    expect(session.timesEstimated).toBeUndefined(); // every prompt has its own time
     expect(session.entries).toEqual([
       { role: "user", text: "cursor prompt one", occurredAt: "2026-10-01T09:00:01.000Z", cwd: "/work/cursor" },
       { role: "assistant", text: "cursor answer one", occurredAt: "2026-10-01T09:00:04.000Z", cwd: "/work/cursor" },
@@ -128,6 +129,7 @@ describe.skipIf(!sqlite)("Cursor desktop composers", () => {
     db.close();
 
     const session = await readCursorSession(`${dbFile}#untimed`, { userDir, home });
+    expect(session.timesEstimated).toBe(true);
     const ids = session.entries.map((entry) => importId(session, entry));
     expect(new Set(ids).size).toBe(6);
     expect(session.entries.map((entry) => entry.occurredAt)).toEqual(
@@ -198,7 +200,8 @@ describe("Cursor agent transcripts", () => {
 
     expect(listCursorTranscripts(home)).toEqual([file]);
     const session = await readCursorSession(file, { userDir, home });
-    expect(session).toMatchObject({ client: "cursor", sessionId: "cli-1", cwd: "/work/cli", automated: false });
+    // Prompt two has no <timestamp>: its time is made up.
+    expect(session).toMatchObject({ client: "cursor", sessionId: "cli-1", cwd: "/work/cli", automated: false, timesEstimated: true });
     expect(session.entries.map((entry) => [entry.role, entry.text, entry.occurredAt])).toEqual([
       ["user", "cli prompt one", "2026-10-16T14:05:00.000Z"],
       ["assistant", "cli answer one", "2026-10-16T14:05:00.001Z"],

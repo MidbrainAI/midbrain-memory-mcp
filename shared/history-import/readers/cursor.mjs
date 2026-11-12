@@ -301,6 +301,9 @@ function readComposer(file, id, userDir) {
     // distinct, so each entry has its own import id.
     const stamp = (value, text) => {
       const own = Date.parse(toIso(value) ?? (text ? transcriptTimestamp(text) : null) ?? "");
+      // Only prompts pass their text. A made-up prompt time keeps the order but
+      // cannot be compared with live capture (see timesEstimated).
+      if (text && !Number.isFinite(own)) session.timesEstimated = true;
       let at;
       if (Number.isFinite(own)) at = last === null ? own : Math.max(own, last + 1);
       else at = last === null ? created : last + 1;
@@ -426,6 +429,7 @@ async function readTranscript(file, home) {
     return new Date(at).toISOString();
   };
   for (const item of turns) {
+    if (!item.at) session.timesEstimated = true;
     const at = next(item.at);
     pushTurn(session, { prompt: item.prompt, at, reply: item.reply, replyAt: item.reply ? next(null) : null }, session.cwd ?? undefined);
   }

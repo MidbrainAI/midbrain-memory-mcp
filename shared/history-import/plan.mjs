@@ -46,6 +46,9 @@ import { buildCaptureMetadata } from "../capture-metadata.mjs";
  *   or orchestrator), none from a person at the client's own interface.
  * @property {string[]} [linkedSessionIds] Other ids live capture may have
  *   stored this conversation under (checked for live captures too).
+ * @property {boolean} [timesEstimated] Some prompt times were made up (the
+ *   client did not record them): right for order, wrong for comparing with
+ *   live capture, so a session that also has live captures is skipped.
  * @property {number} [lastWrittenMs] When the session was last written, for
  *   sessions that are not one file (the planner uses the file's mtime
  *   otherwise).
@@ -171,6 +174,8 @@ export async function planImport({
  *   Live capture stores a turn up to CAPTURE_LAG_MS after it happened, so
  *   the cut is made that much earlier: a turn in that window is left out
  *   rather than risk storing it twice.
+ * - A session with made-up prompt times (`timesEstimated`) and any live
+ *   capture is skipped whole: its times cannot be compared with the cut.
  * - A session holding an imported entry the reader no longer produces is
  *   skipped whole: an earlier version read it differently (say, kept another
  *   reply for a turn), and importing the new reading would store a second
@@ -193,6 +198,7 @@ export async function trimAgainstServer(sessions, listExisting) {
     const checked = new Set();
     const captured = new Set();
     const imported = new Set();
+    let capturedSomewhere = false;
     const known = session.importIds ?? new Set(session.entries.map((entry) => importId(session, entry)));
     let changed = 0;
     for (const { entries, existing } of destinations) {
@@ -208,6 +214,7 @@ export async function trimAgainstServer(sessions, listExisting) {
         const time = validTime(memory.occurred_at);
         if (time !== null) firstCaptured = Math.min(firstCaptured, time);
       }
+      if (firstCaptured !== Infinity) capturedSomewhere = true;
       const cutoff = firstCaptured - CAPTURE_LAG_MS;
       for (const entry of entries) {
         checked.add(entry);
@@ -222,6 +229,12 @@ export async function trimAgainstServer(sessions, listExisting) {
     if (changed) {
       session.changedSinceImport = changed;
       session.skip = "changed since an earlier import (left as stored)";
+      continue;
+    }
+    if (session.timesEstimated && capturedSomewhere) {
+      // A made-up time near the chat's start would put turns typed after
+      // MidBrain was installed before its first live capture: skip, not guess.
+      session.skip = "already captured live (turn times unknown)";
       continue;
     }
     // Keep whole turns only: when the prompt or the reply was captured live,

@@ -114,6 +114,15 @@ describe("trimAgainstServer", () => {
     expect(trimmed.capturedLive).toBe(2);
   });
 
+  it("skips a session with made-up prompt times once live capture holds any of it", async () => {
+    const live = [{ occurred_at: "2026-09-02T10:00:03Z", memory_metadata: {} }];
+    const [estimated] = await trimAgainstServer([session({ timesEstimated: true })], oneDestination(live));
+    expect([estimated.skip, estimated.entries.length]).toEqual(["already captured live (turn times unknown)", 4]);
+    // Nothing captured live: made-up times are good enough for order and import ids.
+    const [alone] = await trimAgainstServer([session({ timesEstimated: true })], oneDestination([]));
+    expect([alone.skip, alone.entries.length]).toEqual([null, 4]);
+  });
+
   it("drops the reply when its prompt was captured live", async () => {
     const [trimmed] = await trimAgainstServer([session()], oneDestination([
       { occurred_at: "2026-09-02T10:00:04Z", memory_metadata: {} },
