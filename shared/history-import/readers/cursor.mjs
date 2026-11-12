@@ -111,14 +111,13 @@ export function listCursorSessions({ userDir = cursorUserDir(), home = cursorHom
   const sources = [];
   let known = new Set();
   if (database) {
-    try {
-      if (!loadSqlite()) throw new Error("no node:sqlite");
-      const ids = withReadOnlyDatabase(database, composerIds);
-      known = new Set(ids);
-      sources.push(...ids.map((id) => databaseSource(database, id)));
-    } catch {
-      return [database];
-    }
+    // Without node:sqlite the store is listed alone and reading it says why.
+    if (!loadSqlite()) return [database];
+    // Any other failure fails the listing, so it is reported (never shown as
+    // empty chats) and no transcript is read in its place.
+    const ids = withReadOnlyDatabase(database, composerIds);
+    known = new Set(ids);
+    for (const id of ids) sources.push(databaseSource(database, id));
   }
   for (const file of listCursorTranscripts(home)) {
     if (!known.has(path.basename(file, ".jsonl"))) sources.push(file);
@@ -444,6 +443,6 @@ async function readTranscript(file, home) {
 export async function readCursorSession(source, { userDir = cursorUserDir(), home = cursorHome() } = {}) {
   const { file, id } = parseDatabaseSource(source);
   if (path.basename(file) !== DATABASE_NAME) return readTranscript(source, home);
-  if (!id) withReadOnlyDatabase(file, () => {}); // listed without node:sqlite: report it unreadable
+  if (!id) withReadOnlyDatabase(file, () => {}); // listed alone only without node:sqlite: report that
   return readComposer(file, id, userDir);
 }

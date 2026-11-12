@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { loadSqlite } from "../shared/history-import/readers/common.mjs";
-import { importId } from "../shared/history-import/plan.mjs";
+import { importId, planImport } from "../shared/history-import/plan.mjs";
 import {
   listCursorSessions,
   listCursorTranscripts,
@@ -270,13 +270,25 @@ describe("Cursor agent transcripts", () => {
     expect(listCursorSessions({ userDir, home })).toEqual([`${dbFile}#both`, cliOnly]);
   });
 
-  it.skipIf(!sqlite)("lists an unreadable desktop store alone, so its chats are not imported from transcripts", () => {
+  it.skipIf(!sqlite)("fails the listing on an unreadable desktop store, so it is reported and no transcript stands in", async () => {
     fs.mkdirSync(path.join(userDir, "globalStorage"), { recursive: true });
-    const broken = path.join(userDir, "globalStorage", "state.vscdb");
-    fs.writeFileSync(broken, "not a database");
+    fs.writeFileSync(path.join(userDir, "globalStorage", "state.vscdb"), "not a database");
     writeTranscript("p", "desktop-chat", [row("user", "x")]);
 
-    expect(listCursorSessions({ userDir, home })).toEqual([broken]);
+    expect(() => listCursorSessions({ userDir, home })).toThrow();
+    const reader = { list: () => listCursorSessions({ userDir, home }), read: (file) => readCursorSession(file, { userDir, home }) };
+    const planned = await planImport({ readers: { cursor: reader }, clients: ["cursor"] });
+    expect(planned.map((session) => session.skip)).toEqual(["could not list history (ERR_SQLITE_ERROR)"]);
+  });
+
+  it.skipIf(!sqlite)("lists a desktop store with more chats than a function call takes arguments", () => {
+    const db = makeGlobalDb();
+    const insert = db.prepare("INSERT INTO cursorDiskKV VALUES (?, '{}')");
+    db.exec("BEGIN");
+    for (let i = 0; i < 130_000; i += 1) insert.run(`composerData:c${i}`);
+    db.exec("COMMIT");
+    db.close();
+    expect(listCursorSessions({ userDir, home })).toHaveLength(130_000);
   });
 
   it("parses Cursor's <timestamp> line", () => {
