@@ -396,16 +396,16 @@ async function readTranscript(file, home) {
       continue;
     }
     const text = transcriptText(row);
-    if (!text) continue;
     if (row.role === "user") {
-      const query = prompt(text);
+      // Every user row ends the turn, one with no text (an image) too.
+      const query = text ? prompt(text) : null;
       if (!query) {
         turn = null; // injected context, a notice or an image: what follows answers it
         continue;
       }
       turn = { prompt: query, at: transcriptTimestamp(text), reply: "" };
       turns.push(turn);
-    } else if (row.role === "assistant" && turn) {
+    } else if (row.role === "assistant" && turn && text) {
       turn.reply = text;
     }
   }

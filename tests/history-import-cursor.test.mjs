@@ -229,6 +229,16 @@ describe("Cursor agent transcripts", () => {
     await expect(readCursorSession(outside, { userDir, home })).rejects.toMatchObject({ code: "EUNSAFE" });
   });
 
+  it("ends a transcript turn at an image-only prompt, so its reply keeps the earlier answer", async () => {
+    const image = { role: "user", message: { content: [{ type: "image", source: { data: "x" } }] } };
+    const file = writeTranscript("p", "cli-img", [
+      row("user", "<user_query>\nfirst\n</user_query>"), row("assistant", "answer one"),
+      image, row("assistant", "about the image"),
+    ]);
+    const session = await readCursorSession(file, { userDir, home });
+    expect(session.entries.map((entry) => entry.text)).toEqual(["first", "answer one"]);
+  });
+
   it("times a transcript without <timestamp> from the chat start, so ids do not move as it grows", async () => {
     const file = writeTranscript("p", "cli-2", [row("user", "<user_query>\nfirst\n</user_query>"), row("assistant", "one")]);
     fs.mkdirSync(path.join(home, "chats", "h", "cli-2"), { recursive: true });
