@@ -284,7 +284,11 @@ function readComposer(file, id, userDir) {
     const bubbles = new Map();
     for (const row of keyRange(db, `bubbleId:${id}:`)) {
       const bubble = parseJson(row.value);
-      if (bubble) bubbles.set(row.key.slice(`bubbleId:${id}:`.length), bubble);
+      if (!bubble) continue;
+      bubbles.set(row.key.slice(`bubbleId:${id}:`.length), bubble);
+      // The newest message counts too: the chat's own times can lag or be missing.
+      const at = Date.parse(toIso(bubble.createdAt) ?? "");
+      if (Number.isFinite(at)) session.lastWrittenMs = Math.max(session.lastWrittenMs, at);
     }
     session.cwd = folderPath(headerValue?.workspaceIdentifier?.uri?.external)
       || headerValue?.workspaceIdentifier?.uri?.fsPath

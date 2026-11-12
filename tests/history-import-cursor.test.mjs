@@ -107,6 +107,14 @@ describe.skipIf(!sqlite)("Cursor desktop composers", () => {
     ]);
   });
 
+  it("counts the newest message as the last write when the chat's own times lag", async () => {
+    const db = makeGlobalDb();
+    addComposer(db, "stale", [user("prompt", "2026-10-01T09:00:00.000Z"), reply("answer", "2026-10-01T12:30:00.000Z")]);
+    db.close();
+    const session = await readCursorSession(`${dbFile}#stale`, { userDir, home });
+    expect(session.lastWrittenMs).toBe(Date.parse("2026-10-01T12:30:00.000Z"));
+  });
+
   it("finds an older composer's folder in its workspace and fills missing times in order", async () => {
     const db = makeGlobalDb();
     addComposer(db, "old", [user("old prompt"), reply("old answer")], { _v: 9, lastUpdatedAt: undefined });
