@@ -46,6 +46,9 @@ import { buildCaptureMetadata } from "../capture-metadata.mjs";
  *   or orchestrator), none from a person at the client's own interface.
  * @property {string[]} [linkedSessionIds] Other ids live capture may have
  *   stored this conversation under (checked for live captures too).
+ * @property {boolean} [timesEstimated] Some prompt times were made up (the
+ *   client did not record them): right for order, wrong for comparing with
+ *   live capture, so a session that also has live captures is skipped.
  * @property {number} [lastWrittenMs] When the session was last written, for
  *   sessions that are not one file (the planner uses the file's mtime
  *   otherwise).
@@ -143,7 +146,10 @@ export async function planImport({
         // earlier import's entry outside the range is not a changed one.
         session.importIds = new Set(session.entries.map((entry) => importId(session, entry)));
         session.entries = session.entries.filter((entry) => !since || entry.occurredAt >= since);
-        if (session.entries.length === 0) session.skip = "no turns in range";
+        // No prompt at all (Cursor keeps chats that hold only replies) is not
+        // the same as turns that all fall before --since.
+        if (session.importIds.size === 0) session.skip = "no prompts";
+        else if (session.entries.length === 0) session.skip = "no turns in range";
       }
       sessions.push(session);
     }
@@ -168,6 +174,8 @@ export async function planImport({
  *   Live capture stores a turn up to CAPTURE_LAG_MS after it happened, so
  *   the cut is made that much earlier: a turn in that window is left out
  *   rather than risk storing it twice.
+ * - A session with made-up prompt times (`timesEstimated`) and any live
+ *   capture is skipped whole: its times cannot be compared with the cut.
  * - A session holding an imported entry the reader no longer produces is
  *   skipped whole: an earlier version read it differently (say, kept another
  *   reply for a turn), and importing the new reading would store a second
@@ -190,6 +198,7 @@ export async function trimAgainstServer(sessions, listExisting) {
     const checked = new Set();
     const captured = new Set();
     const imported = new Set();
+    let capturedSomewhere = false;
     const known = session.importIds ?? new Set(session.entries.map((entry) => importId(session, entry)));
     let changed = 0;
     for (const { entries, existing } of destinations) {
@@ -205,6 +214,7 @@ export async function trimAgainstServer(sessions, listExisting) {
         const time = validTime(memory.occurred_at);
         if (time !== null) firstCaptured = Math.min(firstCaptured, time);
       }
+      if (firstCaptured !== Infinity) capturedSomewhere = true;
       const cutoff = firstCaptured - CAPTURE_LAG_MS;
       for (const entry of entries) {
         checked.add(entry);
@@ -219,6 +229,12 @@ export async function trimAgainstServer(sessions, listExisting) {
     if (changed) {
       session.changedSinceImport = changed;
       session.skip = "changed since an earlier import (left as stored)";
+      continue;
+    }
+    if (session.timesEstimated && capturedSomewhere) {
+      // A made-up time near the chat's start would put turns typed after
+      // MidBrain was installed before its first live capture: skip, not guess.
+      session.skip = "already captured live (turn times unknown)";
       continue;
     }
     // Keep whole turns only: when the prompt or the reply was captured live,
@@ -276,6 +292,10 @@ export function summarize(sessions) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Requests in flight during an upload; `--concurrency` overrides it. */
+export const DEFAULT_CONCURRENCY = 8;
+export const MAX_CONCURRENCY = 8;
+
 const STOP_REASONS = {
   outOfCredits: "out of MidBrain credits",
   rateLimited: "rate limited",
@@ -284,9 +304,16 @@ const STOP_REASONS = {
 };
 
 /**
- * Upload planned sessions, one entry at a time, spaced. Each entry is posted
- * once and never retried: a failed write may still have been stored, and the
- * server does not enforce `import_id`. Any failure stops the upload; a re-run
+ * Upload planned sessions with up to `concurrency` requests in flight, and
+ * request starts at least `intervalMs` apart so the rate stays under the edge
+ * firewall's per-IP limit for memory endpoints (~10 requests/s). Entries are
+ * sent in plan order (chronological within a session); with more than one in
+ * flight they can be stored slightly out of order, so `--dream` uploads one at
+ * a time.
+ *
+ * Each entry is posted once and never retried: a failed write may still have
+ * been stored, and the server does not enforce `import_id`. Any failure stops
+ * new requests; those already in flight finish and are counted. A re-run
  * first checks what MidBrain holds (trimAgainstServer), so it resumes without
  * storing anything twice.
  *
@@ -297,26 +324,57 @@ const STOP_REASONS = {
  * @param {object} opts
  * @param {any[]} opts.sessions
  * @param {(session: any, entry: any, metadata: Record<string,string>) => Promise<"ok"|"outOfCredits"|"rateLimited"|"blocked"|"rejected"|"unknown">} opts.post
- * @param {number} [opts.spacingMs]
+ * @param {number} [opts.concurrency]
+ * @param {number} [opts.intervalMs]
  * @param {(event: object) => void} [opts.onProgress]
  * @param {(ms: number) => Promise<void>} [opts.wait]
+ * @param {() => number} [opts.now]
  * @param {string} [opts.importedAt]
  */
 export async function uploadImport({
   sessions,
   post,
-  spacingMs = 150,
+  concurrency = DEFAULT_CONCURRENCY,
+  intervalMs = 125,
   onProgress = () => {},
   wait = sleep,
+  now = Date.now,
   importedAt = new Date().toISOString(),
 }) {
   const totals = { sent: 0, sessions: 0, truncated: 0, blocked: [], stopped: null, stoppedOn: null };
+  const queue = [];
+  const remaining = new Map();
   for (const session of sessions) {
     if (session.skip || session.entries.length === 0) continue;
-    const key = sessionKey(session);
-    for (const [index, entry] of session.entries.entries()) {
+    remaining.set(session, session.entries.length);
+    for (const [index, entry] of session.entries.entries()) queue.push({ session, entry, index });
+  }
+  let next = 0;
+  let nextStart = 0;
+
+  const settle = (session) => {
+    const left = remaining.get(session) - 1;
+    remaining.set(session, left);
+    if (left === 0 && !totals.stopped) {
+      totals.sessions += 1;
+      onProgress({ type: "session", session: sessionKey(session), totals });
+    }
+  };
+
+  const worker = async () => {
+    while (!totals.stopped && next < queue.length) {
+      const { session, entry, index } = queue[next++];
+      const key = sessionKey(session);
       const prepared = prepareText(entry.text);
-      if (!prepared.text) continue;
+      if (!prepared.text) {
+        settle(session);
+        continue;
+      }
+      // Reserve a start slot before waiting, so workers never start together.
+      const start = Math.max(now(), nextStart);
+      nextStart = start + intervalMs;
+      if (start > now()) await wait(start - now());
+      if (totals.stopped) return;
       const metadata = {
         ...buildCaptureMetadata({ client: session.client, cwd: entry.cwd || session.cwd, sessionId: session.sessionId }),
         origin: IMPORT_ORIGIN,
@@ -326,20 +384,22 @@ export async function uploadImport({
       const result = await post(session, { ...entry, text: prepared.text }, metadata);
       if (result === "blocked") {
         totals.blocked.push({ client: session.client, sessionId: session.sessionId, role: entry.role, occurredAt: entry.occurredAt });
-      } else if (result !== "ok") {
-        totals.stopped = STOP_REASONS[result] ?? STOP_REASONS.unknown;
-        totals.stoppedOn = result;
-        onProgress({ type: "stopped", session: key, reason: totals.stopped, totals });
-        return totals;
-      } else {
+      } else if (result === "ok") {
         totals.sent += 1;
         if (prepared.truncated) totals.truncated += 1;
+      } else {
+        if (!totals.stopped) {
+          totals.stopped = STOP_REASONS[result] ?? STOP_REASONS.unknown;
+          totals.stoppedOn = result;
+          onProgress({ type: "stopped", session: key, reason: totals.stopped, totals });
+        }
+        return;
       }
       onProgress({ type: "entry", session: key, index, total: session.entries.length, totals });
-      if (spacingMs) await wait(spacingMs);
+      settle(session);
     }
-    totals.sessions += 1;
-    onProgress({ type: "session", session: key, totals });
-  }
+  };
+
+  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
   return totals;
 }

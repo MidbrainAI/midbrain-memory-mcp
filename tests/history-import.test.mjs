@@ -86,6 +86,7 @@ describe("planImport", () => {
         session({ sessionId: "active" }),
         session({ sessionId: "auto", automated: true }),
         session({ sessionId: "old" }),
+        session({ sessionId: "replies-only", entries: [] }),
       ]),
       clients: ["fake"],
       now,
@@ -96,6 +97,7 @@ describe("planImport", () => {
       ["active", "active (written in the last 10 minutes)"],
       ["auto", "automated (started by a program, not typed)"],
       ["old", "no turns in range"],
+      ["replies-only", "no prompts"],
     ]);
   });
 });
@@ -110,6 +112,15 @@ describe("trimAgainstServer", () => {
     ]));
     expect(trimmed.entries.map((entry) => entry.text)).toEqual(["p1", "r1"]);
     expect(trimmed.capturedLive).toBe(2);
+  });
+
+  it("skips a session with made-up prompt times once live capture holds any of it", async () => {
+    const live = [{ occurred_at: "2026-09-02T10:00:03Z", memory_metadata: {} }];
+    const [estimated] = await trimAgainstServer([session({ timesEstimated: true })], oneDestination(live));
+    expect([estimated.skip, estimated.entries.length]).toEqual(["already captured live (turn times unknown)", 4]);
+    // Nothing captured live: made-up times are good enough for order and import ids.
+    const [alone] = await trimAgainstServer([session({ timesEstimated: true })], oneDestination([]));
+    expect([alone.skip, alone.entries.length]).toEqual([null, 4]);
   });
 
   it("drops the reply when its prompt was captured live", async () => {
@@ -211,7 +222,8 @@ describe("uploadImport", () => {
     const totals = await uploadImport({
       sessions: [session({ entries: [{ role: "user", text: "first prompt", occurredAt: "2026-09-01T10:00:00.000Z", cwd: "/work/proj/sub" }] })],
       post: async (_session, entry, metadata) => { posts.push({ entry, metadata }); return "ok"; },
-      spacingMs: 0,
+      concurrency: 1,
+      intervalMs: 0,
       importedAt: "2026-10-13T00:00:00.000Z",
     });
     expect(totals).toMatchObject({ sent: 1, sessions: 1, stopped: null });
@@ -233,7 +245,8 @@ describe("uploadImport", () => {
     const totals = await uploadImport({
       sessions: [session()],
       post: async () => { calls += 1; return results.shift() ?? "ok"; },
-      spacingMs: 0,
+      concurrency: 1,
+      intervalMs: 0,
       wait: async () => {},
     });
     expect(calls).toBe(2);
@@ -250,7 +263,8 @@ describe("uploadImport", () => {
     const totals = await uploadImport({
       sessions: [session()],
       post: async () => { calls += 1; return results.shift() ?? "ok"; },
-      spacingMs: 0,
+      concurrency: 1,
+      intervalMs: 0,
       wait: async () => {},
     });
     expect(calls).toBe(2);
@@ -262,11 +276,71 @@ describe("uploadImport", () => {
     const totals = await uploadImport({
       sessions: [session()],
       post: async () => results.shift(),
-      spacingMs: 0,
+      concurrency: 1,
+      intervalMs: 0,
       wait: async () => {},
     });
     expect(totals).toMatchObject({ sent: 3, sessions: 1, stopped: null });
     expect(totals.blocked).toEqual([{ client: "fake", sessionId: "s1", role: "assistant", occurredAt: expect.any(String) }]);
+  });
+});
+
+describe("uploadImport in parallel", () => {
+  const sessions = () => [session(), session({ sessionId: "s2" }), session({ sessionId: "s3" })];
+
+  /** A post whose results resolve only when the test releases them. */
+  function gatedPost(result = () => "ok") {
+    const pending = [];
+    let inFlight = 0;
+    let peak = 0;
+    const post = (_session, entry) => new Promise((resolve) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      pending.push(() => { inFlight -= 1; resolve(result(entry)); });
+    });
+    const releaseAll = async () => {
+      while (pending.length || inFlight) {
+        pending.splice(0).forEach((release) => release());
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    };
+    return { post, releaseAll, get peak() { return peak; }, get started() { return pending.length; } };
+  }
+
+  it("keeps at most `concurrency` posts in flight and sends every entry once", async () => {
+    const gate = gatedPost();
+    const run = uploadImport({ sessions: sessions(), post: gate.post, concurrency: 3, intervalMs: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(gate.started).toBe(3);
+    await gate.releaseAll();
+    const totals = await run;
+    expect(gate.peak).toBe(3);
+    expect(totals).toMatchObject({ sent: 12, sessions: 3, stopped: null });
+  });
+
+  it("starts no new post after a failure, and counts the ones already in flight", async () => {
+    let calls = 0;
+    const gate = gatedPost(() => (++calls === 1 ? "unknown" : "ok"));
+    const run = uploadImport({ sessions: sessions(), post: gate.post, concurrency: 4, intervalMs: 0 });
+    await gate.releaseAll();
+    const totals = await run;
+    expect(calls).toBe(4);
+    expect(totals).toMatchObject({ sent: 3, sessions: 0, stopped: "an upload failed and may or may not have been stored" });
+  });
+
+  it("spaces request starts by intervalMs across workers", async () => {
+    const waits = [];
+    const totals = await uploadImport({
+      sessions: [session()],
+      post: async () => "ok",
+      concurrency: 4,
+      intervalMs: 125,
+      now: () => 0,
+      wait: async (ms) => { waits.push(ms); },
+    });
+    expect(totals.sent).toBe(4);
+    // All four workers start at time 0; each waits for its own slot.
+    expect(waits).toEqual([125, 250, 375]);
   });
 });
 
@@ -323,6 +397,11 @@ describe("import CLI", () => {
     expect(parseImportArgs(["--client", "fake, fake,fake"], readers).clients).toEqual(["fake"]);
     expect(() => parseImportArgs(["--client", "nope"], readers)).toThrow(/unsupported client/);
     expect(() => parseImportArgs(["--since", "yesterday"], readers)).toThrow(/--since/);
+    expect(parseImportArgs([], readers).concurrency).toBe(8);
+    expect(parseImportArgs(["--concurrency", "2"], readers).concurrency).toBe(2);
+    // Consolidation needs dreamed turns in order.
+    expect(parseImportArgs(["--concurrency", "8", "--dream"], readers).concurrency).toBe(1);
+    for (const bad of ["0", "9", "2.5", "x"]) expect(() => parseImportArgs(["--concurrency", bad], readers)).toThrow(/--concurrency/);
   });
 
   it("accepts --flag=value and rejects unknown arguments, so no filter is dropped", () => {
@@ -397,7 +476,7 @@ describe("import CLI", () => {
   it("stops at once with exit 1 and how to resume when credits run out", async () => {
     const { apiFor, posts } = fakeApi(["ok", "outOfCredits"]);
     const err = capture();
-    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} });
+    const code = await runImportCli(["--client", "fake", "--apply", "--yes", "--concurrency", "1"], { readers: applyFixture(), err, apiFor, wait: async () => {} });
     expect(code).toBe(1);
     expect(posts).toHaveLength(2);
     expect(err.text).toContain("Stopped early: out of MidBrain credits, after storing 1 of 4 entries.");
@@ -407,7 +486,7 @@ describe("import CLI", () => {
   it("asks to wait before resuming after a rate limit", async () => {
     const { apiFor } = fakeApi(["ok", "ok", "rateLimited"]);
     const err = capture();
-    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(1);
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes", "--concurrency", "1"], { readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(1);
     expect(err.text).toContain("Stopped early: rate limited, after storing 2 of 4 entries.");
     expect(err.text).toContain("Wait a few minutes, then run the same command again to continue");
   });
