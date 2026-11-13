@@ -45,6 +45,10 @@
   "engines": {
     "node": ">=20"
   },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "start": "node index.js",
     "setup": "node install.mjs",
@@ -54,6 +58,8 @@
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
+    "release": "semantic-release",
+    "prepack": "npm run build:plugin",
     "check": "npm run build:plugin && eslint . && vitest run && bash scripts/check-pinned-spec.sh && bash scripts/check-test-isolation.sh",
     "prepublishOnly": "npm run build:plugin && node -e \"JSON.parse(require('fs').readFileSync('package.json','utf8'))\""
   },
@@ -70,10 +76,13 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
     "esbuild": "^0.28.0",
     "eslint": "^10.2.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
+    "semantic-release": "^25.0.9",
     "vitest": "^4.1.4"
   }
 }

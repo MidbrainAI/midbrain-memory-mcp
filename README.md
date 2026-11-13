@@ -1656,8 +1656,16 @@ branching inside MCP tools or hook scripts.
 | `yaml` | Hermes `config.yaml` parsing and serialization (comment-preserving) |
 | `zod` | Schema validation |
 
-Dev: esbuild (plugin bundler), eslint, vitest, husky, lint-staged.
+Dev: esbuild (plugin bundler), eslint, vitest, husky, lint-staged, semantic-release.
 Not shipped to users.
+
+### Releasing
+
+Merge `main` into `release` to publish. GitHub Actions runs the cross-platform
+checks, then semantic-release calculates the next version, updates the package
+and changelog, creates an `npm-vX.Y.Z` tag and GitHub release, and publishes to
+npm's `latest` channel for npx. See [the release guide](docs/releasing.md) for
+one-time setup, commit conventions, branch synchronization, and failure recovery.
 
 ---
 

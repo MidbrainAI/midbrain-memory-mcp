@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    branches: [release]
+
+permissions:
+  contents: read
+
+# Never interrupt a publish midway through tagging/uploading.
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: checks
+    if: github.repository == 'MidbrainAI/midbrain-memory-mcp'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Anchor the first automated release to v0.4.10
+        shell: bash
+        run: |
+          baseline=b09f9f6ce0e9eb19655d1062c8db92f7c079a8ad
+          test "$(git rev-parse 'v0.4.10^{commit}')" = "$baseline"
+          git merge-base --is-ancestor "$baseline" HEAD
+          if git show-ref --verify --quiet refs/tags/npm-v0.4.10; then
+            test "$(git rev-parse 'npm-v0.4.10^{commit}')" = "$baseline"
+          else
+            # semantic-release pushes this alias with the first new tag.
+            # It preserves v0.4.10 and avoids the unrelated historical v1.1.0.
+            git tag npm-v0.4.10 "$baseline"
+          fi
+
+      - name: Version, tag, publish to npm, and create GitHub release
+        run: npm run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          HUSKY: 0
