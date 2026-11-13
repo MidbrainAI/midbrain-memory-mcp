@@ -1,7 +1,8 @@
 # Changelog
 
 All notable public release changes for `midbrain-memory-mcp` are tracked here.
-Full release-note bodies live in `docs/releases/`.
+Historical release-note bodies live in `docs/releases/`. Automated releases
+record their notes here and in GitHub Releases.
 
 ## 0.4.10
 
