@@ -90,6 +90,20 @@ describe.skipIf(!sqlite || typeof zlib.zstdCompressSync !== "function")("readOpe
     ]);
   });
 
+  it("ends the turn at an image-only prompt, so its reply keeps the earlier answer", async () => {
+    const db = makeDb();
+    addSession(db, "img", { events: [
+      header(),
+      msg("2026-10-05T09:00:01.000Z", "user", "first prompt", { idempotencyKey: "k1" }),
+      msg("2026-10-05T09:00:02.000Z", "assistant", [{ type: "text", text: "answer one" }]),
+      msg("2026-10-05T09:01:00.000Z", "user", [{ type: "image", data: "x", mimeType: "image/png" }], { idempotencyKey: "k2" }),
+      msg("2026-10-05T09:01:01.000Z", "assistant", [{ type: "text", text: "about the image" }]),
+    ] });
+    db.close();
+    const session = await readOpenClawSession(`${dbFile}#img`);
+    expect(session.entries.map((entry) => entry.text)).toEqual(["first prompt", "answer one"]);
+  });
+
   it("drops heartbeat turns, and a NO_REPLY turn keeps no reply", async () => {
     const db = makeDb();
     addSession(db, "main", {

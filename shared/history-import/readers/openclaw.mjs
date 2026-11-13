@@ -174,11 +174,13 @@ export async function readOpenClawSession(source) {
       if (window.reason === "fork" && Number.isFinite(startedAt) && Date.parse(at) < startedAt) continue;
       const message = event.message;
       const text = messageText(message);
-      if (message?.role === "user" && text) {
+      if (message?.role === "user") {
         // A retried send repeats the prompt with the same idempotency key.
         const retryKey = message.idempotencyKey;
         if (retryKey && seenPrompts.has(retryKey)) continue;
         if (retryKey) seenPrompts.add(retryKey);
+        // Every user message ends the turn, one with no text (an image) too:
+        // what follows answers it, not the earlier prompt.
         closeTurn();
         turn = { prompt: text.replace(TIMESTAMP_ENVELOPE, "").trim(), at, reply: "", replyAt: null };
         if (!turn.prompt) turn = null;
