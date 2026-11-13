@@ -345,6 +345,7 @@ Supported sources (`--client` takes the id):
 | OpenClaw | `openclaw` | `~/.openclaw/agents/*/agent/openclaw-agent.sqlite` (or `OPENCLAW_STATE_DIR`, `OPENCLAW_PROFILE`), read-only; cron, hook, plugin and spawned sessions, and heartbeat turns, are skipped. A session on the claude-cli backend is imported once, as the OpenClaw session, while OpenClaw still records its Claude Code session; OpenClaw drops that record on compaction or a backend error, so an earlier Claude Code session of the same conversation is not linked and can be imported (or captured live) on its own. Needs Node 22.15+ (`node:sqlite` and zstd) |
 | OpenCode | `opencode` | `~/.local/share/opencode/opencode.db` (or `XDG_DATA_HOME`), a channel build's `opencode-<channel>.db` next to it, and the file `OPENCODE_DB` names; read-only, each session once. Subagent sessions are skipped, and sessions `opencode run` created count as automated (OpenCode marks the whole session, so a run session continued in the TUI counts too; turns `opencode run --session` or `--continue` adds to a TUI session are not marked, so they are imported). Archived sessions are read. Needs Node 22.13+ |
 | Hermes Agent | `hermes` | `~/.hermes/state.db` and each `profiles/*/state.db` (or `HERMES_HOME`), read-only; the stored prompt text only, never the context added for the model. A `/steer` typed while Hermes works is added to its prompt. Delegated (subagent) and hidden sessions, and the parent's turns a session continued after compression starts with (its protected head and tail), are skipped; cron, `hermes -z` one-shot, API-server and webhook sessions count as automated. Needs Node 22.13+ |
+| Cursor | `cursor` | The desktop app's `globalStorage/state.vscdb` (macOS `~/Library/Application Support/Cursor/User`, Linux `~/.config/Cursor/User`, Windows `%APPDATA%\Cursor\User`), read-only, plus `~/.cursor/projects/*/agent-transcripts` for CLI runs the app does not have. Subagent and never-sent conversations are skipped; background-agent runs and CLI runs from a temp directory count as automated. Transcripts have no per-message times: an entry uses Cursor's `<timestamp>` line when present, else it counts forward from when the chat started. If the desktop store exists but cannot be read, nothing is imported from transcripts either. Needs Node 22.13+ for the desktop store |
 
 - **What is imported:** each prompt you typed and the reply that ended the
   turn, with its original time, labeled `origin: "import"`. Tool calls and
@@ -363,10 +364,12 @@ Supported sources (`--client` takes the id):
   the import stops and says how many entries it stored; add credits and run
   the same command to continue.
 - **Secrets.** Text is stored as written, as live capture stores it.
-- **Load.** Entries are sent one at a time, once each: any failure stops the
-  import (run it again to resume). An entry MidBrain's firewall blocks is
-  skipped and listed. MidBrain's per-memory processing is skipped for the bulk
-  load (`X-Skip-Dream: 1`); `--dream` turns it on.
+- **Load.** Up to 8 entries are in flight at once (`--concurrency`, 1-8), at
+  most 8 started per second, each sent once: any failure stops new uploads
+  (run it again to resume). An entry MidBrain's firewall blocks is skipped and
+  listed. MidBrain's per-memory processing is skipped for the bulk load
+  (`X-Skip-Dream: 1`); `--dream` turns it on and uploads one entry at a time,
+  in order.
 
 ---
 
