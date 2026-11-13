@@ -68,6 +68,27 @@ version to equal npm `latest`, and rejects existing or decreasing next versions.
 The package stays at 0.4.10 in this implementation. The first actual release
 includes all releasable commits since v0.4.10; it is not forced to be a patch.
 
+## Preview the next version locally
+
+From `main` (or the branch you intend to release), run:
+
+```sh
+npm run release:preview
+```
+
+It prints the previous version, the calculated bump, and the next version, or
+`no release` when there are no releasable commits. It uses the configured commit
+analyzer, including skip-release markers, and the same automated tag namespace
+and v0.4.10 bootstrap baseline as the release workflow.
+
+This command reads local Git history only. It needs no credentials and does not
+fetch, commit, tag, publish, or modify files. Uncommitted changes are excluded.
+Run `git fetch origin --tags` beforehand when you want current remote tags, and
+update your branch to include the commits you intend to release. If a newer
+release tag or the fetched `origin/release` branch is not in your branch's
+history, it asks you to merge `release` back first instead of guessing.
+It predicts the version, not whether CI or publishing authentication will pass.
+
 ## After each release
 
 Merge `release` back into `main` with a merge commit to bring back the generated

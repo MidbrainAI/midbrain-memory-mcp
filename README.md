@@ -1661,6 +1661,7 @@ Not shipped to users.
 
 ### Releasing
 
+Run `npm run release:preview` locally to see the next version without publishing.
 Merge `main` into `release` to publish. GitHub Actions runs the cross-platform
 checks, then semantic-release calculates the next version, updates the package
 and changelog, creates an `npm-vX.Y.Z` tag and GitHub release, and publishes to

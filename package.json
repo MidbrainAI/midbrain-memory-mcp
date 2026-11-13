@@ -59,6 +59,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "release": "semantic-release",
+    "release:preview": "node scripts/release-preview.mjs",
     "prepack": "npm run build:plugin",
     "check": "npm run build:plugin && eslint . && vitest run && bash scripts/check-pinned-spec.sh && bash scripts/check-test-isolation.sh",
     "prepublishOnly": "npm run build:plugin && node -e \"JSON.parse(require('fs').readFileSync('package.json','utf8'))\""
