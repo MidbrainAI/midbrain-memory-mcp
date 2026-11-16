@@ -1,3 +1,10 @@
+## [0.5.1](https://github.com/MidbrainAI/midbrain-memory-mcp/compare/npm-v0.5.0...npm-v0.5.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* restore Windows hooks and opt-in history import during install ([5afaf6c](https://github.com/MidbrainAI/midbrain-memory-mcp/commit/5afaf6cab6ed903132ce000895b2487bc31584e3))
+
 # [0.5.0](https://github.com/MidbrainAI/midbrain-memory-mcp/compare/npm-v0.4.10...npm-v0.5.0) (2026-11-13)
 
 
