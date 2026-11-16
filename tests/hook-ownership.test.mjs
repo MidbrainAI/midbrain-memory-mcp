@@ -1,3 +1,4 @@
+import { expectedHookCommand } from "./helpers/hook-command.mjs";
 /**
  * AC-12 (PRD-034 rev 4, B16): hook ownership.
  *
@@ -23,7 +24,7 @@ import { Codex } from "../shared/clients/codex.mjs";
 import { Hermes } from "../shared/clients/hermes.mjs";
 import { stableShimPath } from "../shared/clients/shim.mjs";
 
-const shimCommand = (client, role) => `'${stableShimPath(client)}' ${role}`;
+const shimCommand = (client, role) => expectedHookCommand(stableShimPath(client), role);
 const wrapperCommand = (env, client, role) =>
   `'${path.join(env.home, ".midbrain", "bin", `${client}-hook-wrapper`)}' ${role}`;
 

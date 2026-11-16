@@ -1,3 +1,4 @@
+import { expectedHookCommand } from "./helpers/hook-command.mjs";
 /**
  * Unit tests for shared/clients/claude.mjs
  *
@@ -277,7 +278,7 @@ describe("Claude.installGlobal", () => {
     const writeCall = fs.writeFile.mock.calls.find(([p]) => p === PATHS.claudeSettings);
     expect(writeCall).toBeDefined();
     const written = JSON.parse(writeCall[1]);
-    expect(written.hooks.SessionStart[0].hooks[0]).toEqual({ type: "command", command: `'${CLAUDE_SHIM}' session`, timeout: 30 });
+    expect(written.hooks.SessionStart[0].hooks[0]).toEqual({ type: "command", command: expectedHookCommand(CLAUDE_SHIM, "session"), timeout: 30 });
     expect(written.hooks.UserPromptSubmit).toBeDefined();
     expect(written.hooks.Stop).toBeDefined();
     expect(written.permissions.allow).toContain("mcp__midbrain-memory__memory_search");
@@ -318,8 +319,8 @@ describe("Claude.installGlobal", () => {
     const shim = CLAUDE_SHIM;
     const userHook = written.hooks.UserPromptSubmit[0].hooks[0];
     const stopHook = written.hooks.Stop[0].hooks[0];
-    expect(userHook.command).toBe(`'${shim}' user`);
-    expect(stopHook.command).toBe(`'${shim}' assistant`);
+    expect(userHook.command).toBe(expectedHookCommand(shim, "user"));
+    expect(stopHook.command).toBe(expectedHookCommand(shim, "assistant"));
     expect(userHook.command).not.toContain(REPO_ROOT);
     expect(stopHook.command).not.toContain(REPO_ROOT);
     expect(userHook.type).toBe("command");

@@ -467,8 +467,8 @@ describe("Issue #51 — capture-client marker migration (runSelfRepair)", () => 
   it.skipIf(IS_WIN)("first legacy wake prepares durable and cached hook paths before readiness without a warm-up", async () => {
     await seedPre048Group();
     const durableRoot = path.join(env.home, ".claude", ".midbrain");
-    const durableShim = path.join(durableRoot, "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
-    const cachedShim = path.join(env.home, ".midbrain", "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+    const durableShim = path.join(durableRoot, "bin", process.platform === "win32" ? "claude-hook.cjs" : "claude-hook");
+    const cachedShim = path.join(env.home, ".midbrain", "bin", process.platform === "win32" ? "claude-hook.cjs" : "claude-hook");
     const fetchLog = path.join(env.tmp, "first-wake-fetch.ndjson");
     const preload = path.join(env.tmp, "first-wake-preload.mjs");
     await fs.writeFile(preload, `
@@ -1262,7 +1262,7 @@ describe("Issue #52 — server-start spool flush discipline", () => {
 describe("Issue #52 — durable state under ~/.claude (MIDBRAIN_STATE_DIR)", () => {
   const stateDir = () => path.join(env.home, ".claude", ".midbrain");
   const relocatedShim = () =>
-    path.join(stateDir(), "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+    path.join(stateDir(), "bin", process.platform === "win32" ? "claude-hook.cjs" : "claude-hook");
   const relocatedKey = () => path.join(stateDir(), ".midbrain-key");
 
   // Ephemeral container dirs that a --rm respawn wipes (everything NOT under
@@ -1274,7 +1274,7 @@ describe("Issue #52 — durable state under ~/.claude (MIDBRAIN_STATE_DIR)", () 
   }
 
   const hostShim = () =>
-    path.join(env.home, ".midbrain", "bin", process.platform === "win32" ? "claude-hook.cmd" : "claude-hook");
+    path.join(env.home, ".midbrain", "bin", process.platform === "win32" ? "claude-hook.cjs" : "claude-hook");
   const hostKey = () => path.join(env.home, ".config", "midbrain", ".midbrain-key");
 
   it("relocates the shim and persisted key under ~/.claude when the env is set", async () => {

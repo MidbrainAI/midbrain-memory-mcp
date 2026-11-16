@@ -1,3 +1,4 @@
+import { expectedHookCommand } from "./helpers/hook-command.mjs";
 /**
  * Unit tests for install.mjs (orchestrator).
  *
@@ -32,6 +33,7 @@ const mocks = vi.hoisted(() => {
     writeCredential: vi.fn(),
     writeKeystoreFile: vi.fn(),
     deviceCodeLogin: vi.fn(),
+    offerHistoryImport: vi.fn().mockResolvedValue(undefined),
     readlineAnswers: [],
     readlineQuestions: [],
     createReadlineInterface: vi.fn(),
@@ -71,6 +73,7 @@ vi.mock("fs", async (importOriginal) => {
   const orig = await importOriginal();
   return { ...orig, existsSync: mocks.existsSync, realpathSync: orig.realpathSync };
 });
+vi.mock("../shared/history-import/install.mjs", () => ({ offerHistoryImport: mocks.offerHistoryImport }));
 vi.mock("readline", () => ({
   default: { createInterface: mocks.createReadlineInterface },
   createInterface: mocks.createReadlineInterface,
@@ -83,6 +86,7 @@ vi.mock("../shared/clients/credential-writer.mjs", () => ({
   writeKeystoreFile: mocks.writeKeystoreFile,
 }));
 
+const IS_WIN = process.platform === "win32";
 const fs = { readFile: mocks.readFile, writeFile: mocks.writeFile, mkdir: mocks.mkdir,
              chmod: mocks.chmod, stat: mocks.stat, realpath: mocks.realpath, copyFile: mocks.copyFile,
              rm: mocks.rm, access: mocks.access, readdir: mocks.readdir };
@@ -160,7 +164,7 @@ beforeAll(async () => {
     claudeJson: path.join(home, ".claude.json"),
     codexConfig: path.join(home, ".codex", "config.toml"),
     codexHooks: path.join(home, ".codex", "hooks.json"),
-    codexShim: path.join(home, ".midbrain", "bin", "codex-hook"),
+    codexShim: path.join(home, ".midbrain", "bin", process.platform === "win32" ? "codex-hook.cjs" : "codex-hook"),
     nanoclawDocker: path.join(home, "nanoclaw-v2", "container", "Dockerfile"),
     nanoclawSkills: path.join(home, "nanoclaw-v2", ".claude", "skills"),
     nanoclawSkill: path.join(home, "nanoclaw-v2", ".claude", "skills", "add-midbrain", "SKILL.md"),
@@ -437,6 +441,7 @@ describe("main — per-client key writing", () => {
     readFileReturns({ [PATHS.opencodeKey]: "my-oc-key\n" });
 
     await main();
+    expect(mocks.offerHistoryImport).toHaveBeenCalledWith(expect.any(Array), { nonInteractive: false });
 
     const globalWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.globalKey);
     expect(globalWrite).toBeDefined();
@@ -451,6 +456,7 @@ describe("main — per-client key writing", () => {
     readFileReturns({ [PATHS.opencodeKey]: "my-oc-key\n" });
 
     await main({ nonInteractive: true });
+    expect(mocks.offerHistoryImport).toHaveBeenCalledWith(expect.any(Array), { nonInteractive: true });
 
     const rulesWrite = fs.writeFile.mock.calls.find(
       ([p]) => p === PATHS.opencodeAgents
@@ -1022,7 +1028,7 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
     const allCommands = Object.values(writtenHooks.hooks)
       .flat()
       .flatMap((g) => g.hooks.map((h) => h.command));
-    expect(allCommands.some((c) => c.includes(PATHS.codexShim))).toBe(true);
+    expect(allCommands.some((c) => c.includes(IS_WIN ? PATHS.codexShim.replace(/\\/g, "/") : PATHS.codexShim))).toBe(true);
     expect(shimWrite).toBeDefined();
     // chmod applies exec bits on POSIX only.
     if (process.platform !== "win32") expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
@@ -1035,10 +1041,10 @@ describe("checkForUpdate — NanoClaw startup repair", () => {
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
-          SessionStart: [{ hooks: [{ command: `'${PATHS.codexShim}' session` }] }],
-          UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
-          PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
-          Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
+          SessionStart: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "session") }] }],
+          UserPromptSubmit: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "user") }] }],
+          PostToolUse: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "tool") }] }],
+          Stop: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "assistant") }] }],
         },
       }),
       // AC-11: freshness now validates the shim body + exec mode too

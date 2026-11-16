@@ -21,7 +21,7 @@ import {
   isObjectRecord as isRecord,
 } from './utils.mjs';
 import {
-  shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
+  shimCommand, installShim, shimStatus, commandReferencesShim,
   commandHasMidbrainInvocation,
 } from './shim.mjs';
 
@@ -96,7 +96,7 @@ function mcpLine(label, { exists, pinned, written }) {
 }
 
 function buildHookCommand(role) {
-  return `${shellQuote(stableShimPath(CLIENT_ID))} ${role}`;
+  return shimCommand(CLIENT_ID, role);
 }
 
 // Cursor is a new client (no pre-shim installs), so ownership is the stable

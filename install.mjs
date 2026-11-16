@@ -36,6 +36,7 @@ import { activateNanoClawStateDir, globalConfigDir } from './shared/state-dir.mj
 import { historicalShimPath, installShim } from './shared/clients/shim.mjs';
 import { MidbrainApi } from './shared/midbrain-api.mjs';
 import { runFlush } from './shared/flush-runner.mjs';
+import { offerHistoryImport } from './shared/history-import/install.mjs';
 import {
   beginSpoolFlush,
   finishSpoolFlush,
@@ -1138,6 +1139,7 @@ async function main(opts = {}) {
   const keyLines = await installResolvedKeys(clients, { nonInteractive, forceLogin, noLogin, keySourceFlag, defaultKey });
 
   await installClients(clients, keyLines, { isDev, nonInteractive, skipRules });
+  await offerHistoryImport(clients, { nonInteractive });
 }
 
 async function installResolvedKeys(clients, { nonInteractive, forceLogin, noLogin, keySourceFlag, defaultKey }) {

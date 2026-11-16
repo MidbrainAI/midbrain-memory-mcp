@@ -53,7 +53,7 @@ describe("MIDBRAIN_STATE_DIR unset — byte-identical to historical paths", () =
   it.each(["claude", "codex", "hermes"])(
     "%s stable shim path is unchanged (~/.midbrain/bin/<client>-hook[.cmd])",
     (client) => {
-      const suffix = process.platform === "win32" && client !== "codex" ? ".cmd" : "";
+      const suffix = process.platform === "win32" ? ".cjs" : "";
       expect(stableShimPath(client)).toBe(
         path.join(HOME, ".midbrain", "bin", `${client}-hook${suffix}`),
       );

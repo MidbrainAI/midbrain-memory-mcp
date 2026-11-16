@@ -518,6 +518,10 @@ Prime Agent:
 
 ## History Import
 
+Interactive `install` offers history import per detected supported client after
+setup, reusing the import preview and upload confirmation. Non-interactive
+installation never prompts or imports. The standalone import command remains.
+
 `npx midbrain-memory-mcp@latest import` (issue #75) imports conversations from
 before installation. Code: `shared/history-import/` (`readers/`,
 `plan.mjs`, `cli.mjs`), dispatched from `index.js`. Each client has one

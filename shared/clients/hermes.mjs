@@ -25,7 +25,7 @@ import {
   migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
 import {
-  shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
+  shimCommand, stableShimPath, installShim, shimStatus, commandReferencesShim,
   commandHasLegacyScriptPath, commandHasMidbrainInvocation,
   validateShimPaths as validateClientShimPaths,
 } from './shim.mjs';
@@ -114,7 +114,7 @@ async function writeYamlDocIfChanged(filePath, doc, { backupFirst = false } = {}
 }
 
 function buildHookCommand(role) {
-  return `${shellQuote(stableHookPath())} ${role}`;
+  return shimCommand('hermes', role);
 }
 
 function validateShimPaths(opts = {}) {

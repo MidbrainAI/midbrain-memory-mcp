@@ -222,11 +222,11 @@ export function sandboxPaths(home) {
     midbrainBin: path.join(home, '.midbrain', 'bin'),
     // claude/hermes shims gain a .cmd suffix on win32; codex stays a sh script
     // on every platform (mirrors shim.mjs shimFilename()).
-    claudeShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'claude-hook.cmd' : 'claude-hook'),
-    codexShim: path.join(home, '.midbrain', 'bin', 'codex-hook'),
-    hermesShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'hermes-hook.cmd' : 'hermes-hook'),
-    cursorShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'cursor-hook.cmd' : 'cursor-hook'),
-    primeShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'prime-agent-hook.cmd' : 'prime-agent-hook'),
+    claudeShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'claude-hook.cjs' : 'claude-hook'),
+    codexShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'codex-hook.cjs' : 'codex-hook'),
+    hermesShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'hermes-hook.cjs' : 'hermes-hook'),
+    cursorShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'cursor-hook.cjs' : 'cursor-hook'),
+    primeShim: path.join(home, '.midbrain', 'bin', process.platform === 'win32' ? 'prime-agent-hook.cjs' : 'prime-agent-hook'),
     globalKey: path.join(home, '.config', 'midbrain', '.midbrain-key'),
   };
 }

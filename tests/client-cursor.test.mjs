@@ -1,3 +1,4 @@
+import { expectedHookCommand } from "./helpers/hook-command.mjs";
 /**
  * Integration tests for shared/clients/cursor.mjs against a throwaway home
  * (makeTestEnv). Every read and write lands inside the sandbox; the real-home
@@ -35,7 +36,7 @@ afterEach(async () => {
   await env.restore();
 });
 
-const shimCommand = (role) => `'${stableShimPath("cursor")}' ${role}`;
+const shimCommand = (role) => expectedHookCommand(stableShimPath("cursor"), role);
 const readJsonFile = async (file) => JSON.parse(await fs.readFile(file, "utf8"));
 const writeJsonFile = async (file, data) => {
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -234,7 +235,7 @@ describe("Cursor hook ownership, freshness, and repair", () => {
   });
 
   it("dedupes every owned form to one canonical entry and keeps user hooks in order", async () => {
-    const wrapper = `'${path.join(env.home, ".midbrain", "bin", "cursor-hook-wrapper")}' user`;
+    const wrapper = expectedHookCommand(path.join(env.home, ".midbrain", "bin", "cursor-hook-wrapper"), "user");
     const nearName = "/usr/local/bin/midbrain-memory-mcp-wrapper hook cursor user";
     const data = await readJsonFile(env.paths.cursorHooks);
     data.hooks.beforeSubmitPrompt = [
@@ -257,7 +258,7 @@ describe("Cursor hook ownership, freshness, and repair", () => {
   });
 
   it("never claims another client's shim", async () => {
-    const codexShim = `'${stableShimPath("codex")}' user`;
+    const codexShim = expectedHookCommand(stableShimPath("codex"), "user");
     const data = await readJsonFile(env.paths.cursorHooks);
     data.hooks.beforeSubmitPrompt.unshift({ command: codexShim });
     await writeJsonFile(env.paths.cursorHooks, data);

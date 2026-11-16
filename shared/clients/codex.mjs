@@ -17,7 +17,7 @@ import {
   migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
 import {
-  shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
+  shimCommand, installShim, shimStatus, commandReferencesShim,
   commandHasLegacyScriptPath, commandHasMidbrainInvocation,
 } from './shim.mjs';
 
@@ -44,7 +44,7 @@ let tomlModule;
 function codexDir() { return path.join(home(), '.codex'); }
 function configPath() { return path.join(codexDir(), 'config.toml'); }
 function hooksPath() { return path.join(codexDir(), 'hooks.json'); }
-function stableHookPath() { return stableShimPath('codex'); }
+
 function cfgDir() { return path.join(home(), '.config', 'codex'); }
 function keyFilePath() { return path.join(cfgDir(), KEY_FILENAME); }
 
@@ -111,7 +111,7 @@ async function patchMcpEntry(config, opts) {
 }
 
 function buildHookCommand(scriptName) {
-  return `${shellQuote(stableHookPath())} ${scriptName}`;
+  return shimCommand('codex', scriptName);
 }
 
 function midbrainHook(scriptName) {

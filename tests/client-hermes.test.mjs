@@ -1,3 +1,4 @@
+import { expectedHookCommand } from "./helpers/hook-command.mjs";
 /**
  * Unit tests for shared/clients/hermes.mjs
  *
@@ -59,7 +60,7 @@ const { buildShimBody } = await import("../shared/clients/shim.mjs");
 const YAML = await import("yaml");
 
 const IS_WIN = process.platform === "win32";
-const HERMES_SHIM_FILE = IS_WIN ? "hermes-hook.cmd" : "hermes-hook";
+const HERMES_SHIM_FILE = IS_WIN ? "hermes-hook.cjs" : "hermes-hook";
 const ORIGINAL_HERMES_HOME = process.env.HERMES_HOME;
 const ORIGINAL_LOCALAPPDATA = process.env.LOCALAPPDATA;
 let testEnv;
@@ -102,7 +103,7 @@ function lastConfigRaw() {
   return calls.length ? calls[calls.length - 1][1] : "";
 }
 
-const HERMES_HOOK_RE = IS_WIN ? /hermes-hook\.cmd' user$/ : /hermes-hook' user$/;
+const HERMES_HOOK_RE = IS_WIN ? /hermes-hook\.cjs" user$/ : /hermes-hook' user$/;
 const TERMINAL_CWD = "${TERMINAL_CWD}";
 const RESTART_WARNING =
   "If a Hermes gateway is already running, restart that gateway before memory capture takes effect.";
@@ -264,12 +265,12 @@ describe("Hermes.installGlobal", () => {
     await hermes.installGlobal();
     const cfg = lastConfigWrite();
     expect(cfg.hooks.pre_llm_call).toEqual([
-      { command: expect.stringContaining(`${HERMES_SHIM_FILE}' user`), timeout: 30 },
+      { command: expect.stringContaining(`${HERMES_SHIM_FILE}${IS_WIN ? '"' : "'"} user`), timeout: 30 },
     ]);
     expect(cfg.hooks.post_llm_call).toEqual([
-      { command: expect.stringContaining(`${HERMES_SHIM_FILE}' assistant`), timeout: 30 },
+      { command: expect.stringContaining(`${HERMES_SHIM_FILE}${IS_WIN ? '"' : "'"} assistant`), timeout: 30 },
     ]);
-    expect(cfg.hooks.pre_llm_call[0].command).not.toContain(`${HERMES_SHIM_FILE}' hermes`);
+    expect(cfg.hooks.pre_llm_call[0].command).not.toContain(`${HERMES_SHIM_FILE}${IS_WIN ? '"' : "'"} hermes`);
   });
 
   it("installs the stable hook shim executable", async () => {
@@ -290,12 +291,12 @@ describe("Hermes.installGlobal", () => {
     // The dev shim body is platform-specific (POSIX quoting vs win32 .cmd), so
     // assert byte-equality against the source builder rather than reconstruct.
     expect(shimWrite[1]).toBe(buildShimBody("hermes", { isDev: true }));
-    expect(shimWrite[1]).toContain(process.execPath);
+    expect(shimWrite[1]).toContain(IS_WIN ? JSON.stringify(process.execPath) : process.execPath);
     expect(shimWrite[1]).toContain("index.js");
-    expect(shimWrite[1]).toContain("hook hermes");
+    expect(shimWrite[1]).toContain(IS_WIN ? '"hook", "hermes", role' : "hook hermes");
     expect(shimWrite[1]).not.toContain("midbrain-memory-mcp@latest");
     expect(cfg.mcp_servers["midbrain-memory"].command).toBe(process.execPath);
-    expect(shimWrite[1]).toContain(cfg.mcp_servers["midbrain-memory"].args[0]);
+    expect(shimWrite[1]).toContain(IS_WIN ? JSON.stringify(cfg.mcp_servers["midbrain-memory"].args[0]) : cfg.mcp_servers["midbrain-memory"].args[0]);
   });
 
   it("normalizes zero-byte and explicit-null YAML to a mapping", async () => {
@@ -537,14 +538,14 @@ describe("Hermes.isFresh / repairHooks", () => {
     const savedHermesHome = process.env.HERMES_HOME;
     try {
       process.env.HERMES_HOME = path.join(HOME, "hermes-win-fixture");
-      const shim = path.join(HOME, ".midbrain", "bin", "hermes-hook.cmd");
+      const shim = path.join(HOME, ".midbrain", "bin", "hermes-hook.cjs");
       // Serialize with the real YAML writer so backslashes in the Windows shim
       // path are escaped exactly as the adapter writes them (a hand-written
       // double-quoted scalar would mis-escape \U, \b, etc. and not round-trip).
       const cfg = YAML.stringify({
         hooks: {
-          pre_llm_call: [{ command: `'${shim}' user`, timeout: 30 }],
-          post_llm_call: [{ command: `'${shim}' assistant`, timeout: 30 }],
+          pre_llm_call: [{ command: expectedHookCommand(shim, "user"), timeout: 30 }],
+          post_llm_call: [{ command: expectedHookCommand(shim, "assistant"), timeout: 30 }],
         },
       });
       readFileReturns({ [path.join(process.env.HERMES_HOME, "config.yaml")]: cfg });

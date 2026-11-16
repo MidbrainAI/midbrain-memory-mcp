@@ -324,11 +324,25 @@ See [Configuration Reference](#configuration-reference) below for the
 full config format. Create the key file, add a project-level MCP config
 with `MIDBRAIN_PROJECT_DIR`, and restart.
 
+On Windows, Claude Code, Codex, Cursor, and Hermes capture hooks use stable
+Node launchers under `~/.midbrain/bin/*-hook.cjs`. Installation and automatic
+repair migrate owned legacy hook commands; clients may request approval of
+the changed commands. Existing Windows development hooks require an explicit
+`npx midbrain-memory-mcp@latest install --dev` to preserve checkout intent.
+POSIX launchers are unchanged.
+
 ### Import Earlier Conversations
 
-Live capture starts when MidBrain is installed. To bring in conversations from
-before that, import them from the clients' local history (opt-in, preview
-first):
+Live capture starts when MidBrain is installed. Interactive installation now
+offers to import earlier conversations for each detected, supported client.
+Accepting the offer shows a preview and credit estimate, then asks for confirmation
+before uploading. Declining leaves history untouched; non-interactive installs
+never prompt or import history.
+
+Use Node 24 LTS for history import on Windows. Older Node releases can reject
+regular transcript files because of inconsistent file identity information.
+
+You can also import later with the standalone command (opt-in, preview first):
 
 ```sh
 npx midbrain-memory-mcp@latest import                       # preview only

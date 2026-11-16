@@ -1,3 +1,4 @@
+import { expectedHookCommand } from "./helpers/hook-command.mjs";
 /**
  * Unit tests for shared/clients/codex.mjs
  *
@@ -70,7 +71,7 @@ beforeAll(async () => {
     codexDir: path.join(testEnv.home, ".codex"),
     codexConfig: path.join(testEnv.home, ".codex", "config.toml"),
     codexHooks: path.join(testEnv.home, ".codex", "hooks.json"),
-    codexShim: path.join(testEnv.home, ".midbrain", "bin", "codex-hook"),
+    codexShim: path.join(testEnv.home, ".midbrain", "bin", process.platform === "win32" ? "codex-hook.cjs" : "codex-hook"),
     codexKey: path.join(testEnv.home, ".config", "codex", ".midbrain-key"),
   };
 });
@@ -226,12 +227,12 @@ describe("Codex.installGlobal", () => {
     await codex.installGlobal();
 
     const hooks = writtenHooks().hooks;
-    expect(hooks.SessionStart[0].hooks[0].command).toBe(`'${PATHS.codexShim}' session`);
+    expect(hooks.SessionStart[0].hooks[0].command).toBe(expectedHookCommand(PATHS.codexShim, "session"));
     for (const event of ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"]) {
       expect(hooks[event]).toHaveLength(1);
       const hook = hooks[event][0].hooks[0];
       expect(hook.type).toBe("command");
-      expect(hook.command).toContain(PATHS.codexShim);
+      expect(hook.command).toContain(IS_WIN ? PATHS.codexShim.replace(/\\/g, "/") : PATHS.codexShim);
       expect(hook.command).not.toContain(process.execPath);
       expect(hook.command).not.toContain("node_modules");
       expect(hook.command).not.toContain("_npx");
@@ -240,9 +241,9 @@ describe("Codex.installGlobal", () => {
       expect(hook).not.toHaveProperty("async");
     }
     expect(hookCommands()).toEqual({
-      user: `'${PATHS.codexShim}' user`,
-      tool: `'${PATHS.codexShim}' tool`,
-      assistant: `'${PATHS.codexShim}' assistant`,
+      user: expectedHookCommand(PATHS.codexShim, "user"),
+      tool: expectedHookCommand(PATHS.codexShim, "tool"),
+      assistant: expectedHookCommand(PATHS.codexShim, "assistant"),
     });
   });
 
@@ -252,8 +253,8 @@ describe("Codex.installGlobal", () => {
     const shimWrite = fs.writeFile.mock.calls.find(([p]) => p === PATHS.codexShim);
     expect(fs.mkdir).toHaveBeenCalledWith(path.dirname(PATHS.codexShim), { recursive: true });
     expect(shimWrite).toBeDefined();
-    expect(shimWrite[1]).toContain("npx -y midbrain-memory-mcp@latest hook codex");
-    expect(shimWrite[1]).toContain('"$@"');
+    expect(shimWrite[1]).toContain(`${IS_WIN ? "npx.cmd" : "npx"} -y midbrain-memory-mcp@latest hook codex`);
+    expect(shimWrite[1]).toContain(IS_WIN ? "process.argv[2]" : '"$@"');
     expect(shimWrite[1]).not.toContain("MIDBRAIN_API_KEY");
     expect(shimWrite[1]).not.toContain(".midbrain-key");
     // chmod applies exec bits on POSIX only; win32 skips it.
@@ -265,7 +266,7 @@ describe("Codex.installGlobal", () => {
 
     for (const command of Object.values(hookCommands())) {
       expect(command).not.toContain(process.execPath);
-      expect(command).toContain(PATHS.codexShim);
+      expect(command).toContain(IS_WIN ? PATHS.codexShim.replace(/\\/g, "/") : PATHS.codexShim);
     }
   });
 
@@ -364,7 +365,7 @@ describe("Codex.installGlobal", () => {
           UserPromptSubmit: [
             { hooks: [{ type: "command", command: "/bin/echo foreign" }] },
             { hooks: [{ type: "command", command: "node /old/plugins/codex/capture-user.mjs" }] },
-            { hooks: [{ type: "command", command: `'${PATHS.codexShim}' user` }] },
+            { hooks: [{ type: "command", command: expectedHookCommand(PATHS.codexShim, "user") }] },
             { hooks: [{ type: "command", command: "~/.midbrain/bin/codex-hook user" }] },
             { hooks: [{ type: "command", command: "$HOME/.midbrain/bin/codex-hook user" }] },
             { hooks: [{ type: "command", command: "npx -y midbrain-memory-mcp@latest 'hook' 'codex' user" }] },
@@ -379,7 +380,7 @@ describe("Codex.installGlobal", () => {
     const commands = groups.flatMap((g) => g.hooks.map((h) => h.command));
     expect(commands).toContain("/bin/echo foreign");
     expect(commands.filter((cmd) => cmd.includes("capture-user.mjs"))).toHaveLength(0);
-    expect(commands.filter((cmd) => cmd.includes(PATHS.codexShim))).toHaveLength(1);
+    expect(commands.filter((cmd) => cmd.includes(IS_WIN ? PATHS.codexShim.replace(/\\/g, "/") : PATHS.codexShim))).toHaveLength(1);
     expect(commands.filter((cmd) => cmd.includes("codex-hook"))).toHaveLength(1);
     expect(commands.filter((cmd) => cmd.includes("hook codex"))).toHaveLength(0);
   });
@@ -399,9 +400,9 @@ describe("Codex.installGlobal", () => {
     await codex.installGlobal();
 
     expect(hookCommands()).toEqual({
-      user: `'${PATHS.codexShim}' user`,
-      tool: `'${PATHS.codexShim}' tool`,
-      assistant: `'${PATHS.codexShim}' assistant`,
+      user: expectedHookCommand(PATHS.codexShim, "user"),
+      tool: expectedHookCommand(PATHS.codexShim, "tool"),
+      assistant: expectedHookCommand(PATHS.codexShim, "assistant"),
     });
   });
 
@@ -469,10 +470,10 @@ describe("Codex hook freshness and repair", () => {
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
-          SessionStart: [{ hooks: [{ command: `'${PATHS.codexShim}' session` }] }],
-          UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
-          PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
-          Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
+          SessionStart: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "session") }] }],
+          UserPromptSubmit: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "user") }] }],
+          PostToolUse: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "tool") }] }],
+          Stop: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "assistant") }] }],
         },
       }),
       // AC-11: freshness reads the shim body + mode, not mere existence
@@ -488,9 +489,9 @@ describe("Codex hook freshness and repair", () => {
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
-          UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
-          PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
-          Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
+          UserPromptSubmit: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "user") }] }],
+          PostToolUse: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "tool") }] }],
+          Stop: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "assistant") }] }],
         },
       }),
       [PATHS.codexShim]: buildShimBody("codex"),
@@ -505,10 +506,10 @@ describe("Codex hook freshness and repair", () => {
     readFileReturns({
       [PATHS.codexHooks]: JSON.stringify({
         hooks: {
-          SessionStart: [{ hooks: [{ command: `'${PATHS.codexShim}' session` }] }],
-          UserPromptSubmit: [{ hooks: [{ command: `'${PATHS.codexShim}' user` }] }],
-          PostToolUse: [{ hooks: [{ command: `'${PATHS.codexShim}' tool` }] }],
-          Stop: [{ hooks: [{ command: `'${PATHS.codexShim}' assistant` }] }],
+          SessionStart: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "session") }] }],
+          UserPromptSubmit: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "user") }] }],
+          PostToolUse: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "tool") }] }],
+          Stop: [{ hooks: [{ command: expectedHookCommand(PATHS.codexShim, "assistant") }] }],
         },
       }),
       [PATHS.codexShim]: `#!/bin/sh\n'/private/tmp/gone/index.js' hook codex "$@"\n`,
@@ -533,9 +534,9 @@ describe("Codex hook freshness and repair", () => {
     const lines = await codex.repairHooks();
 
     const hooks = readHooksAsWritten().hooks;
-    expect(hooks.UserPromptSubmit[0].hooks[0].command).toBe(`'${PATHS.codexShim}' user`);
-    expect(hooks.PostToolUse[0].hooks[0].command).toBe(`'${PATHS.codexShim}' tool`);
-    expect(hooks.Stop[0].hooks[0].command).toBe(`'${PATHS.codexShim}' assistant`);
+    expect(hooks.UserPromptSubmit[0].hooks[0].command).toBe(expectedHookCommand(PATHS.codexShim, "user"));
+    expect(hooks.PostToolUse[0].hooks[0].command).toBe(expectedHookCommand(PATHS.codexShim, "tool"));
+    expect(hooks.Stop[0].hooks[0].command).toBe(expectedHookCommand(PATHS.codexShim, "assistant"));
     if (!IS_WIN) expect(fs.chmod).toHaveBeenCalledWith(PATHS.codexShim, 0o755);
     expect(lines.join("\n")).toContain("stable Codex hook shim");
   });
@@ -547,7 +548,7 @@ describe("Codex hook freshness and repair", () => {
         UserPromptSubmit: [
           { hooks: [{ command: "/bin/echo foreign" }] },
           { hooks: [{ command: "node /old/plugins/codex/capture-user.mjs" }] },
-          { hooks: [{ command: `'${PATHS.codexShim}' user` }] },
+          { hooks: [{ command: expectedHookCommand(PATHS.codexShim, "user") }] },
           { hooks: [{ command: "~/.midbrain/bin/codex-hook user" }] },
           { hooks: [{ command: "npx -y midbrain-memory-mcp@latest 'hook' 'codex' user" }] },
         ],
@@ -573,11 +574,11 @@ describe("Codex hook freshness and repair", () => {
     const hooks = readHooksAsWritten().hooks;
     expect(hooks.UserPromptSubmit).toHaveLength(2);
     expect(hooks.UserPromptSubmit[0].hooks[0].command).toBe("/bin/echo foreign");
-    expect(hooks.UserPromptSubmit[1].hooks[0].command).toBe(`'${PATHS.codexShim}' user`);
+    expect(hooks.UserPromptSubmit[1].hooks[0].command).toBe(expectedHookCommand(PATHS.codexShim, "user"));
     expect(hooks.PostToolUse).toHaveLength(1);
-    expect(hooks.PostToolUse[0].hooks[0].command).toBe(`'${PATHS.codexShim}' tool`);
+    expect(hooks.PostToolUse[0].hooks[0].command).toBe(expectedHookCommand(PATHS.codexShim, "tool"));
     expect(hooks.Stop).toHaveLength(1);
-    expect(hooks.Stop[0].hooks[0].command).toBe(`'${PATHS.codexShim}' assistant`);
+    expect(hooks.Stop[0].hooks[0].command).toBe(expectedHookCommand(PATHS.codexShim, "assistant"));
   });
 });
 

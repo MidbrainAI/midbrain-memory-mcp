@@ -6,11 +6,10 @@
  * the install/repair write path. Replaces the duplicated writers that lived
  * in codex.mjs and hermes.mjs.
  *
- * Canonical bodies are byte-identical to the shims shipped at e0abf99
- * (pinned by tests/shim.test.mjs) so existing installs see no rewrite.
+ * POSIX bodies retain their existing format; Windows uses Node launchers.
  *
  * Dev-ness lives in the shim BODY, not in client config: hook entries always
- * point at the stable shim path, and a `# midbrain-dev` / `@rem midbrain-dev`
+ * point at the stable shim path, and a `# midbrain-dev` / `// midbrain-dev`
  * marker line identifies a checkout-pointing body. Repair preserves dev
  * bodies; explicit install always rewrites per its flags.
  */
@@ -22,7 +21,7 @@ import { PKG_NAME, REPO_ROOT, writeFileIfChanged } from './utils.mjs';
 import { shimBinDir, stateBaseDir } from '../state-dir.mjs';
 
 export const DEV_MARKER_POSIX = '# midbrain-dev';
-export const DEV_MARKER_WIN = '@rem midbrain-dev';
+export const DEV_MARKER_WIN = '// midbrain-dev';
 const WINDOWS_UNSUPPORTED_RE = /[&^()%!]/;
 
 /** POSIX single-quote escaping for generated sh commands. */
@@ -43,11 +42,10 @@ export function windowsPathGuard(filePath, label, platform = process.platform) {
 }
 
 /**
- * Filename for a client's stable shim. Codex ships a sh script on every
- * platform (unchanged from PRD-017); hermes/claude use .cmd on Windows.
+ * Filename for a client's stable shim: .cjs on Windows, sh elsewhere.
  */
 export function shimFilename(client, platform = process.platform) {
-  if (platform === 'win32' && client !== 'codex') return `${client}-hook.cmd`;
+  if (platform === 'win32') return `${client}-hook.cjs`;
   return `${client}-hook`;
 }
 
@@ -61,6 +59,15 @@ export function stableShimPath(client, platform = process.platform) {
   return path.join(shimBinDir(), shimFilename(client, platform));
 }
 
+/** Build a hook invocation for the host shell without POSIX quoting on Windows. */
+export function shimCommand(client, role, platform = process.platform) {
+  const target = stableShimPath(client, platform);
+  if (platform === 'win32') {
+    return `node "${target.replace(/\\/g, "/")}" ${role}`;
+  }
+  return `${shellQuote(target)} ${role}`;
+}
+
 /** Historical pre-relocation path retained for the first cached hook command. */
 export function historicalShimPath(client, platform = process.platform) {
   return path.join(os.homedir(), '.midbrain', 'bin', shimFilename(client, platform));
@@ -69,11 +76,11 @@ export function historicalShimPath(client, platform = process.platform) {
 function statefulDevBody(content, stateDir, platform) {
   if (!stateDir || typeof content !== 'string') return content;
   if (platform === 'win32') {
-    const line = `set "MIDBRAIN_STATE_DIR=${stateDir}"\r\n`;
-    const marker = `${DEV_MARKER_WIN}\r\n`;
+    const line = `process.env.MIDBRAIN_STATE_DIR = ${JSON.stringify(stateDir)};\n`;
+    const marker = `${DEV_MARKER_WIN}\n`;
     if (!content.includes(marker)) return content;
     const start = content.indexOf(marker) + marker.length;
-    const remainder = content.slice(start).replace(/^set "MIDBRAIN_STATE_DIR=[^\r\n]*"\r\n/, '');
+    const remainder = content.slice(start).replace(/^process\.env\.MIDBRAIN_STATE_DIR = .*;\r?\n/, '');
     return `${content.slice(0, start)}${line}${remainder}`;
   }
   const lines = `MIDBRAIN_STATE_DIR=${shellQuote(stateDir)}\nexport MIDBRAIN_STATE_DIR\n`;
@@ -87,7 +94,7 @@ function statefulDevBody(content, stateDir, platform) {
 /**
  * Build a shim body.
  *
- * @param {string} client - 'claude' | 'codex' | 'hermes'.
+ * @param {string} client - Registered capture client id.
  * @param {object} [opts]
  * @param {boolean} [opts.isDev] - Point at the local checkout instead of npx.
  * @param {string} [opts.platform] - Injectable platform (default process.platform).
@@ -108,18 +115,24 @@ export function buildShimBody(client, opts = {}) {
   // build win32 bodies even when the test host is POSIX.
   const indexPath = (platform === 'win32' ? path.win32 : path.posix).join(repoRoot, 'index.js');
 
-  if (platform === 'win32' && client !== 'codex') {
-    const marker = isDev ? `${DEV_MARKER_WIN}\r\n` : '';
-    if (stateDir) windowsPathGuard(stateDir, 'MIDBRAIN_STATE_DIR', platform);
-    const stateLine = client === 'claude' && stateDir
-      ? `set "MIDBRAIN_STATE_DIR=${stateDir}"\r\n`
-      : '';
-    const command = isDev
-      ? `"${execPath}" "${indexPath}" hook ${client} "%~1"`
-      : `call npx.cmd -y midbrain-memory-mcp@latest hook ${client} "%~1"`;
-    return `@echo off\r\n${marker}${stateLine}${command}\r\nexit /b 0\r\n`;
+  if (platform === 'win32') {
+    const marker = isDev ? `${DEV_MARKER_WIN}\n` : '';
+    const stateLine = stateDir ? `process.env.MIDBRAIN_STATE_DIR = ${JSON.stringify(stateDir)};\n` : '';
+    const executable = isDev ? JSON.stringify(execPath) : 'process.env.ComSpec || "cmd.exe"';
+    const args = isDev
+      ? `[${JSON.stringify(indexPath)}, "hook", ${JSON.stringify(client)}, role]`
+      : `["/d", "/s", "/c", "npx.cmd -y midbrain-memory-mcp@latest hook ${client} " + role]`;
+    return `// MidBrain Windows hook launcher\n${marker}${stateLine}const { spawnSync } = require("node:child_process");
+const role = process.argv[2];
+if (!["user", "assistant", "tool", "session", "session-end", "watch", "sync"].includes(role)) process.exit(0);
+const child = spawnSync(${executable}, ${args}, {
+  stdio: "inherit", windowsHide: true, windowsVerbatimArguments: ${!isDev},
+});
+if (child.error) console.error("MidBrain hook failed to start:", child.error.message);
+if (${JSON.stringify(client)} === "codex" && (child.error || child.status !== 0) && ["assistant", "tool"].includes(role)) process.stdout.write("{}");
+process.exit(0);
+`;
   }
-
   const marker = isDev ? `${DEV_MARKER_POSIX}\n` : '';
   const command = isDev
     ? `${shellQuote(execPath)} ${shellQuote(indexPath)}`
@@ -161,7 +174,7 @@ export function isDevShimContent(content) {
   if (typeof content !== 'string') return false;
   return content
     .split(/\r?\n/, 3)
-    .some((line) => line === DEV_MARKER_POSIX || line === DEV_MARKER_WIN);
+    .some((line) => line === DEV_MARKER_POSIX || line === DEV_MARKER_WIN || line === '@rem midbrain-dev');
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +210,7 @@ function escapeRe(value) {
 
 /**
  * True when a hook command references the client's stable shim
- * (~/.midbrain/bin/<client>-hook[.cmd]). The basename is anchored so
+ * (~/.midbrain/bin/<client>-hook[.cmd|.cjs]). The basename is anchored so
  * `<client>-hook-wrapper` (a user hook) never matches. Absolute, `~`, and
  * `$HOME` forms all normalize to a `.midbrain/bin/<client>-hook` substring,
  * so the private-dir path alone is a sufficient, safe ownership signal.
@@ -205,9 +218,9 @@ function escapeRe(value) {
 export function commandReferencesShim(command, client) {
   if (typeof command !== 'string') return false;
   const normalized = normalizeCommand(command);
-  // `.midbrain/bin/<client>-hook` optionally followed by `.cmd`, then a path
+  // `.midbrain/bin/<client>-hook` optionally followed by `.cmd` or `.cjs`, then a path
   // boundary (end, whitespace, or closing quote) — never a trailing `-wrapper`.
-  const re = new RegExp(`\\.midbrain/bin/${escapeRe(client)}-hook(?:\\.cmd)?(?=$|['"\\s])`);
+  const re = new RegExp(`\\.midbrain/bin/${escapeRe(client)}-hook(?:\\.(?:cmd|cjs))?(?=$|['"\\s])`);
   return re.test(normalized);
 }
 
@@ -313,7 +326,7 @@ export function validateShimPaths(client, {
   stateDir = (client === 'claude' || client === 'codex') ? stateBaseDir() : null,
 } = {}) {
   windowsPathGuard(targetPath, `${client} hook shim path`, platform);
-  if (client === 'claude' && stateDir) windowsPathGuard(stateDir, 'MIDBRAIN_STATE_DIR', platform);
+  if ((client === 'claude' || client === 'codex') && stateDir) windowsPathGuard(stateDir, 'MIDBRAIN_STATE_DIR', platform);
   if (!isDev) return;
   windowsPathGuard(process.execPath, `${client} development Node path`, platform);
   windowsPathGuard(path.join(REPO_ROOT, 'index.js'), `${client} development index path`, platform);
@@ -342,12 +355,21 @@ export async function installShim(client, {
   validateShimPaths(client, { isDev, targetPath, stateDir });
   const shimPath = targetPath;
 
+  if (mode === 'repair' && process.platform === 'win32') {
+    const current = await fs.readFile(shimPath, 'utf8').catch(() => null);
+    const legacyPath = shimPath.replace(/\.cjs$/, client === 'codex' ? '' : '.cmd');
+    const legacy = current === null ? await fs.readFile(legacyPath, 'utf8').catch(() => null) : null;
+    if (isDevShimContent(legacy)) {
+      throw new Error('Legacy Windows development hook found; run npx midbrain-memory-mcp@latest install --dev to migrate it.');
+    }
+  }
+
   if (mode === 'repair') {
     try {
       const current = await fs.readFile(shimPath, 'utf8');
       if (isDevShimContent(current)) {
         const updated = (client === 'claude' || client === 'codex')
-          ? statefulDevBody(current, stateDir, client === 'codex' ? 'linux' : process.platform) : current;
+          ? statefulDevBody(current, stateDir, process.platform) : current;
         const written = updated !== current ? await writeFileIfChanged(shimPath, updated) : false;
         // Dev command/marker bytes are preserved, but the shim must still run.
         await restoreExecBit(shimPath);

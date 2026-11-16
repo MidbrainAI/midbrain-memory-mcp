@@ -11,7 +11,7 @@ import path from "path";
 import { makeTestEnv, diffSnapshots } from "./helpers/test-env.mjs";
 import { runSelfRepair, checkForUpdate } from "../install.mjs";
 import { REPO_ROOT } from "../shared/clients/utils.mjs";
-import { buildShimBody, installShim, stableShimPath, shellQuote } from "../shared/clients/shim.mjs";
+import { buildShimBody, installShim, shimCommand } from "../shared/clients/shim.mjs";
 
 const IS_WIN = process.platform === "win32";
 
@@ -59,7 +59,7 @@ function canonicalClaudeSettings() {
   // Derive the exact command from the source of truth (platform-correct shim
   // filename + shellQuote) rather than reconstructing it, so the expected
   // value matches what claude.mjs actually writes on any OS.
-  const cmd = (role) => `${shellQuote(stableShimPath("claude"))} ${role}`;
+  const cmd = (role) => shimCommand("claude", role);
   return {
     hooks: {
       UserPromptSubmit: [
@@ -656,7 +656,7 @@ describe("B20 / AC-15 — cross-client convergence in one startup", () => {
     const codexAfter = JSON.parse(await fs.readFile(env.paths.codexHooks, "utf8"));
     for (const [event, role] of [["UserPromptSubmit", "user"], ["PostToolUse", "tool"], ["Stop", "assistant"]]) {
       const commands = codexAfter.hooks[event].flatMap((g) => g.hooks.map((h) => h.command));
-      expect(commands.filter((c) => c === `'${env.paths.codexShim}' ${role}`)).toHaveLength(1);
+      expect(commands.filter((c) => c === shimCommand("codex", role))).toHaveLength(1);
     }
     const hermesAfter = await fs.readFile(env.paths.hermesConfig, "utf8");
     // Parse the YAML and assert on the decoded command values: a raw substring
@@ -668,8 +668,8 @@ describe("B20 / AC-15 — cross-client convergence in one startup", () => {
       ...(hermesDoc.hooks?.pre_llm_call ?? []),
       ...(hermesDoc.hooks?.post_llm_call ?? []),
     ].map((h) => h.command);
-    expect(hermesCmds).toContain(`'${env.paths.hermesShim}' user`);
-    expect(hermesCmds).toContain(`'${env.paths.hermesShim}' assistant`);
+    expect(hermesCmds).toContain(shimCommand("hermes", "user"));
+    expect(hermesCmds).toContain(shimCommand("hermes", "assistant"));
     expect(await fs.readFile(path.join(env.paths.opencodePlugins, ".midbrain-repo-root"), "utf8"))
       .not.toContain(":/");
     expect(await fs.readFile(path.join(env.paths.opencodePlugins, "midbrain-shared.mjs"), "utf8"))

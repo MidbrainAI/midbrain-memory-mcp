@@ -56,38 +56,32 @@ npx -y midbrain-memory-mcp@latest hook hermes "$@"
 exit 0
 `;
 
-const HERMES_WIN_E0ABF99 =
-  `@echo off\r\ncall npx.cmd -y midbrain-memory-mcp@latest hook hermes "%~1"\r\nexit /b 0\r\n`;
 
 describe("buildShimBody — cursor", () => {
   it("uses the generic fail-open body (exit 0, no stdout on failure)", () => {
     expect(buildShimBody("cursor", { platform: "darwin" })).toBe(
       HERMES_POSIX_E0ABF99.replace("hook hermes", "hook cursor"),
     );
-    expect(buildShimBody("cursor", { platform: "win32" })).toBe(
-      HERMES_WIN_E0ABF99.replace("hook hermes", "hook cursor"),
-    );
+    expect(buildShimBody("cursor", { platform: "win32" })).toContain("npx.cmd -y midbrain-memory-mcp@latest hook cursor");
   });
 });
 
 describe("buildShimBody — canonical byte parity with e0abf99", () => {
   it("codex canonical body is byte-identical to the shipped shim", () => {
     expect(buildShimBody("codex", { platform: "darwin" })).toBe(CODEX_BODY_E0ABF99);
-    expect(buildShimBody("codex", { platform: "win32" })).toBe(CODEX_BODY_E0ABF99);
+    expect(buildShimBody("codex", { platform: "win32" })).toContain("npx.cmd -y midbrain-memory-mcp@latest hook codex");
   });
 
   it("hermes canonical bodies are byte-identical to the shipped shims", () => {
     expect(buildShimBody("hermes", { platform: "darwin" })).toBe(HERMES_POSIX_E0ABF99);
-    expect(buildShimBody("hermes", { platform: "win32" })).toBe(HERMES_WIN_E0ABF99);
+    expect(buildShimBody("hermes", { platform: "win32" })).toContain("npx.cmd -y midbrain-memory-mcp@latest hook hermes");
   });
 
   it("claude canonical bodies mirror the hermes template", () => {
     expect(buildShimBody("claude", { platform: "linux" })).toBe(
       `#!/bin/sh\nset +e\nnpx -y midbrain-memory-mcp@latest hook claude "$@"\nexit 0\n`
     );
-    expect(buildShimBody("claude", { platform: "win32" })).toBe(
-      `@echo off\r\ncall npx.cmd -y midbrain-memory-mcp@latest hook claude "%~1"\r\nexit /b 0\r\n`
-    );
+    expect(buildShimBody("claude", { platform: "win32" })).toContain("npx.cmd -y midbrain-memory-mcp@latest hook claude");
   });
 });
 
@@ -121,14 +115,14 @@ describe("buildShimBody — NanoClaw state propagation", () => {
     try {
       process.env.MIDBRAIN_STATE_DIR = path.join(env.home, ".codex/.midbrain");
       await installShim("codex", { isDev: true });
-      expect(await fs.readFile(stableShimPath("codex"), "utf8")).toContain("export MIDBRAIN_STATE_DIR");
+      expect(await fs.readFile(stableShimPath("codex"), "utf8")).toContain(IS_WIN ? "process.env.MIDBRAIN_STATE_DIR =" : "export MIDBRAIN_STATE_DIR");
     } finally { await env.restore(); }
   });
 
   it("sets the nonsecret state root in Windows Claude shims", () => {
     const body = buildShimBody("claude", { platform: "win32", stateDir: "C:\\Users\\node\\.claude\\.midbrain" });
-    expect(body).toContain('set "MIDBRAIN_STATE_DIR=C:\\Users\\node\\.claude\\.midbrain"');
-    expect(body).toContain('hook claude "%~1"');
+    expect(body).toContain(`process.env.MIDBRAIN_STATE_DIR = ${JSON.stringify("C:\\Users\\node\\.claude\\.midbrain")};`);
+    expect(body).toContain("npx.cmd -y midbrain-memory-mcp@latest hook claude");
   });
 });
 
@@ -158,8 +152,9 @@ describe("buildShimBody — dev variants (S3)", () => {
     const body = buildShimBody("claude", {
       isDev: true, platform: "win32", execPath: "C:\\node\\node.exe", repoRoot: "C:\\checkout",
     });
-    expect(body.split("\r\n")[1]).toBe("@rem midbrain-dev");
-    expect(body).toContain(`"C:\\node\\node.exe" "C:\\checkout\\index.js" hook claude "%~1"`);
+    expect(body.split("\n")[1]).toBe("// midbrain-dev");
+    expect(body).toContain(JSON.stringify("C:\\node\\node.exe"));
+    expect(body).toContain(JSON.stringify("C:\\checkout\\index.js"));
     expect(isDevShimContent(body)).toBe(true);
   });
 

@@ -17,7 +17,7 @@ import {
   migrateReservedHostEnv, pinnedHostEnvLine,
 } from './utils.mjs';
 import {
-  shellQuote, stableShimPath, installShim, shimStatus, commandReferencesShim,
+  shimCommand, installShim, shimStatus, commandReferencesShim,
   commandHasLegacyScriptPath, commandHasMidbrainInvocation,
 } from './shim.mjs';
 
@@ -81,7 +81,7 @@ const HOOK_EVENTS = {
 const LEGACY_HOOK_SCRIPTS = ['capture-user.mjs', 'capture-assistant.mjs'];
 
 function buildHookCommand(role) {
-  return `${shellQuote(stableShimPath('claude'))} ${role}`;
+  return shimCommand('claude', role);
 }
 
 function midbrainHookEntry(role) {
