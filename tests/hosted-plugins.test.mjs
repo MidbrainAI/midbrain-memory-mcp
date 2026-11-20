@@ -45,6 +45,30 @@ describe("hosted plugins", () => {
     }
   });
 
+  it("capture each Codex turn through the bundled connector", () => {
+    const { hooks } = json("chatgpt/hooks/hooks.json");
+    const save = (event) => hooks[event][0].hooks[0];
+    // Codex names a plugin's MCP server by its plain .mcp.json key, with no plugin prefix.
+    for (const [event, role, text] of [["UserPromptSubmit", "user", "${prompt}"], ["Stop", "assistant", "${last_assistant_message}"]]) {
+      expect(save(event)).toEqual({
+        type: "mcp_tool",
+        server: "midbrain",
+        tool: "save_memory",
+        input: { text, role, session_id: "${session_id}" },
+      });
+    }
+    expect(Object.keys(json("chatgpt/.mcp.json").mcpServers)).toEqual(["midbrain"]);
+    // One quoted echo: an unquoted ";" in the sentence would run its second half as a command.
+    expect(save("SessionStart").command).toMatch(/^echo '[^']+'$/);
+  });
+
+  it("list the Codex bundle in the repository's Codex marketplace", () => {
+    const marketplace = JSON.parse(readFileSync(path.join(ROOT, "..", ".agents", "plugins", "marketplace.json"), "utf8"));
+    expect(marketplace.plugins).toEqual([
+      { name: json("chatgpt/.codex-plugin/plugin.json").name, source: { source: "local", path: "./hosted-plugins/chatgpt" } },
+    ]);
+  });
+
   it("give ChatGPT every file and review field its manifest references", () => {
     const codex = json("chatgpt/.codex-plugin/plugin.json");
     expect(codex.skills).toBe("./skills");

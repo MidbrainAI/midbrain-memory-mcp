@@ -1,0 +1,6 @@
+{
+  "name": "midbrain",
+  "plugins": [
+    { "name": "midbrain-memory", "source": { "source": "local", "path": "./hosted-plugins/chatgpt" } }
+  ]
+}

@@ -17,7 +17,7 @@ the connector alone works without the plugin.
 | Folder | Assistant | Published through |
 |---|---|---|
 | `claude/` | Claude | Anthropic's directory, from this public repository |
-| `chatgpt/` | ChatGPT | OpenAI's plugin dashboard, as an uploaded archive of the folder |
+| `chatgpt/` | ChatGPT and Codex | OpenAI's plugin dashboard, as an uploaded archive of the folder without `hooks/`; Codex installs the whole folder from this repository |
 
 `claude/skills/memory-first/SKILL.md` and `chatgpt/skills/memory-first/SKILL.md`
 must stay identical; `tests/hosted-plugins.test.mjs` enforces it.
@@ -32,6 +32,16 @@ must stay identical; `tests/hosted-plugins.test.mjs` enforces it.
 - ChatGPT: add the URL above under chatgpt.com/plugins > + > Add custom MCP
   server (paid plans). An uploaded archive that declares the server is listed as
   "Desktop only" and does not reach ChatGPT chat.
+- Codex: `codex plugin marketplace add https://github.com/MidbrainAI/midbrain-memory-mcp.git`,
+  then `codex plugin add midbrain-memory@midbrain` and
+  `codex mcp login midbrain`.
+  The repository's `.agents/plugins/marketplace.json` lists the `chatgpt/`
+  folder. Its hooks (`chatgpt/hooks/hooks.json`) save every Codex turn: they
+  are `mcp_tool` hooks that call the connector's `save_memory` with the turn's
+  role and session ID, over the connection the user signed in with, so nothing
+  else is installed and no API key is needed. Codex asks the user to trust them
+  once (`/hooks`, or Review hooks in the app). Someone who also uses the npm
+  package's Codex hooks keeps only one of the two, or each turn is saved twice.
 
 For reliable saving and recall, users also paste this into ChatGPT's custom
 instructions or Claude's profile preferences:
@@ -46,8 +56,10 @@ instructions or Claude's profile preferences:
 - Claude: submit the endpoint as an MCP connector and this folder as a plugin
   bundle at claude.ai/directory/manage, from the same organization, then pair
   the two listings.
-- ChatGPT: an organization owner uploads a zip of `chatgpt/` in the plugin
-  dashboard and connects the MCP server there (OAuth). The dashboard then shows
+- ChatGPT: an organization owner uploads a zip of `chatgpt/` without its
+  `hooks/` folder (OpenAI does not accept lifecycle hooks in a directory
+  submission, and asks for hooked plugins to be installed manually in Codex,
+  as above) in the plugin dashboard and connects the MCP server there (OAuth). The dashboard then shows
   a domain-verification token, served as plain text at
   `/.well-known/openai-apps-challenge` on the MCP host or a parent domain, so
   `https://midbrain.ai/.well-known/openai-apps-challenge` on the website works
