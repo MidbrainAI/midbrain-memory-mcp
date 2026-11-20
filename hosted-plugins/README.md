@@ -18,8 +18,9 @@ The Claude bundle also has hooks (`claude/hooks/hooks.json`) that save every
 Claude Code and Cowork turn. They are `mcp_tool` hooks: they call the bundled
 connector's `save_memory` with the turn's role and session ID, over the
 connection the user already signed in with, so nothing is installed and no API
-key is needed. Chat ignores hooks. The ChatGPT bundle has none, because OpenAI
-does not accept plugins with hooks.
+key is needed. Chat ignores hooks. Each prompt waits for its save, for at most
+the hooks' 30-second timeout (Claude Code's default for a prompt hook); a save
+that fails or times out is skipped, not retried.
 
 | Folder | Assistant | Published through |
 |---|---|---|

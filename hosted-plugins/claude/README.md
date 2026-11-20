@@ -24,9 +24,10 @@ MidBrain and approve the connection. It sends:
 - in Claude Code and Cowork, each prompt you send and each final reply, with
   the session ID, so the whole conversation is kept.
 
-Saved facts are stored in your MidBrain account. Claude never sends secrets on
-purpose: the skill and the tools tell it not to save passwords, keys, or card
-or ID numbers.
+Everything is stored in your MidBrain account. In Chat, the skill and the
+tools tell Claude not to save passwords, keys, or card or ID numbers. In Claude
+Code and Cowork, prompts and replies are saved as written: a key you paste into
+a prompt is saved with it.
 
 ## Set up
 
