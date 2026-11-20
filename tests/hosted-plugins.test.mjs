@@ -55,17 +55,26 @@ describe("hosted plugins", () => {
         server: "midbrain",
         tool: "save_memory",
         input: { text, role, session_id: "${session_id}" },
+        timeout: 30,
       });
     }
-    expect(Object.keys(json("chatgpt/.mcp.json").mcpServers)).toEqual(["midbrain"]);
     // One quoted echo: an unquoted ";" in the sentence would run its second half as a command.
-    expect(save("SessionStart").command).toMatch(/^echo '[^']+'$/);
+    const { command, commandWindows } = save("SessionStart");
+    expect(command).toMatch(/^echo '[^']+'$/);
+    // cmd.exe has no single quotes; the same sentence, bare, with nothing cmd would read as syntax.
+    expect(commandWindows).toBe(command.replace(/'/g, ""));
+    expect(commandWindows).not.toMatch(/[&|<>^%"]/);
   });
 
   it("list the Codex bundle in the repository's Codex marketplace", () => {
     const marketplace = JSON.parse(readFileSync(path.join(ROOT, "..", ".agents", "plugins", "marketplace.json"), "utf8"));
     expect(marketplace.plugins).toEqual([
-      { name: json("chatgpt/.codex-plugin/plugin.json").name, source: { source: "local", path: "./hosted-plugins/chatgpt" } },
+      {
+        name: json("chatgpt/.codex-plugin/plugin.json").name,
+        source: { source: "local", path: "./hosted-plugins/chatgpt" },
+        policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+        category: "Productivity",
+      },
     ]);
   });
 

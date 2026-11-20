@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'MidBrain saves every turn of this session automatically. Do not call save_memory for what is said here, but still search MidBrain before answering about the user.'"
+            "command": "echo 'MidBrain saves every turn of this session automatically. Do not call save_memory for what is said here, but still search MidBrain before answering about the user.'",
+            "commandWindows": "echo MidBrain saves every turn of this session automatically. Do not call save_memory for what is said here, but still search MidBrain before answering about the user."
           }
         ]
       }
@@ -17,7 +18,8 @@
             "type": "mcp_tool",
             "server": "midbrain",
             "tool": "save_memory",
-            "input": { "text": "${prompt}", "role": "user", "session_id": "${session_id}" }
+            "input": { "text": "${prompt}", "role": "user", "session_id": "${session_id}" },
+            "timeout": 30
           }
         ]
       }
@@ -29,7 +31,8 @@
             "type": "mcp_tool",
             "server": "midbrain",
             "tool": "save_memory",
-            "input": { "text": "${last_assistant_message}", "role": "assistant", "session_id": "${session_id}" }
+            "input": { "text": "${last_assistant_message}", "role": "assistant", "session_id": "${session_id}" },
+            "timeout": 30
           }
         ]
       }

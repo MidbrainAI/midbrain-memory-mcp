@@ -56,6 +56,7 @@ skills/
 dist/
   midbrain-shared.mjs            Built OpenCode plugin bundle
 hosted-plugins/                  Claude and ChatGPT bundles for the hosted MCP endpoint (not in the npm package)
+.agents/plugins/marketplace.json Codex marketplace listing hosted-plugins/chatgpt
 tests/                           Vitest suite
 ```
 
@@ -317,6 +318,11 @@ Codex:
 - `Stop` and `PostToolUse` wrappers must write `{}` to stdout on success.
 - Assistant capture stores a clean answer separately from bounded reasoning and
   tool summaries.
+- The hosted bundle (`hosted-plugins/chatgpt/hooks/hooks.json`, installed from
+  `.agents/plugins/marketplace.json`) captures prompts and final replies with
+  `mcp_tool` hooks that call the connector's `save_memory` (`role`,
+  `session_id`). No `client`, `cwd`, reasoning or tool summaries, no cache and
+  no retry.
 
 Cursor:
 

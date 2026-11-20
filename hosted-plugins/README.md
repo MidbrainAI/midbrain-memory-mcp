@@ -40,8 +40,11 @@ must stay identical; `tests/hosted-plugins.test.mjs` enforces it.
   are `mcp_tool` hooks that call the connector's `save_memory` with the turn's
   role and session ID, over the connection the user signed in with, so nothing
   else is installed and no API key is needed. Codex asks the user to trust them
-  once (`/hooks`, or Review hooks in the app). Someone who also uses the npm
-  package's Codex hooks keeps only one of the two, or each turn is saved twice.
+  once (`/hooks`, or Review hooks in the app). Each prompt waits for its save,
+  for at most the hooks' 30-second timeout; a failed save is skipped, not
+  retried. Prompts and replies are saved as written. Someone who also uses the
+  npm package's Codex hooks keeps only one of the two, or each turn is saved
+  twice.
 
 For reliable saving and recall, users also paste this into ChatGPT's custom
 instructions or Claude's profile preferences:
@@ -56,10 +59,11 @@ instructions or Claude's profile preferences:
 - Claude: submit the endpoint as an MCP connector and this folder as a plugin
   bundle at claude.ai/directory/manage, from the same organization, then pair
   the two listings.
-- ChatGPT: an organization owner uploads a zip of `chatgpt/` without its
-  `hooks/` folder (OpenAI does not accept lifecycle hooks in a directory
-  submission, and asks for hooked plugins to be installed manually in Codex,
-  as above) in the plugin dashboard and connects the MCP server there (OAuth). The dashboard then shows
+- ChatGPT: OpenAI's directory does not accept lifecycle hooks, so the
+  archive leaves `hooks/` out. From `hosted-plugins/chatgpt/`:
+  `zip -r ../midbrain-chatgpt.zip . -x 'hooks/*'`. An organization owner
+  uploads it in the plugin dashboard and connects the MCP server there (OAuth).
+  The dashboard then shows
   a domain-verification token, served as plain text at
   `/.well-known/openai-apps-challenge` on the MCP host or a parent domain, so
   `https://midbrain.ai/.well-known/openai-apps-challenge` on the website works
