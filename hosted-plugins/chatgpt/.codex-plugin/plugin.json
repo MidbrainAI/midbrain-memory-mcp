@@ -1,0 +1,84 @@
+{
+  "name": "midbrain-memory",
+  "version": "0.1.0",
+  "description": "Use MidBrain as your memory: recall context and save the facts that matter, shared across your AI apps.",
+  "author": {
+    "name": "MidBrain",
+    "url": "https://www.midbrain.ai"
+  },
+  "homepage": "https://www.midbrain.ai",
+  "repository": "https://github.com/MidbrainAI/midbrain-memory-mcp.git",
+  "license": "MIT",
+  "keywords": ["memory"],
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "MidBrain Memory",
+    "shortDescription": "Your memory across AI apps",
+    "longDescription": "Use MidBrain as your memory: recall context and save the facts that matter, shared across your AI apps.",
+    "developerName": "MidBrain",
+    "category": "Productivity",
+    "capabilities": [],
+    "websiteURL": "https://www.midbrain.ai",
+    "supportURL": "https://memory.midbrain.ai/app/docs/",
+    "privacyPolicyURL": "https://www.midbrain.ai/privacy",
+    "termsOfServiceURL": "https://www.midbrain.ai/terms",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png",
+    "defaultPrompt": ["What do you remember about me?", "What did I save in MidBrain today?"]
+  },
+  "extensions": {
+    "com.openai": {
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Saves a durable fact the user mentions without being asked",
+              "prompt": "I play piano on weekends, mostly jazz.",
+              "tools_triggered": "save_memory",
+              "expected_behavior": "Calls save_memory once with one sentence about playing jazz piano on weekends and says it was saved to MidBrain."
+            },
+            {
+              "description": "Saves a fact the user explicitly asks to remember",
+              "prompt": "Remember that my favourite colour is teal.",
+              "tools_triggered": "save_memory",
+              "expected_behavior": "Calls save_memory once with the favourite colour and confirms the save."
+            },
+            {
+              "description": "Recalls a saved fact without MidBrain being named",
+              "prompt": "Which instrument do I play?",
+              "tools_triggered": "memory_search",
+              "expected_behavior": "Searches MidBrain and answers from the saved memory (piano, mostly jazz)."
+            },
+            {
+              "description": "Lists what was saved on a given day",
+              "prompt": "What did I save in MidBrain today?",
+              "tools_triggered": "get_episodic_memories_by_date",
+              "expected_behavior": "Retrieves today's memories and lists them."
+            },
+            {
+              "description": "Finds an exact name across memories",
+              "prompt": "Search my memory for anything mentioning Koziel.",
+              "tools_triggered": "grep",
+              "expected_behavior": "Runs an exact-text search and reports the matching memories, or says none were found."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Small talk is not saved",
+              "prompt": "Thanks, that's all."
+            },
+            {
+              "description": "A passing detail is not saved",
+              "prompt": "It's raining here today."
+            },
+            {
+              "description": "A general question needs no memory",
+              "prompt": "What is the capital of France?"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

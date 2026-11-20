@@ -1,0 +1,18 @@
+{
+  "name": "midbrain-memory",
+  "displayName": "MidBrain Memory",
+  "version": "0.1.0",
+  "description": "Use MidBrain as your memory: recall context and save the facts that matter, shared across your AI apps.",
+  "author": {
+    "name": "MidBrain",
+    "url": "https://www.midbrain.ai"
+  },
+  "homepage": "https://www.midbrain.ai",
+  "repository": "https://github.com/MidbrainAI/midbrain-memory-mcp.git",
+  "license": "MIT",
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://memory.midbrain.ai/app/docs/",
+  "supportUrl": "https://memory.midbrain.ai/app/docs/",
+  "privacyPolicyUrl": "https://www.midbrain.ai/privacy",
+  "termsOfServiceUrl": "https://www.midbrain.ai/terms"
+}

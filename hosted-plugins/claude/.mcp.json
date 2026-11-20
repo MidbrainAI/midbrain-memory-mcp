@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "midbrain": {
+      "type": "http",
+      "url": "https://memory.midbrain.ai/api/mcp"
+    }
+  }
+}
