@@ -55,6 +55,7 @@ skills/
   nanoclaw/                      /add-midbrain skill
 dist/
   midbrain-shared.mjs            Built OpenCode plugin bundle
+hosted-plugins/                  Claude and ChatGPT bundles for the hosted MCP endpoint (not in the npm package)
 tests/                           Vitest suite
 ```
 

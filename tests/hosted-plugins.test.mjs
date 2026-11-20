@@ -28,7 +28,7 @@ describe("hosted plugins", () => {
   it("keep names and versions in step across manifests", () => {
     const claude = json("claude/.claude-plugin/plugin.json");
     const codex = json("chatgpt/.codex-plugin/plugin.json");
-    expect(new Set([claude.name, codex.name])).toEqual(new Set(["midbrain-memory"]));
+    expect([claude.name, codex.name]).toEqual(["midbrain-memory", "midbrain-memory"]);
     expect(codex.version).toBe(claude.version);
     const skillVersion = read("claude/skills/memory-first/SKILL.md").match(/Bundle version: (\S+)\./)[1];
     expect(skillVersion).toBe(claude.version);
