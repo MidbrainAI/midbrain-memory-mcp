@@ -1,16 +1,6 @@
 {
-  "description": "Save each Claude Code and Cowork turn to MidBrain through the plugin's own connector.",
+  "description": "Save each Claude Code turn to MidBrain through the plugin's own connector.",
   "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'MidBrain saves every turn of this session automatically. Do not call save_memory for what is said here, but still search MidBrain before answering about the user.'"
-          }
-        ]
-      }
-    ],
     "UserPromptSubmit": [
       {
         "hooks": [

@@ -519,7 +519,7 @@ Prime Agent:
 
 Hosted plugins (`hosted-plugins/`):
 
-- The Claude bundle's `hooks/hooks.json` captures Claude Code and Cowork turns
+- The Claude bundle's `hooks/hooks.json` captures Claude Code turns
   with `mcp_tool` hooks that call the bundled connector's `save_memory`
   (`role`, `session_id`) over the user's own connection. They do not use
   `shared/capture-metadata.mjs`: no `client` (the API labels the memory from the

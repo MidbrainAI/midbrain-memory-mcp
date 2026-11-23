@@ -8,11 +8,9 @@ Claude recall what you told it before and save the facts that matter, in Chat
 
 - A remote MCP connector, `midbrain`, at `https://memory.midbrain.ai/api/mcp`.
 - The `memory-first` skill, which tells Claude when to search and when to save.
-- Hooks, used only in Claude Code and Cowork (Chat ignores them), that save
-  every turn through the connector.
-
-Its only local command prints one sentence at session start, telling Claude
-that the session is saved automatically.
+- Hooks, used only in Claude Code, that save every turn through the
+  connector. Chat ignores them and Cowork does not run them; there, Claude
+  saves the facts you share.
 
 ## What it sends and where
 
@@ -21,12 +19,12 @@ MidBrain and approve the connection. It sends:
 
 - search queries, when Claude looks something up in your memory;
 - one short sentence per fact, when Claude saves a fact you shared in Chat;
-- in Claude Code and Cowork, each prompt you send and each final reply, with
+- in Claude Code, each prompt you send and each final reply, with
   the session ID, so the whole conversation is kept.
 
 Everything is stored in your MidBrain account. In Chat, the skill and the
 tools tell Claude not to save passwords, keys, or card or ID numbers. In Claude
-Code and Cowork, prompts and replies are saved as written: a key you paste into
+Code, prompts and replies are saved as written: a key you paste into
 a prompt is saved with it.
 
 ## Set up

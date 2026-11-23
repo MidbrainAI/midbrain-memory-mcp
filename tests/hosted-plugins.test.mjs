@@ -46,8 +46,9 @@ describe("hosted plugins", () => {
         timeout: 30,
       });
     }
-    // One quoted echo: an unquoted ";" in the sentence ran its second half as a command.
-    expect(hooks.SessionStart[0].hooks[0].command).toMatch(/^echo '[^']+'$/);
+    // No hook tells Claude that turns are saved: Cowork loads the hooks but never runs
+    // the mcp_tool ones, and Claude would stop saving facts there.
+    expect(Object.keys(hooks)).toEqual(["UserPromptSubmit", "Stop"]);
   });
 
   it("give Claude's directory listing its README, icon and links", () => {

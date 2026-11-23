@@ -15,12 +15,15 @@ memory rules they carry (what to save, when to recall) live in the endpoint, so
 the connector alone works without the plugin.
 
 The Claude bundle also has hooks (`claude/hooks/hooks.json`) that save every
-Claude Code and Cowork turn. They are `mcp_tool` hooks: they call the bundled
-connector's `save_memory` with the turn's role and session ID, over the
-connection the user already signed in with, so nothing is installed and no API
-key is needed. Chat ignores hooks. Each prompt waits for its save, for at most
-the hooks' 30-second timeout (Claude Code's default for a prompt hook); a save
-that fails or times out is skipped, not retried.
+Claude Code turn. They are `mcp_tool` hooks: they call the bundled connector's
+`save_memory` with the turn's role and session ID, over the connection the user
+already signed in with, so nothing is installed and no API key is needed. Chat
+ignores hooks, and Cowork does not run `mcp_tool` hooks (tested 2026-11-23: its
+command hooks ran, its `mcp_tool` hooks sent nothing), so no hook tells Claude
+that turns are saved: Claude keeps saving facts itself everywhere. Each prompt
+waits for its save, for at most the hooks' 30-second timeout (Claude Code's
+default for a prompt hook); a save that fails or times out is skipped, not
+retried.
 
 | Folder | Assistant | Published through |
 |---|---|---|
