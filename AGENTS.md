@@ -519,9 +519,9 @@ Prime Agent:
 
 Hosted plugins (`hosted-plugins/`):
 
-- The Claude bundle's `hooks/hooks.json` captures Claude Code turns
-  with `mcp_tool` hooks that call the bundled connector's `save_memory`
-  (`role`, `session_id`) over the user's own connection. They do not use
+- The Claude bundle's `hooks/hooks.json` captures turns of Claude Code on the
+  user's computer with `mcp_tool` hooks that call the bundled connector's
+  `save_memory` (`role`, `session_id`) over the user's own connection. They do not use
   `shared/capture-metadata.mjs`: no `client` (the API labels the memory from the
   token's connection) and no `cwd`, so turns are not scoped to a project.
 - Nothing is cached or retried; a turn the server does not take is lost.
