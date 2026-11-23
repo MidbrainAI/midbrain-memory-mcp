@@ -34,6 +34,10 @@ a prompt is saved with it.
 1. Install the plugin.
 2. On the plugin's Connectors tab, connect `midbrain`, sign in to MidBrain and
    approve.
+3. In Claude Code, sign in once more: Claude Code uses its own connection.
+   Restart Claude Code (it loads a new or updated plugin only at start), run
+   `/mcp`, choose `plugin:midbrain-memory:midbrain` and authenticate. Until
+   then, Claude Code saves nothing and shows "Unauthorized" after each prompt.
 
 If you also installed MidBrain's npm package for Claude Code, keep only one of
 the two, or each turn is saved twice.
