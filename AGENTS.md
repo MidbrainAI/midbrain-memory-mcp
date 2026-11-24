@@ -525,6 +525,9 @@ Hosted plugins (`hosted-plugins/`):
   `shared/capture-metadata.mjs`: no `client` (the API labels the memory from the
   token's connection) and no `cwd`, so turns are not scoped to a project.
 - Nothing is cached or retried; a turn the server does not take is lost.
+- `UserPromptSubmit` also fires for input the user did not type (scheduled
+  tasks, background subagent results, other sessions' messages); the hooks
+  cannot tell, so those are saved with role `user`.
 
 ## History Import
 

@@ -28,6 +28,11 @@ tools tell Claude not to save passwords, keys, or card or ID numbers. In Claude
 Code, prompts and replies are saved as written: a key you paste into
 a prompt is saved with it.
 
+Claude Code also sends some messages you did not type through the same hook:
+a `/loop` or scheduled task firing, a background subagent reporting back, and a
+message from another session. They are saved as your prompts, because the hook
+is not told where a message came from.
+
 ## Set up
 
 1. Install the plugin.

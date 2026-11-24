@@ -24,7 +24,12 @@ without the plugin's MCP server, so their `mcp_tool` hooks send nothing (tested
 Claude that turns are saved: Claude keeps saving facts itself everywhere. Each prompt
 waits for its save, for at most the hooks' 30-second timeout (Claude Code's
 default for a prompt hook); a save that fails or times out is skipped, not
-retried.
+retried. `UserPromptSubmit` also fires for input the user did not type (a
+scheduled task or `/loop` iteration, a background subagent's result, a message
+from another session; https://code.claude.com/docs/en/hooks#userpromptsubmit).
+Its input has no field naming the source, and an `mcp_tool` hook on this event
+cannot be filtered (no matcher; `if` runs only on tool events), so those are
+saved with role `user`.
 
 | Folder | Assistant | Published through |
 |---|---|---|
