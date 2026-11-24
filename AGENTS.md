@@ -55,6 +55,7 @@ skills/
   nanoclaw/                      /add-midbrain skill
 dist/
   midbrain-shared.mjs            Built OpenCode plugin bundle
+hosted-plugins/                  Claude and ChatGPT bundles for the hosted MCP endpoint (not in the npm package)
 tests/                           Vitest suite
 ```
 
@@ -768,6 +769,7 @@ Vitest tests live in `tests/`.
 | `tests/history-import-hermes.test.mjs` | `shared/history-import/readers/hermes.mjs` |
 | `tests/history-import-opencode.test.mjs` | `shared/history-import/readers/opencode.mjs` |
 | `tests/history-import-openclaw.test.mjs` | `shared/history-import/readers/openclaw.mjs`, SQLite helpers in `readers/common.mjs` |
+| `tests/hosted-plugins.test.mjs` | `hosted-plugins/` bundles |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.
