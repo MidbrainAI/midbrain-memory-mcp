@@ -37,8 +37,9 @@ For reliable saving and recall, users also paste this into ChatGPT's custom
 instructions or Claude's profile preferences:
 
 > MidBrain is my memory. At the start of each conversation, and before
-> answering anything about me, search MidBrain. Whenever I share a fact about
-> myself, save it to MidBrain before replying.
+> answering anything about me, search MidBrain. Whenever I share a lasting fact
+> about myself, save it to MidBrain before replying, but never passwords, keys
+> or other secrets, and nothing I ask you not to remember.
 
 ## Publish
 

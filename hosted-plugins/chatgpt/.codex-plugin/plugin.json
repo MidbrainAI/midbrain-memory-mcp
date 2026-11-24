@@ -1,6 +1,6 @@
 {
   "name": "midbrain-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Use MidBrain as your memory: recall context and save the facts that matter, shared across your AI apps.",
   "author": {
     "name": "MidBrain",
@@ -45,7 +45,7 @@
               "expected_behavior": "Calls save_memory once with the favourite colour and confirms the save."
             },
             {
-              "description": "Recalls a saved fact without MidBrain being named",
+              "description": "Recalls a saved fact without MidBrain being named (needs the first case's piano fact saved in the test account)",
               "prompt": "Which instrument do I play?",
               "tools_triggered": "memory_search",
               "expected_behavior": "Searches MidBrain and answers from the saved memory (piano, mostly jazz)."
