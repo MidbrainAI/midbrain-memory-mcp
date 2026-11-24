@@ -42,7 +42,9 @@ must stay identical; `tests/hosted-plugins.test.mjs` enforces it.
   else is installed and no API key is needed. Codex asks the user to trust them
   once (`/hooks`, or Review hooks in the app). Each prompt waits for its save,
   for at most the hooks' 30-second timeout; a failed save is skipped, not
-  retried. Prompts and replies are saved as written. Someone who also uses the
+  retried. No hook tells Codex that turns are saved, because a save can fail
+  (before `codex mcp login`, or on an error): Codex keeps saving facts itself,
+  as Claude does. Prompts and replies are saved as written. Someone who also uses the
   npm package's Codex hooks keeps only one of the two, or each turn is saved
   twice.
 

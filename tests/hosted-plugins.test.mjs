@@ -58,12 +58,9 @@ describe("hosted plugins", () => {
         timeout: 30,
       });
     }
-    // One quoted echo: an unquoted ";" in the sentence would run its second half as a command.
-    const { command, commandWindows } = save("SessionStart");
-    expect(command).toMatch(/^echo '[^']+'$/);
-    // cmd.exe has no single quotes; the same sentence, bare, with nothing cmd would read as syntax.
-    expect(commandWindows).toBe(command.replace(/'/g, ""));
-    expect(commandWindows).not.toMatch(/[&|<>^%"]/);
+    // No hook tells Codex that turns are saved: a save can fail (before sign-in, or on an error), and Codex
+    // would then skip saving the facts itself.
+    expect(Object.keys(hooks)).toEqual(["UserPromptSubmit", "Stop"]);
   });
 
   it("list the Codex bundle in the repository's Codex marketplace", () => {
