@@ -1,0 +1,89 @@
+/**
+ * Static checks for hosted-plugins/: the Claude and ChatGPT bundles that point
+ * hosted assistants at MidBrain's hosted MCP endpoint.
+ */
+
+import { describe, it, expect } from "vitest";
+import { existsSync, readFileSync } from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "hosted-plugins");
+const read = (rel) => readFileSync(path.join(ROOT, rel), "utf8");
+const json = (rel) => JSON.parse(read(rel));
+const HOSTED_MCP_URL = "https://memory.midbrain.ai/api/mcp";
+
+describe("hosted plugins", () => {
+  it("ship one memory-first skill in both bundles", () => {
+    const claude = read("claude/skills/memory-first/SKILL.md");
+    expect(read("chatgpt/skills/memory-first/SKILL.md")).toBe(claude);
+    expect(claude).toMatch(/^---\nname: memory-first\ndescription: .+\n---\n/);
+  });
+
+  it("point both bundles at the hosted MCP endpoint", () => {
+    expect(json("claude/.mcp.json")).toEqual({ mcpServers: { midbrain: { type: "http", url: HOSTED_MCP_URL } } });
+    expect(json("chatgpt/.mcp.json")).toEqual({ mcpServers: { midbrain: { url: HOSTED_MCP_URL } } });
+  });
+
+  it("keep names and versions in step across manifests", () => {
+    const claude = json("claude/.claude-plugin/plugin.json");
+    const codex = json("chatgpt/.codex-plugin/plugin.json");
+    expect([claude.name, codex.name]).toEqual(["midbrain-memory", "midbrain-memory"]);
+    expect(codex.version).toBe(claude.version);
+    const skillVersion = read("claude/skills/memory-first/SKILL.md").match(/Bundle version: (\S+)\./)[1];
+    expect(skillVersion).toBe(claude.version);
+  });
+
+  it("give Claude's directory listing its README, icon and links", () => {
+    const claude = json("claude/.claude-plugin/plugin.json");
+    // The directory blocks a plugin folder without a README of 40+ words (code excluded).
+    const words = read("claude/README.md").replace(/```[\s\S]*?```/g, "").split(/\s+/).filter(Boolean);
+    expect(words.length).toBeGreaterThanOrEqual(40);
+    expect(existsSync(path.join(ROOT, "claude", claude.icon))).toBe(true);
+    for (const key of ["documentationUrl", "supportUrl", "privacyPolicyUrl", "termsOfServiceUrl"]) {
+      expect(claude[key]).toMatch(/^https:\/\//);
+    }
+  });
+
+  it("capture each Codex turn through the bundled connector", () => {
+    const { hooks } = json("chatgpt/hooks/hooks.json");
+    const save = (event) => hooks[event][0].hooks[0];
+    // Codex names a plugin's MCP server by its plain .mcp.json key, with no plugin prefix.
+    for (const [event, role, text] of [["UserPromptSubmit", "user", "${prompt}"], ["Stop", "assistant", "${last_assistant_message}"]]) {
+      expect(save(event)).toEqual({
+        type: "mcp_tool",
+        server: "midbrain",
+        tool: "save_memory",
+        input: { text, role, session_id: "${session_id}" },
+        timeout: 30,
+      });
+    }
+    // No hook tells Codex that turns are saved: a save can fail (before sign-in, or on an error), and Codex
+    // would then skip saving the facts itself.
+    expect(Object.keys(hooks)).toEqual(["UserPromptSubmit", "Stop"]);
+  });
+
+  it("list the Codex bundle in the repository's Codex marketplace", () => {
+    const marketplace = JSON.parse(readFileSync(path.join(ROOT, "..", ".agents", "plugins", "marketplace.json"), "utf8"));
+    expect(marketplace.plugins).toEqual([
+      {
+        name: json("chatgpt/.codex-plugin/plugin.json").name,
+        source: { source: "local", path: "./hosted-plugins/chatgpt" },
+        policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+        category: "Productivity",
+      },
+    ]);
+  });
+
+  it("give ChatGPT every file and review field its manifest references", () => {
+    const codex = json("chatgpt/.codex-plugin/plugin.json");
+    expect(codex.skills).toBe("./skills");
+    expect(codex.mcpServers).toBe("./.mcp.json");
+    for (const rel of [codex.interface.composerIcon, codex.interface.logo]) expect(existsSync(path.join(ROOT, "chatgpt", rel))).toBe(true);
+    for (const key of ["websiteURL", "supportURL", "privacyPolicyURL", "termsOfServiceURL"]) {
+      expect(codex.interface[key]).toMatch(/^https:\/\//);
+    }
+    const cases = codex.extensions["com.openai"].review.test_cases;
+    expect([cases.positive.length, cases.negative.length]).toEqual([5, 3]);
+  });
+});
