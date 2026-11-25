@@ -1,0 +1,31 @@
+{
+  "description": "Save each Claude Code turn to MidBrain through the plugin's own connector.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:midbrain-memory:midbrain",
+            "tool": "save_memory",
+            "input": { "text": "${prompt}", "role": "user", "session_id": "${session_id}" },
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:midbrain-memory:midbrain",
+            "tool": "save_memory",
+            "input": { "text": "${last_assistant_message}", "role": "assistant", "session_id": "${session_id}" },
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

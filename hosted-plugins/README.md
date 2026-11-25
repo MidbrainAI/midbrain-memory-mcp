@@ -1,0 +1,72 @@
+# Hosted assistant plugins
+
+Plugin bundles that add MidBrain to hosted assistants: Claude (web, desktop,
+mobile and Claude Code) and ChatGPT. They are not part of the npm package.
+
+Each bundle points the assistant at MidBrain's hosted MCP endpoint,
+`https://memory.midbrain.ai/api/mcp`, and ships the `memory-first` skill. The
+endpoint is its own service (MidbrainAI/memory-mcp-hosted) and sign-in lives in
+the MidBrain API: the assistant identifies itself with its published client
+metadata document, so users only sign in to MidBrain and choose a space. No
+client ID, secret or API key is involved.
+
+The skill only guides the assistant. The tools, their descriptions and the
+memory rules they carry (what to save, when to recall) live in the endpoint, so
+the connector alone works without the plugin.
+
+The Claude bundle also has hooks (`claude/hooks/hooks.json`) that save every
+Claude Code turn. They are `mcp_tool` hooks: they call the bundled connector's
+`save_memory` with the turn's role and session ID, over the connection the user
+already signed in with, so nothing is installed and no API key is needed. Chat
+ignores hooks. Cowork and Claude Code on the web run hooks in Anthropic's cloud
+without the plugin's MCP server, so their `mcp_tool` hooks send nothing (tested
+2026-11-23: command hooks ran there, `mcp_tool` hooks did not). No hook tells
+Claude that turns are saved: Claude keeps saving facts itself everywhere. Each prompt
+waits for its save, for at most the hooks' 30-second timeout (Claude Code's
+default for a prompt hook); a save that fails or times out is skipped, not
+retried. `UserPromptSubmit` also fires for input the user did not type (a
+scheduled task or `/loop` iteration, a background subagent's result, a message
+from another session; https://code.claude.com/docs/en/hooks#userpromptsubmit).
+Its input has no field naming the source, and an `mcp_tool` hook on this event
+cannot be filtered (no matcher; `if` runs only on tool events), so those are
+saved with role `user`.
+
+| Folder | Assistant | Published through |
+|---|---|---|
+| `claude/` | Claude | Anthropic's directory, from this public repository |
+| `chatgpt/` | ChatGPT | OpenAI's plugin dashboard, as an uploaded archive of the folder |
+
+`claude/skills/memory-first/SKILL.md` and `chatgpt/skills/memory-first/SKILL.md`
+must stay identical; `tests/hosted-plugins.test.mjs` enforces it.
+
+## Install without a listing
+
+- Claude: zip the contents of `claude/`, then Customize > Plugins > Add >
+  Upload plugin, and connect `midbrain` on the plugin's Connectors tab. The
+  plugin follows the account to web, desktop, mobile and Claude Code. Without
+  the plugin, add the URL above under Customize > Connectors > Add custom
+  connector.
+- ChatGPT: add the URL above under chatgpt.com/plugins > + > Add custom MCP
+  server (paid plans). An uploaded archive that declares the server is listed as
+  "Desktop only" and does not reach ChatGPT chat.
+
+For reliable saving and recall, users also paste this into ChatGPT's custom
+instructions or Claude's profile preferences:
+
+> MidBrain is my memory. At the start of each conversation, and before
+> answering anything about me, search MidBrain. Whenever I share a lasting fact
+> about myself, save it to MidBrain before replying, but never passwords, keys
+> or other secrets, and nothing I ask you not to remember.
+
+## Publish
+
+- Claude: submit the endpoint as an MCP connector and this folder as a plugin
+  bundle at claude.ai/directory/manage, from the same organization, then pair
+  the two listings.
+- ChatGPT: an organization owner uploads a zip of `chatgpt/` in the plugin
+  dashboard and connects the MCP server there (OAuth). The dashboard then shows
+  a domain-verification token, served as plain text at
+  `/.well-known/openai-apps-challenge` on the MCP host or a parent domain, so
+  `https://midbrain.ai/.well-known/openai-apps-challenge` on the website works
+  without an API change. Review also needs a demo recording URL
+  (`extensions.com.openai.review.demo_recording_url`).

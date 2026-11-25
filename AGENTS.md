@@ -55,6 +55,7 @@ skills/
   nanoclaw/                      /add-midbrain skill
 dist/
   midbrain-shared.mjs            Built OpenCode plugin bundle
+hosted-plugins/                  Claude and ChatGPT bundles for the hosted MCP endpoint (not in the npm package)
 tests/                           Vitest suite
 ```
 
@@ -516,6 +517,18 @@ Prime Agent:
 - Per-client key file: `~/.config/prime-agent/.midbrain-key`. Detection keys on
   the agent dir.
 
+Hosted plugins (`hosted-plugins/`):
+
+- The Claude bundle's `hooks/hooks.json` captures turns of Claude Code on the
+  user's computer with `mcp_tool` hooks that call the bundled connector's
+  `save_memory` (`role`, `session_id`) over the user's own connection. They do not use
+  `shared/capture-metadata.mjs`: no `client` (the API labels the memory from the
+  token's connection) and no `cwd`, so turns are not scoped to a project.
+- Nothing is cached or retried; a turn the server does not take is lost.
+- `UserPromptSubmit` also fires for input the user did not type (scheduled
+  tasks, background subagent results, other sessions' messages); the hooks
+  cannot tell, so those are saved with role `user`.
+
 ## History Import
 
 Interactive `install` offers history import per detected supported client after
@@ -768,6 +781,7 @@ Vitest tests live in `tests/`.
 | `tests/history-import-hermes.test.mjs` | `shared/history-import/readers/hermes.mjs` |
 | `tests/history-import-opencode.test.mjs` | `shared/history-import/readers/opencode.mjs` |
 | `tests/history-import-openclaw.test.mjs` | `shared/history-import/readers/openclaw.mjs`, SQLite helpers in `readers/common.mjs` |
+| `tests/hosted-plugins.test.mjs` | `hosted-plugins/` bundles |
 
 Unit tests mock filesystem and network access where practical. MCP integration
 tests use in-process transports and real temp dirs for config-file I/O.
