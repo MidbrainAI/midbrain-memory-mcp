@@ -21,4 +21,8 @@ When the user shares a durable fact about themselves (personal details, preferen
 
 Call it once. Say "Saved to MidBrain." only after the tool returns successfully; if it fails, tell the user instead of retrying, because the first attempt may still have been stored.
 
-Do not save small talk, passing details, or secrets (passwords, keys, card or ID numbers). Skip memory entirely when the user asks you not to use it.
+Do not save small talk, passing details, or secrets (passwords, keys, card or ID numbers). When the user asks you not to remember something or not to use memory, make no memory calls for it.
+
+## Automatic saving
+
+Where this plugin's hooks run (Claude Code on the user's computer, and Codex once the user trusts them), every prompt and reply is also saved automatically, apart from your own calls. Asking you not to remember something does not stop that, so never say it keeps the conversation out of MidBrain. To stop the automatic saving, the user disconnects MidBrain or uninstalls the plugin.

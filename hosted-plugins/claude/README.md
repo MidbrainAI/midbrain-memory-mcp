@@ -47,8 +47,10 @@ is not told where a message came from.
 If you also installed MidBrain's npm package for Claude Code, keep only one of
 the two, or each turn is saved twice.
 
-To stop using it, disconnect the connector or uninstall the plugin. You can see
-and revoke the connection in your MidBrain account.
+Asking Claude not to remember something stops only Claude's own saves: in
+Claude Code the hooks still save that turn. To stop saving, disconnect the
+connector or uninstall the plugin. You can see and revoke the connection in
+your MidBrain account.
 
 ## Links
 
