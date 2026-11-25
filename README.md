@@ -703,6 +703,14 @@ The shim resolves `npx -y midbrain-memory-mcp@latest hook claude <role>`, so
 the hook command in `settings.json` stays stable across package updates, npm
 cache cleans, and Node upgrades.
 
+Claude Code also runs `UserPromptSubmit` on messages it delivers itself: a
+background task's result, a background subagent's report, a message from
+another session. The `user` hook does not save these, since nobody typed them
+(nor a prompt you type or paste that starts with one of their tags:
+`<task-notification>`, `<agent-message`, `<cross-session-message`). Claude's
+reply to them is saved. A scheduled prompt (`/loop`, a scheduled task) is saved
+as a user prompt: the hook input does not say it was scheduled.
+
 **Codex**: `~/.codex/config.toml` (global) or
 `<project>/.codex/config.toml` (per-project):
 

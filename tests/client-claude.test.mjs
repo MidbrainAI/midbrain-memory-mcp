@@ -366,6 +366,7 @@ describe("Claude capture-user hook wrapper", () => {
 
       globalThis.fetch = async (url) => {
         const text = String(url);
+        if (process.env.MB_TEST_FETCH_LOG) fs.appendFileSync(process.env.MB_TEST_FETCH_LOG, text + "\\n");
         if (${JSON.stringify(mode)} === "throw") throw new Error("network down");
         if (${JSON.stringify(mode)} === "delayed-store" && text.includes("/memories/episodic")) {
           return new Promise((resolve) => {
@@ -411,6 +412,40 @@ describe("Claude capture-user hook wrapper", () => {
     fsSync.rmSync(loaded.dir, { recursive: true, force: true });
     return result;
   }
+
+  function fetchedUrls(input, opts = {}) {
+    const home = tempHomeWithKey();
+    const fetchLog = path.join(home, "fetch.log");
+    const result = runHook(input, { ...opts, home, extraEnv: { ...opts.extraEnv, MB_TEST_FETCH_LOG: fetchLog } });
+    const urls = fsSync.existsSync(fetchLog) ? fsSync.readFileSync(fetchLog, "utf8").trim().split("\n") : [];
+    fsSync.rmSync(home, { recursive: true, force: true });
+    expect(result.status).toBe(0);
+    return urls;
+  }
+
+  // Prompt shapes Claude Code 2.1.332 passed to UserPromptSubmit (#125).
+  it.each([
+    ["a background task's result", "<task-notification>\n<task-id>bcbqw72ba</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<status>completed</status>\n</task-notification>"],
+    ["a background subagent's report", "<agent-message from=\"a1d6ef6beb8fd8296\">\n[Subagent hand-back] SUBDONE\n</agent-message>"],
+    ["a message from another session", "<cross-session-message from=\"uds:/tmp/cc-socks/715.sock\">\nReply with just PEERPING.\n</cross-session-message>"],
+    ["a background task's result after leading whitespace", "\n<task-notification>\n<task-id>b1</task-id>\n</task-notification>"],
+  ])("does not save %s as the user's prompt", (_label, prompt) => {
+    // No MidBrain call at all: no save, and no opted-in procedural search.
+    const urls = fetchedUrls({ prompt, cwd: "/repo", session_id: "s1" }, {
+      mode: "match", extraEnv: { MIDBRAIN_ENABLE_PK_INJECTION: "1" },
+    });
+    expect(urls.filter((url) => url.includes("/memories/"))).toEqual([]);
+  });
+
+  it.each([
+    ["a typed prompt", "Reply with just ONE"],
+
+    ["a typed prompt that quotes a tag later on", "What does <task-notification> mean in my log?"],
+    ["a typed prompt that starts with a lookalike tag", "<task-notifications> is my element name"],
+  ])("still saves %s", (_label, prompt) => {
+    const urls = fetchedUrls({ prompt, cwd: "/repo", session_id: "s1" });
+    expect(urls.filter((url) => url.includes("/memories/episodic"))).toHaveLength(1);
+  });
 
   it("emits no stdout and skips procedural injection by default", () => {
     const result = runHook({ prompt: "workflow please", cwd: "/repo" }, { mode: "match" });
