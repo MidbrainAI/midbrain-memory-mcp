@@ -8,7 +8,7 @@ import fsp from "fs/promises";
 import os from "os";
 import path from "path";
 import { createHash } from "crypto";
-import { MidbrainApi } from "../shared/midbrain-api.mjs";
+import { CUT_NOTE_RESERVE, MAX_EPISODIC_TEXT_CHARS, MidbrainApi, cutEpisodicText } from "../shared/midbrain-api.mjs";
 import { PKG_VERSION } from "../shared/clients/utils.mjs";
 import {
   _setCachePath,
@@ -680,7 +680,7 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
     await api.storeEpisodic("trigger", "user", log);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1); // only "trigger", no backlog replay
-    const remaining = readAndClearCache(cacheScopeForKey("test-key"));
+    const remaining = readAndClearCache(api.cacheScope);
     expect(remaining.map((e) => e.text).sort()).toEqual(["entry1", "entry2"]);
   });
 
@@ -697,7 +697,7 @@ describe("MidbrainApi.storeEpisodic cache resilience", () => {
     await api.storeEpisodic("second", "assistant", log);
     await api.storeEpisodic("third", "user", log);
 
-    const cached = readAndClearCache(cacheScopeForKey("test-key"));
+    const cached = readAndClearCache(api.cacheScope);
     expect(cached).toHaveLength(3);
     expect(cached.map((e) => e.text)).toEqual(["first", "second", "third"]);
   });
@@ -1402,5 +1402,91 @@ describe("MidbrainApi.listEpisodicForSession", () => {
     });
     const api = new MidbrainApi("test-key", "test-source");
     await expect(api.listEpisodicForSession("s-1")).rejects.toThrow(/unexpected response/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Turns the API would refuse as too long (issue #125)
+// ---------------------------------------------------------------------------
+
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+describe("cutEpisodicText", () => {
+  it("leaves a turn at the API's limit unchanged", () => {
+    const text = "a".repeat(MAX_EPISODIC_TEXT_CHARS);
+    expect(cutEpisodicText(text)).toBe(text);
+  });
+
+  it("keeps the start of a longer turn and says how much was left out", () => {
+    const text = "Olá, preço: 5€\n".repeat(10_000); // 150,000 characters
+    const cut = cutEpisodicText(text);
+    expect(cut.length).toBeLessThanOrEqual(MAX_EPISODIC_TEXT_CHARS);
+    const [kept, note] = cut.split("\n\n[MidBrain cut the last ");
+    expect(text.startsWith(kept)).toBe(true);
+    const leftOut = Number(note.match(/^([\d,]+) characters of this turn\]$/)[1].replaceAll(",", ""));
+    expect(kept.length + leftOut).toBe(text.length);
+  });
+
+  it("counts code points as the API does: keeps an emoji turn the API accepts, counts what it cuts", () => {
+    const accepted = "😀".repeat(MAX_EPISODIC_TEXT_CHARS); // 200,000 UTF-16 units, 100,000 code points
+    expect(cutEpisodicText(accepted)).toBe(accepted);
+    const text = "😀".repeat(MAX_EPISODIC_TEXT_CHARS + 500);
+    const [kept, note] = cutEpisodicText(text).split("\n\n[MidBrain cut the last ");
+    const leftOut = Number(note.match(/^([\d,]+) /)[1].replaceAll(",", ""));
+    expect([...kept].length + leftOut).toBe(MAX_EPISODIC_TEXT_CHARS + 500);
+  });
+
+  it("fits the note in its reserve for any string Node or Bun can hold (under 2^30 units)", () => {
+    const longestCount = (2 ** 30).toLocaleString("en-US");
+    expect(`\n\n[MidBrain cut the last ${longestCount} characters of this turn]`.length).toBeLessThanOrEqual(CUT_NOTE_RESERVE);
+  });
+
+  it("never splits an emoji, and stays within the API's code point limit", () => {
+    for (const pad of [0, 1]) {
+      const cut = cutEpisodicText("x".repeat(pad) + "😀".repeat(MAX_EPISODIC_TEXT_CHARS));
+      expect(cut).not.toMatch(LONE_SURROGATE);
+      expect([...cut].length).toBeLessThanOrEqual(MAX_EPISODIC_TEXT_CHARS);
+    }
+  });
+});
+
+describe("episodic POSTs cut a turn the API would refuse", () => {
+  let fetchSpy;
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "midbrain-cut-episodic-"));
+    _setCachePath(tmpDir);
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, status: 201, text: async () => "" });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    _setCachePath(null);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const long = "y".repeat(MAX_EPISODIC_TEXT_CHARS + 1);
+
+  it("live capture (storeEpisodic) sends the cut turn", async () => {
+    const api = new MidbrainApi("test-key", "test-source");
+    await expect(api.storeEpisodic(long, "assistant", makeLog(), { client: "claude" })).resolves.toBe(true);
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.text).toBe(cutEpisodicText(long));
+    expect(body.role).toBe("assistant");
+  });
+
+  it("a failed live save caches the cut turn, not the whole one", async () => {
+    fetchSpy.mockResolvedValue({ ok: false, status: 503, text: async () => "" });
+    const api = new MidbrainApi("test-key", "test-source");
+    await expect(api.storeEpisodic(long, "user", makeLog())).resolves.toBe(false);
+    const cached = readAndClearCache(api.cacheScope);
+    expect(cached.map((e) => e.text)).toEqual([cutEpisodicText(long)]);
+  });
+
+  it("the start-up drain (postEpisodicResult) cuts an entry cached before this fix", async () => {
+    const api = new MidbrainApi("test-key", "test-source");
+    await expect(api.postEpisodicResult(long, "user", { client: "codex" })).resolves.toBe("ok");
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body).text).toBe(cutEpisodicText(long));
   });
 });

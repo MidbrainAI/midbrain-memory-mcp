@@ -53,6 +53,32 @@ function buildEndpoints(apiBase) {
 // Compatibility-only static endpoints retain the v0.4.7 import-time behavior.
 const ENDPOINTS = buildEndpoints(API_BASE);
 
+/**
+ * The API refuses an episodic memory longer than this (`MAX_MEMORY_TEXT_LEN`,
+ * counted in code points) with a 422.
+ */
+export const MAX_EPISODIC_TEXT_CHARS = 100_000;
+/** Room for the note: 50 characters plus the count. */
+export const CUT_NOTE_RESERVE = 64;
+
+/**
+ * Keep the start of a turn the API would refuse whole, and end it with a note
+ * of how much was left out. Without this a long captured turn is refused,
+ * cached, and refused again on every start (issue #125). Counts code points,
+ * as the API does, so an emoji is never split.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function cutEpisodicText(text) {
+  if (text.length <= MAX_EPISODIC_TEXT_CHARS) return text;
+  const points = [...text];
+  if (points.length <= MAX_EPISODIC_TEXT_CHARS) return text;
+  const kept = MAX_EPISODIC_TEXT_CHARS - CUT_NOTE_RESERVE;
+  const leftOut = (points.length - kept).toLocaleString("en-US");
+  return `${points.slice(0, kept).join("")}\n\n[MidBrain cut the last ${leftOut} characters of this turn]`;
+}
+
 const PK_DEFAULT_LIMIT    = 5;
 const PK_DEFAULT_MIN_SCORE = 0.5;
 const PK_DEFAULT_TIMEOUT_MS = 2000;
@@ -351,6 +377,7 @@ export class MidbrainApi {
    */
   async storeEpisodic(text, role, logger, memoryMetadata) {
     logger.info(`STORE: role=${role} textLen=${text.length}`);
+    text = cutEpisodicText(text);
     const ok = await this.#postEpisodic(text, role, memoryMetadata, logger);
     if (!ok) {
       appendToCache({ text, role, memory_metadata: memoryMetadata }, this.#cacheScope);
@@ -382,7 +409,7 @@ export class MidbrainApi {
       const response = await fetch(this.#endpoints.EPISODIC, {
         method: "POST",
         headers: this.#headers({ json: true }),
-        body: JSON.stringify({ text, role, memory_metadata: memoryMetadata }),
+        body: JSON.stringify({ text: cutEpisodicText(text), role, memory_metadata: memoryMetadata }),
       });
       if (response.ok) return "ok";
       if (response.status === 429) {
