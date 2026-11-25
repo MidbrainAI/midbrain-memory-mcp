@@ -7,3 +7,4 @@ export { buildCaptureMetadata } from '../../shared/capture-metadata.mjs';
 export { getClient } from '../../shared/clients/registry.mjs';
 export { scrubInjectedPkContext } from '../../shared/pk-inject.mjs';
 export { loadIdentityContext } from '../../shared/identity-context.mjs';
+export { openclawTypedText } from '../../shared/openclaw-text.mjs';
