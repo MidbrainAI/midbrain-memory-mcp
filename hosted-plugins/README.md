@@ -44,7 +44,9 @@ must stay identical; `tests/hosted-plugins.test.mjs` enforces it.
   for at most the hooks' 30-second timeout; a failed save is skipped, not
   retried. No hook tells Codex that turns are saved, because a save can fail
   (before `codex mcp login`, or on an error): Codex keeps saving facts itself,
-  as Claude does. Prompts and replies are saved as written. Someone who also uses the
+  as Claude does. Prompts and replies are saved as written. Asking Codex not to
+  remember something does not stop the hooks; disconnecting MidBrain or
+  uninstalling the plugin does. Someone who also uses the
   npm package's Codex hooks keeps only one of the two, or each turn is saved
   twice.
 
