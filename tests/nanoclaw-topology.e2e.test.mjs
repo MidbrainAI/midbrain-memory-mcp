@@ -1420,6 +1420,8 @@ describe("Issue #104 — NanoClaw provider at server start", () => {
 
     expect(result).toEqual({ skipped: true, kind: NPX_CTX.context.kind });
     expect(diffSnapshots(before, await snapshotTree(env.home))).toEqual([]);
+    // Not the generic skip, whose advice to run `install` does not apply here.
+    expect(stderrText()).not.toContain("self-repair skipped: running from");
   });
 
   for (const provider of [undefined, "claude", "Claude"]) {
