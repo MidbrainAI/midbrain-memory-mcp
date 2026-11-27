@@ -464,11 +464,18 @@ keep its MCP entry:
 | Cursor | Every hook in `~/.cursor/hooks.json` that calls `~/.midbrain/bin/cursor-hook` |
 | OpenClaw | `plugins.load.paths` item and `plugins.entries.midbrain-memory` in `openclaw.json`, then `~/.config/openclaw/midbrain-plugin/` |
 | Prime Agent | `~/.prime/agent/skills/midbrain-memory/` (or set `MIDBRAIN_PRIME_CAPTURE=0`) |
-| NanoClaw | The capture hooks in the group's `.claude-shared/settings.json`; the `/add-midbrain` skill's "Removing MidBrain Memory" section has the steps |
+| NanoClaw | Not supported: see below |
 | OpenCode | No separate switch: the plugin does capture, and automatic repair copies it back (see below) |
 
 Remove all of a client's MidBrain hooks at once. Automatic repair leaves a
 client with none alone, but re-adds the full set when only some remain.
+
+NanoClaw has no way to stop capture and keep search. While the group's
+`midbrain-memory` MCP entry is in place, the MCP server checks the group's
+MidBrain hooks before it starts and does not start if they are missing, so
+removing only the hooks also removes the memory tools. To stop NanoClaw
+capture, remove MidBrain from the group: the `/add-midbrain` skill's "Removing
+MidBrain Memory" section has the steps.
 
 OpenCode's plugin files (`midbrain-memory.ts`, `midbrain-shared.mjs` and
 `.midbrain-repo-root` in `~/.config/opencode/plugins/`) are copied back whenever
