@@ -5,6 +5,8 @@
  * injection is disabled by default and only runs when explicitly opted in.
  *
  * Stdin JSON: { prompt: "...", session_id, cwd, ... }
+ * Prompts Claude Code delivers itself (task notifications, subagent reports,
+ * messages from other sessions) are not captured; scheduled prompts are.
  * Cursor also runs this hook (Third-Party Imports) with its own payload; that
  * run is skipped when the MidBrain Cursor hooks capture the turn (#100).
  * session_id and cwd are forwarded into episodic memory_metadata for scoping.
@@ -27,9 +29,19 @@ import { appendToSpool } from "../../shared/claude-spool.mjs";
 import { buildCaptureMetadata } from "../../shared/capture-metadata.mjs";
 import { formatPkContext, isPkInjectionEnabled } from "../../shared/pk-inject.mjs";
 
+// UserPromptSubmit also runs on messages Claude Code delivers itself (#125):
+// a background task's result, a background subagent's report, a message from
+// another session. Each arrives wrapped in its own tag; none was typed. A
+// prompt someone types or pastes starting with one of these tags is skipped too.
+const DELIVERED_BY_CLAUDE_CODE = /^\s*<(?:task-notification|agent-message|cross-session-message)[\s>]/;
+
 async function captureUser() {
   const input = await readStdinJSON();
   if (!input?.prompt) return;
+  if (DELIVERED_BY_CLAUDE_CODE.test(input.prompt)) {
+    log.debug("NOT TYPED: prompt delivered by Claude Code, not captured");
+    return;
+  }
   if (await cursorCapturesTurn(input)) {
     log.debug("CURSOR HOST: prompt left to the MidBrain Cursor hooks");
     return;

@@ -55,6 +55,7 @@ Last reviewed: 2026-10-16 (v0.4.10, plus PR #98).
 | Persona and profile are not added | Prime Agent | Upstream: no hook can add session context. The proposed `SessionStart` hook rejects context output | PrimeIntellect-ai/prime-agent#3642, discussion #3200 |
 | Capture uses a log watcher, not hooks | Prime Agent | Upstream: no lifecycle hooks in 0.10 | PrimeIntellect-ai/prime-agent#3642 |
 | PK injection is not available | Cursor, OpenClaw, Prime Agent | Client: no prompt-time context surface | — |
+| A scheduled prompt (`/loop`, a scheduled task) is saved as the user's | Claude Code | Client: the `UserPromptSubmit` input does not say a prompt was scheduled, and the transcript may not hold the prompt yet when the hook runs | #125 |
 | Codex hooks need one approval in `/hooks` before they run | Codex | Client: hook trust | — |
 | Tool calls and reasoning are not captured | OpenClaw | MidBrain: `agent_end` capture stores prompt and reply only | — |
 | Global rules are not installed | Cursor | Client: no file-based global rules | — |
