@@ -378,12 +378,22 @@ Supported sources (`--client` takes the id):
   the import stops and says how many entries it stored; add credits and run
   the same command to continue.
 - **Secrets.** Text is stored as written, as live capture stores it.
-- **Load.** Up to 8 entries are in flight at once (`--concurrency`, 1-8), at
-  most 8 started per second, each sent once: any failure stops new uploads
-  (run it again to resume). An entry MidBrain's firewall blocks is skipped and
-  listed. MidBrain's per-memory processing is skipped for the bulk load
-  (`X-Skip-Dream: 1`); `--dream` turns it on and uploads one entry at a time,
-  in order.
+- **Background uploads.** After preview and confirmation, the importer starts
+  a detached worker and returns the terminal. Installation combines your
+  selected clients into one import. You can close the terminal and use the
+  MCP while it runs. `npx midbrain-memory-mcp@latest import --status` shows
+  progress and the log path; the log records completion or failure. Only one
+  import runs at a time. A failed or stopped import can be resumed by running
+  the same command again. Rebooting or killing the worker interrupts it; it
+  does not restart automatically. If its lock remains, verify the reported
+  PID has exited before removing the lock path shown by the next import.
+- **Order and consolidation.** Entries from all selected clients and sessions
+  are merged oldest first and uploaded one at a time, with consolidation
+  enabled. Equal timestamps retain source order. Each entry is sent once;
+  a failure stops uploads (run the same command again to resume). An entry
+  MidBrain's firewall blocks is skipped and listed. Request starts are at
+  least 125 ms apart. The former `--dream` and `--concurrency` options are
+  no longer needed or accepted.
 
 ---
 

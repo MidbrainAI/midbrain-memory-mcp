@@ -17,14 +17,16 @@ export async function offerHistoryImport(clients, {
   err = process.stderr,
 } = {}) {
   if (nonInteractive || !isTTY) return;
+  const selected = [];
   for (const client of clients.filter((client) => READERS[client.id])) {
     const answer = await ask(`Review and import earlier conversations from ${client.displayName}? [y/N] `);
-    if (!/^y(es)?$/i.test(answer.trim())) continue;
-    try {
-      const result = await runImport(["--client", client.id, "--apply"]);
-      if (result > 1) err.write(`${client.displayName} history import did not finish. Retry with npx midbrain-memory-mcp@latest import --client ${client.id} --apply.\n`);
-    } catch (error) {
-      err.write(`${client.displayName} history import failed: ${error.message}. Installation is complete; retry with the import command.\n`);
-    }
+    if (/^y(es)?$/i.test(answer.trim())) selected.push(client.id);
+  }
+  if (!selected.length) return;
+  try {
+    const result = await runImport(["--client", selected.join(","), "--apply"]);
+    if (result > 1) err.write("History import did not start. Installation is complete; retry with the import command.\n");
+  } catch (error) {
+    err.write(`History import failed: ${error.message}. Installation is complete; retry with the import command.\n`);
   }
 }

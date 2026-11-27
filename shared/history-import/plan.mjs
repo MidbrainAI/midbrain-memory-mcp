@@ -292,10 +292,6 @@ export function summarize(sessions) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Requests in flight during an upload; `--concurrency` overrides it. */
-export const DEFAULT_CONCURRENCY = 8;
-export const MAX_CONCURRENCY = 8;
-
 const STOP_REASONS = {
   outOfCredits: "out of MidBrain credits",
   rateLimited: "rate limited",
@@ -304,16 +300,14 @@ const STOP_REASONS = {
 };
 
 /**
- * Upload planned sessions with up to `concurrency` requests in flight, and
- * request starts at least `intervalMs` apart so the rate stays under the edge
- * firewall's per-IP limit for memory endpoints (~10 requests/s). Entries are
- * sent in plan order (chronological within a session); with more than one in
- * flight they can be stored slightly out of order, so `--dream` uploads one at
- * a time.
+ * Merge all clients and sessions chronologically and await each POST before
+ * sending the next. Equal timestamps retain source order. Consolidation needs
+ * earlier memories to have arrived before later ones. Request starts remain
+ * spaced by intervalMs to respect the edge firewall's rate limit.
  *
  * Each entry is posted once and never retried: a failed write may still have
  * been stored, and the server does not enforce `import_id`. Any failure stops
- * new requests; those already in flight finish and are counted. A re-run
+ * new requests. A re-run
  * first checks what MidBrain holds (trimAgainstServer), so it resumes without
  * storing anything twice.
  *
@@ -324,7 +318,6 @@ const STOP_REASONS = {
  * @param {object} opts
  * @param {any[]} opts.sessions
  * @param {(session: any, entry: any, metadata: Record<string,string>) => Promise<"ok"|"outOfCredits"|"rateLimited"|"blocked"|"rejected"|"unknown">} opts.post
- * @param {number} [opts.concurrency]
  * @param {number} [opts.intervalMs]
  * @param {(event: object) => void} [opts.onProgress]
  * @param {(ms: number) => Promise<void>} [opts.wait]
@@ -334,7 +327,6 @@ const STOP_REASONS = {
 export async function uploadImport({
   sessions,
   post,
-  concurrency = DEFAULT_CONCURRENCY,
   intervalMs = 125,
   onProgress = () => {},
   wait = sleep,
@@ -349,6 +341,7 @@ export async function uploadImport({
     remaining.set(session, session.entries.length);
     for (const [index, entry] of session.entries.entries()) queue.push({ session, entry, index });
   }
+  queue.sort((a, b) => Date.parse(a.entry.occurredAt) - Date.parse(b.entry.occurredAt));
   let next = 0;
   let nextStart = 0;
 
@@ -370,7 +363,7 @@ export async function uploadImport({
         settle(session);
         continue;
       }
-      // Reserve a start slot before waiting, so workers never start together.
+      // Pace fast responses as well as slow ones.
       const start = Math.max(now(), nextStart);
       nextStart = start + intervalMs;
       if (start > now()) await wait(start - now());
@@ -400,6 +393,6 @@ export async function uploadImport({
     }
   };
 
-  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
+  await worker();
   return totals;
 }

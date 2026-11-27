@@ -1304,22 +1304,22 @@ describe("MidbrainApi.postImportedEpisodic", () => {
     fetchSpy?.mockRestore();
   });
 
-  it("posts once to the v3 endpoint with the original time and X-Skip-Dream", async () => {
+  it("posts once to the v3 endpoint with the original time and consolidation enabled", async () => {
     fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200));
     await expect(api.postImportedEpisodic("hi", "user", { origin: "import" }, { occurredAt: "2026-09-01T10:00:00.000Z" })).resolves.toBe("ok");
     const [url, opts] = fetchSpy.mock.calls[0];
     expect(url).toBe("https://example.test/api/v3/mm/memories/episodic");
     expect(opts.method).toBe("POST");
-    expect(opts.headers["X-Skip-Dream"]).toBe("1");
+    expect(opts.headers["X-Skip-Dream"]).toBeUndefined();
     expect(JSON.parse(opts.body)).toEqual({
       text: "hi", role: "user", memory_metadata: { origin: "import" }, occurred_at: "2026-09-01T10:00:00.000Z",
     });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("lets the dream run when asked", async () => {
+  it("cannot disable consolidation through a legacy skipDream option", async () => {
     fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(respond(200));
-    await api.postImportedEpisodic("hi", "user", {}, { skipDream: false });
+    await api.postImportedEpisodic("hi", "user", {}, { skipDream: true });
     expect(fetchSpy.mock.calls[0][1].headers["X-Skip-Dream"]).toBeUndefined();
   });
 

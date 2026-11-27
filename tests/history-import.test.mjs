@@ -217,6 +217,26 @@ describe("trimAgainstServer", () => {
 });
 
 describe("uploadImport", () => {
+  it("merges overlapping clients and sessions chronologically, preserving equal-time order", async () => {
+    const posts = [];
+    const entry = (text, occurredAt) => ({ text, occurredAt, role: "user" });
+    const sessions = [
+      session({ client: "codex", entries: [entry("late", "2026-09-01T12:00:00Z")] }),
+      session({ client: "claude", sessionId: "s2", entries: [
+        entry("early", "2026-09-01T10:00:00Z"),
+        entry("tie-first", "2026-09-01T11:00:00Z"),
+        entry("tie-second", "2026-09-01T11:00:00Z"),
+      ] }),
+      session({ client: "cursor", sessionId: "s3", entries: [entry("middle", "2026-09-01T12:30:00+02:00")] }),
+    ];
+    const totals = await uploadImport({ sessions, intervalMs: 0,
+      post: async (_session, entry) => { posts.push(entry.text); return "ok"; },
+    });
+    expect(posts).toEqual(["early", "middle", "tie-first", "tie-second", "late"]);
+    expect(totals).toMatchObject({ sent: 5, sessions: 3, stopped: null });
+    expect(sessions[0].entries[0].text).toBe("late");
+  });
+
   it("posts each entry once with its original time and import labels", async () => {
     const posts = [];
     const totals = await uploadImport({
@@ -285,7 +305,7 @@ describe("uploadImport", () => {
   });
 });
 
-describe("uploadImport in parallel", () => {
+describe("uploadImport serialization", () => {
   const sessions = () => [session(), session({ sessionId: "s2" }), session({ sessionId: "s3" })];
 
   /** A post whose results resolve only when the test releases them. */
@@ -307,28 +327,28 @@ describe("uploadImport in parallel", () => {
     return { post, releaseAll, get peak() { return peak; }, get started() { return pending.length; } };
   }
 
-  it("keeps at most `concurrency` posts in flight and sends every entry once", async () => {
+  it("keeps one post in flight even if a legacy caller requests concurrency", async () => {
     const gate = gatedPost();
     const run = uploadImport({ sessions: sessions(), post: gate.post, concurrency: 3, intervalMs: 0 });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(gate.started).toBe(3);
+    expect(gate.started).toBe(1);
     await gate.releaseAll();
     const totals = await run;
-    expect(gate.peak).toBe(3);
+    expect(gate.peak).toBe(1);
     expect(totals).toMatchObject({ sent: 12, sessions: 3, stopped: null });
   });
 
-  it("starts no new post after a failure, and counts the ones already in flight", async () => {
+  it("starts no new post after a failure", async () => {
     let calls = 0;
     const gate = gatedPost(() => (++calls === 1 ? "unknown" : "ok"));
     const run = uploadImport({ sessions: sessions(), post: gate.post, concurrency: 4, intervalMs: 0 });
     await gate.releaseAll();
     const totals = await run;
-    expect(calls).toBe(4);
-    expect(totals).toMatchObject({ sent: 3, sessions: 0, stopped: "an upload failed and may or may not have been stored" });
+    expect(calls).toBe(1);
+    expect(totals).toMatchObject({ sent: 0, sessions: 0, stopped: "an upload failed and may or may not have been stored" });
   });
 
-  it("spaces request starts by intervalMs across workers", async () => {
+  it("spaces sequential request starts by intervalMs", async () => {
     const waits = [];
     const totals = await uploadImport({
       sessions: [session()],
@@ -339,7 +359,7 @@ describe("uploadImport in parallel", () => {
       wait: async (ms) => { waits.push(ms); },
     });
     expect(totals.sent).toBe(4);
-    // All four workers start at time 0; each waits for its own slot.
+    // The fake clock stays at zero; each request reserves the next slot.
     expect(waits).toEqual([125, 250, 375]);
   });
 });
@@ -390,18 +410,15 @@ describe("import CLI", () => {
   it("parses and validates options", () => {
     const readers = fakeReaders([]);
     expect(parseImportArgs(["--client", "fake", "--since", "2026-09-01", "--apply"], readers)).toMatchObject({
-      clients: ["fake"], since: "2026-09-01T00:00:00.000Z", apply: true, yes: false, dream: false,
+      clients: ["fake"], since: "2026-09-01T00:00:00.000Z", apply: true, yes: false,
     });
     expect(parseImportArgs([], readers).clients).toEqual(["fake"]);
     // A repeated name would plan its sessions twice and upload them twice.
     expect(parseImportArgs(["--client", "fake, fake,fake"], readers).clients).toEqual(["fake"]);
     expect(() => parseImportArgs(["--client", "nope"], readers)).toThrow(/unsupported client/);
     expect(() => parseImportArgs(["--since", "yesterday"], readers)).toThrow(/--since/);
-    expect(parseImportArgs([], readers).concurrency).toBe(8);
-    expect(parseImportArgs(["--concurrency", "2"], readers).concurrency).toBe(2);
-    // Consolidation needs dreamed turns in order.
-    expect(parseImportArgs(["--concurrency", "8", "--dream"], readers).concurrency).toBe(1);
-    for (const bad of ["0", "9", "2.5", "x"]) expect(() => parseImportArgs(["--concurrency", bad], readers)).toThrow(/--concurrency/);
+    expect(() => parseImportArgs(["--dream"], readers)).toThrow(/Unknown option/);
+    expect(() => parseImportArgs(["--concurrency", "8"], readers)).toThrow(/Unknown option/);
   });
 
   it("accepts --flag=value and rejects unknown arguments, so no filter is dropped", () => {
@@ -432,7 +449,7 @@ describe("import CLI", () => {
   it("previews without uploading", async () => {
     const { apiFor, posts } = fakeApi([]);
     const err = capture();
-    expect(await runImportCli(["--client", "fake"], { readers: applyFixture(), err, apiFor })).toBe(0);
+    expect(await runImportCli(["--client", "fake"], { startBackground: null, readers: applyFixture(), err, apiFor })).toBe(0);
     expect(err.text).toContain("fake: 1 session(s), 2 prompt(s) + 2 reply(ies) = 4 entries");
     expect(err.text).toContain("Preview only");
     expect(posts).toEqual([]);
@@ -453,20 +470,39 @@ describe("import CLI", () => {
   it("refuses --apply without a terminal or --yes, and stops when declined", async () => {
     const { apiFor, posts } = fakeApi([]);
     const err = capture();
-    expect(await runImportCli(["--client", "fake", "--apply"], { readers: applyFixture(), err, apiFor, isTTY: false })).toBe(2);
+    expect(await runImportCli(["--client", "fake", "--apply"], { startBackground: null, readers: applyFixture(), err, apiFor, isTTY: false })).toBe(2);
     expect(err.text).toContain("needs confirmation");
     const declined = capture();
     expect(await runImportCli(["--client", "fake", "--apply"], {
-      readers: applyFixture(), err: declined, apiFor, isTTY: true, confirmFn: async () => false,
+      startBackground: null, readers: applyFixture(), err: declined, apiFor, isTTY: true, confirmFn: async () => false,
     })).toBe(1);
     expect(declined.text).toContain("Nothing was uploaded");
     expect(posts).toEqual([]);
   });
 
+  it("hands the confirmed snapshot to the background worker without posting in the parent", async () => {
+    const { apiFor, posts } = fakeApi([]);
+    const err = capture();
+    let approved;
+    const startBackground = async (sessions) => {
+      approved = sessions;
+      return { pid: 1234, logPath: "/tmp/import.log" };
+    };
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], {
+      readers: applyFixture(), err, apiFor, startBackground,
+    })).toBe(0);
+    expect(posts).toEqual([]);
+    expect(approved[0].entries).toHaveLength(4);
+    expect(approved[0].importIds).toBeInstanceOf(Set);
+    expect(approved[0].entries[0].importBinding).toEqual({ host: "https://example.test", fingerprint: "k1" });
+    expect(err.text).toContain("running in background (PID 1234)");
+    expect(err.text).toContain("import --status");
+  });
+
   it("uploads with --yes and reports the credits it needs", async () => {
     const { apiFor, posts } = fakeApi([]);
     const err = capture();
-    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} });
+    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { startBackground: null, readers: applyFixture(), err, apiFor, wait: async () => {} });
     expect(code).toBe(0);
     expect(err.text).toContain("this import needs 4 credits");
     expect(err.text).toContain("Imported 4 entries from 1 session(s)");
@@ -476,7 +512,7 @@ describe("import CLI", () => {
   it("stops at once with exit 1 and how to resume when credits run out", async () => {
     const { apiFor, posts } = fakeApi(["ok", "outOfCredits"]);
     const err = capture();
-    const code = await runImportCli(["--client", "fake", "--apply", "--yes", "--concurrency", "1"], { readers: applyFixture(), err, apiFor, wait: async () => {} });
+    const code = await runImportCli(["--client", "fake", "--apply", "--yes"], { startBackground: null, readers: applyFixture(), err, apiFor, wait: async () => {} });
     expect(code).toBe(1);
     expect(posts).toHaveLength(2);
     expect(err.text).toContain("Stopped early: out of MidBrain credits, after storing 1 of 4 entries.");
@@ -486,7 +522,7 @@ describe("import CLI", () => {
   it("asks to wait before resuming after a rate limit", async () => {
     const { apiFor } = fakeApi(["ok", "ok", "rateLimited"]);
     const err = capture();
-    expect(await runImportCli(["--client", "fake", "--apply", "--yes", "--concurrency", "1"], { readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(1);
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { startBackground: null, readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(1);
     expect(err.text).toContain("Stopped early: rate limited, after storing 2 of 4 entries.");
     expect(err.text).toContain("Wait a few minutes, then run the same command again to continue");
   });
@@ -512,7 +548,7 @@ describe("import CLI", () => {
       return apis.get(cwd);
     };
     const err = capture();
-    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers, err, apiFor, wait: async () => {} })).toBe(0);
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { startBackground: null, readers, err, apiFor, wait: async () => {} })).toBe(0);
     expect(listed.map(([cwd]) => cwd).sort()).toEqual(["/work/other", "/work/proj"]);
     expect(apis.get("/work/proj").posts.map((post) => post.cwd)).toEqual(["/work/proj", "/work/proj"]);
     expect(apis.get("/work/other").posts.map((post) => post.cwd)).toEqual(["/work/other", "/work/other"]);
@@ -521,7 +557,7 @@ describe("import CLI", () => {
   it("uploads each session once when a client is named twice", async () => {
     const { apiFor, posts } = fakeApi([]);
     const err = capture();
-    expect(await runImportCli(["--client", "fake,fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(0);
+    expect(await runImportCli(["--client", "fake,fake", "--apply", "--yes"], { startBackground: null, readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(0);
     expect(posts).toHaveLength(4);
   });
 
@@ -537,14 +573,14 @@ describe("import CLI", () => {
       postImportedEpisodic: async (text) => { posts.push(text); return "ok"; },
     });
     const err = capture();
-    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: fakeReaders([moved]), err, apiFor, wait: async () => {} })).toBe(0);
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { startBackground: null, readers: fakeReaders([moved]), err, apiFor, wait: async () => {} })).toBe(0);
     expect(posts).toEqual(["p2", "r2"]);
   });
 
   it("reports entries the firewall blocked", async () => {
     const { apiFor } = fakeApi(["ok", "blocked"]);
     const err = capture();
-    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(0);
+    expect(await runImportCli(["--client", "fake", "--apply", "--yes"], { startBackground: null, readers: applyFixture(), err, apiFor, wait: async () => {} })).toBe(0);
     expect(err.text).toContain("Imported 3 entries");
     expect(err.text).toContain("1 entry was blocked by MidBrain's firewall");
   });
@@ -554,7 +590,7 @@ describe("import CLI", () => {
     let calls = 0;
     api.listEpisodicForSession = async () => { calls += 1; throw new Error("API 429 listing session memories"); };
     const err = capture();
-    await runImportCli(["--client", "fake"], { readers: applyFixture(), err, apiFor });
+    await runImportCli(["--client", "fake"], { startBackground: null, readers: applyFixture(), err, apiFor });
     expect(calls).toBe(1);
     expect(err.text).toContain("skipped 1 session(s): could not check MidBrain (API 429");
   });

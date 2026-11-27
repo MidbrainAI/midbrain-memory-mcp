@@ -405,8 +405,7 @@ export class MidbrainApi {
 
   /**
    * One history-import entry (issue #75) to the v3 episodic endpoint, with
-   * its original time and `X-Skip-Dream: 1` (per-memory dream processing is
-   * optional for bulk ingestion). One attempt, never retried: a write that
+   * its original time and consolidation enabled. One attempt, never retried: a write that
    * fails mid-flight may still have been stored. The result says whether the
    * memory was stored, definitely not stored, or may have been stored:
    *
@@ -422,12 +421,11 @@ export class MidbrainApi {
    * @param {string} text
    * @param {"user"|"assistant"} role
    * @param {Record<string,string>} memoryMetadata
-   * @param {{occurredAt?: string, skipDream?: boolean}} [opts]
+   * @param {{occurredAt?: string}} [opts]
    * @returns {Promise<"ok"|"outOfCredits"|"rateLimited"|"blocked"|"rejected"|"unknown">}
    */
-  async postImportedEpisodic(text, role, memoryMetadata, { occurredAt, skipDream = true } = {}) {
+  async postImportedEpisodic(text, role, memoryMetadata, { occurredAt } = {}) {
     const headers = this.#headers({ json: true });
-    if (skipDream) headers["X-Skip-Dream"] = "1";
     const body = { text, role, memory_metadata: memoryMetadata };
     if (occurredAt) body.occurred_at = occurredAt;
     let response;

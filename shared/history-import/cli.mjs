@@ -7,12 +7,13 @@
  */
 
 import readline from "node:readline";
+import { startBackgroundImport, readImportStatus } from "./background.mjs";
 import { parseArgs } from "node:util";
 
 import { allClients } from "../clients/registry.mjs";
 import { MidbrainApi } from "../midbrain-api.mjs";
 import { READERS } from "./readers/index.mjs";
-import { DEFAULT_CONCURRENCY, MAX_CONCURRENCY, planImport, summarize, trimAgainstServer, uploadImport } from "./plan.mjs";
+import { planImport, summarize, trimAgainstServer, uploadImport } from "./plan.mjs";
 
 const HELP = `Usage: npx midbrain-memory-mcp@latest import [options]
 
@@ -24,17 +25,17 @@ Options:
   --since <date>    Only turns on or after this date (YYYY-MM-DD)
   --apply           Upload after showing the preview
   --yes             With --apply: do not ask for confirmation
-  --dream           Let MidBrain run its per-memory processing on imported
-                    turns (off by default, as for any bulk load); uploads
-                    one entry at a time so they are processed in order
-  --concurrency <n> Uploads in flight, 1-${MAX_CONCURRENCY} (default: ${DEFAULT_CONCURRENCY})
+  --status          Show the latest background import progress
   -h, --help        Show this help
 
 What is imported: your prompts and the reply that ended each turn, with
 their original time, labeled origin=import. Tool calls and output, injected
 context, subagent threads, sessions a program started, sessions active in
 the last 10 minutes, and turns MidBrain already captured live are left out.
-Each turn is stored with the key live capture would use for its directory.`;
+Each turn is stored with the key live capture would use for its directory.
+After confirmation, uploads run in the background; the terminal can close.
+Use import --status to check progress. Entries are uploaded oldest first,
+one at a time, with consolidation enabled.`;
 
 /** Strict, so a typo never drops a filter and widens the import. */
 export function parseImportArgs(argv, readers = READERS) {
@@ -46,8 +47,7 @@ export function parseImportArgs(argv, readers = READERS) {
       since: { type: "string" },
       apply: { type: "boolean", default: false },
       yes: { type: "boolean", default: false },
-      dream: { type: "boolean", default: false },
-      concurrency: { type: "string" },
+      status: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   });
@@ -63,16 +63,7 @@ export function parseImportArgs(argv, readers = READERS) {
     }
     since = new Date(`${values.since}T00:00:00Z`).toISOString();
   }
-  let concurrency = DEFAULT_CONCURRENCY;
-  if (values.concurrency !== undefined) {
-    concurrency = Number(values.concurrency);
-    if (!/^\d+$/.test(values.concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY) {
-      throw new Error(`--concurrency must be a whole number from 1 to ${MAX_CONCURRENCY}`);
-    }
-  }
-  // Consolidation reads earlier memories, so dreamed turns must arrive in order.
-  if (values.dream) concurrency = 1;
-  return { help: values.help, clients, since, apply: values.apply, yes: values.yes, dream: values.dream, concurrency };
+  return { help: values.help, status: values.status, clients, since, apply: values.apply, yes: values.yes };
 }
 
 /**
@@ -125,7 +116,7 @@ async function confirm(question) {
  * session that moved between projects stores each turn where live capture
  * would have.
  */
-function apiResolver() {
+export function apiResolver() {
   const adapters = Object.fromEntries(allClients().map((client) => [client.id, client]));
   const cache = new Map();
   return ({ client, cwd }) => {
@@ -163,6 +154,7 @@ export async function runImportCli(argv, {
   isTTY = process.stdin.isTTY,
   apiFor = apiResolver(),
   confirmFn = confirm,
+  startBackground = startBackgroundImport,
   wait,
 } = {}) {
   let options;
@@ -177,6 +169,11 @@ export async function runImportCli(argv, {
     return 0;
   }
 
+  if (options.status) {
+    err.write(`${readImportStatus()}\n`);
+    return 0;
+  }
+
   err.write("Reading local history (nothing is uploaded yet)...\n");
   const sessions = await planImport({ ...options, readers });
   err.write("Checking which sessions MidBrain already has (sends session ids only)...\n");
@@ -184,14 +181,7 @@ export async function runImportCli(argv, {
   // check skips the session (see trimAgainstServer); a re-run retries.
   // Live capture may have stored the conversation under a linked id too
   // (e.g. the Claude Code session an OpenClaw session ran on).
-  await trimAgainstServer(sessions, async (session) => {
-    const destinations = await sessionDestinations(session, apiFor);
-    const ids = [session.sessionId, ...(session.linkedSessionIds ?? [])];
-    return Promise.all(destinations.map(async ({ api, entries }) => {
-      const lists = await Promise.all(ids.map((id) => api.listEpisodicForSession(id)));
-      return { entries, existing: lists.flat() };
-    }));
-  });
+  await checkImportSessions(sessions, apiFor);
   err.write(`\n${formatPreview(summarize(sessions))}\n\n`);
 
   const pending = sessions.filter((session) => !session.skip && session.entries.length);
@@ -219,20 +209,52 @@ export async function runImportCli(argv, {
     }
   }
 
+  if (startBackground) {
+    // Bind the approved snapshot to the same destination in the child.
+    for (const session of pending) {
+      for (const entry of session.entries) {
+        const api = await apiFor({ client: session.client, cwd: entryCwd(session, entry) });
+        entry.importBinding = { host: api.effectiveApiBase, fingerprint: api.keyFingerprint };
+      }
+    }
+    try {
+      const job = await startBackground(pending);
+      err.write(`Import running in background (PID ${job.pid}). You can close this terminal.\nLog: ${job.logPath}\nCheck progress: npx midbrain-memory-mcp@latest import --status\n`);
+      return 0;
+    } catch (error) {
+      err.write(`Could not start background import: ${error.message}\n`);
+      return 2;
+    }
+  }
+  return uploadApprovedImport(pending, { apiFor, err, wait });
+}
+
+export async function checkImportSessions(sessions, apiFor) {
+  await trimAgainstServer(sessions, async (session) => {
+    const destinations = await sessionDestinations(session, apiFor);
+    const ids = [session.sessionId, ...(session.linkedSessionIds ?? [])];
+    return Promise.all(destinations.map(async ({ api, entries }) => {
+      const lists = await Promise.all(ids.map((id) => api.listEpisodicForSession(id)));
+      return { entries, existing: lists.flat() };
+    }));
+  });
+}
+
+export async function uploadApprovedImport(pending, { apiFor, err, wait, onProgress = () => {} }) {
+  const total = pending.reduce((sum, session) => sum + session.entries.length, 0);
   let lastReport = 0;
   const started = Date.now();
   const totals = await uploadImport({
     sessions: pending,
-    concurrency: options.concurrency,
     wait,
     post: async (session, entry, metadata) => {
       const api = await apiFor({ client: session.client, cwd: entryCwd(session, entry) });
       return api.postImportedEpisodic(entry.text, entry.role, metadata, {
         occurredAt: entry.occurredAt,
-        skipDream: !options.dream,
       });
     },
     onProgress: (event) => {
+      onProgress(event);
       if (event.type === "entry" && (event.totals.sent - lastReport >= 50)) {
         lastReport = event.totals.sent;
         err.write(`  ${event.totals.sent}/${total} entries stored\n`);
