@@ -19,7 +19,7 @@ import path from "path";
 import { pathToFileURL } from "node:url";
 
 import { makeTestEnv, assertSandboxed, snapshotTree, diffSnapshots } from "./helpers/test-env.mjs";
-import { runSelfRepair } from "../install.mjs";
+import { prepareCaptureClientMigration, runSelfRepair } from "../install.mjs";
 import { startMcpServer } from "../index.js";
 import { captureClientLabel } from "../plugins/claude-code/common.mjs";
 import { installShim, stableShimPath, shellQuote } from "../shared/clients/shim.mjs";
@@ -1333,5 +1333,111 @@ describe("Issue #52 — durable state under ~/.claude (MIDBRAIN_STATE_DIR)", () 
     } finally {
       delete process.env.MIDBRAIN_API_KEY;
     }
+  });
+});
+
+// ===================================================================
+// Issue #104 — a NanoClaw group on another provider than Claude
+// ===================================================================
+
+describe("Issue #104 — NanoClaw provider at server start", () => {
+  function containerConfigPath() {
+    return path.join(env.root, "workspace", "agent", "container.json");
+  }
+
+  /** A group set up for MidBrain whose container.json names `provider`. */
+  async function seedGroup(provider, { claudeHooks }) {
+    if (claudeHooks) {
+      await fs.writeFile(env.paths.claudeSettings, JSON.stringify(migratedClaudeSettings(), null, 2) + "\n");
+    }
+    await fs.mkdir(path.dirname(containerConfigPath()), { recursive: true });
+    const config = {
+      mcpServers: {
+        "midbrain-memory": {
+          command: "npx",
+          args: ["-y", "midbrain-memory-mcp@latest"],
+          env: { MIDBRAIN_CLIENT: "claude", MIDBRAIN_API_KEY: TEST_KEY, MIDBRAIN_CAPTURE_CLIENT: "nanoclaw" },
+        },
+      },
+    };
+    if (provider !== undefined) config.provider = provider;
+    await fs.writeFile(containerConfigPath(), JSON.stringify(config, null, 2) + "\n");
+    process.env.MIDBRAIN_CLIENT = "claude";
+    process.env.MIDBRAIN_API_KEY = TEST_KEY;
+    process.env.MIDBRAIN_CAPTURE_CLIENT = "nanoclaw";
+  }
+
+  function prepare() {
+    return prepareCaptureClientMigration({ ...NPX_CTX, nanoclawConfigPath: containerConfigPath() });
+  }
+
+  async function startServer() {
+    const connect = vi.fn(async () => {});
+    await startMcpServer({
+      serverFactory: () => ({ connect }),
+      transportFactory: () => ({}),
+      prepareOptions: { ...NPX_CTX, nanoclawConfigPath: containerConfigPath() },
+      loadServerInstructionsFn: async () => undefined,
+      checkForUpdateFn: () => {},
+      log: () => {},
+    });
+    return connect;
+  }
+
+  for (const provider of ["codex", "opencode", "some-future-provider"]) {
+    it(`starts the MCP server in a ${provider} group, which has no Claude Code hooks`, async () => {
+      await seedGroup(provider, { claudeHooks: false });
+
+      const connect = await startServer();
+
+      expect(connect).toHaveBeenCalledOnce();
+      expect(stderrText()).toContain("NanoClaw group does not run the Claude provider: hook preparation and self-repair skipped");
+      expect(stderrText()).not.toContain(provider);
+    });
+  }
+
+  it("leaves Claude Code's files alone in a group on another provider", async () => {
+    await seedGroup("codex", { claudeHooks: false });
+    const settingsBefore = await fs.readFile(env.paths.claudeSettings, "utf8");
+
+    const result = await prepare();
+
+    expect(result).toMatchObject({ skipped: true, otherNanoClawProvider: true, owned: false });
+    expect(await fs.readFile(env.paths.claudeSettings, "utf8")).toBe(settingsBefore);
+    await expect(fs.access(markerPath())).rejects.toThrow();
+  });
+
+  it("skips self-repair in a group on another provider, so it installs and rewrites no client's capture", async () => {
+    await seedGroup("codex", { claudeHooks: false });
+    // A provider's own config in the container: self-repair would copy the
+    // OpenCode plugin into it, or rewrite Codex hooks to a shim path that does
+    // not survive the container.
+    await fs.mkdir(path.dirname(env.paths.opencodeConfig), { recursive: true });
+    await fs.writeFile(env.paths.opencodeConfig, "{}\n");
+    const before = await snapshotTree(env.home);
+
+    const result = await runSelfRepair({ ...NPX_CTX, nanoclawConfigPath: containerConfigPath() });
+
+    expect(result).toEqual({ skipped: true, kind: NPX_CTX.context.kind });
+    expect(diffSnapshots(before, await snapshotTree(env.home))).toEqual([]);
+    // Not the generic skip, whose advice to run `install` does not apply here.
+    expect(stderrText()).not.toContain("self-repair skipped: running from");
+  });
+
+  for (const provider of [undefined, "claude", "Claude"]) {
+    it(`still prepares Claude Code hooks before readiness when provider is ${JSON.stringify(provider)}`, async () => {
+      await seedGroup(provider, { claudeHooks: true });
+
+      const result = await prepare();
+
+      expect(result).toMatchObject({ skipped: false, owned: true });
+      expect(await readMarker()).toBe("nanoclaw\n");
+    });
+  }
+
+  it("still refuses to start a Claude group whose MidBrain hooks are missing", async () => {
+    await seedGroup("claude", { claudeHooks: false });
+
+    await expect(prepare()).rejects.toThrow("NanoClaw capture preparation failed before readiness");
   });
 });

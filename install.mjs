@@ -292,32 +292,53 @@ const NANOCLAW_CONTAINER_CONFIG = '/workspace/agent/container.json';
 const NANOCLAW_MCP_NAME = 'midbrain-memory';
 const NANOCLAW_MCP_PACKAGE = 'midbrain-memory-mcp@latest';
 
-/** Positive ownership proof already present in pre-v0.4.8 NanoClaw groups. */
-async function isLegacyNanoClawProcess(configPath) {
+/**
+ * Read NanoClaw's container.json without following a symlink or reading a
+ * file swapped in after the check. Returns null when it cannot be read.
+ */
+async function readNanoClawContainerConfig(configPath) {
   let handle;
   try {
     const pathStat = await fs.lstat(configPath);
-    if (!pathStat.isFile() || pathStat.isSymbolicLink()) return false;
+    if (!pathStat.isFile() || pathStat.isSymbolicLink()) return null;
     handle = await fs.open(configPath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
     const openedStat = await handle.stat();
     if (!openedStat.isFile()
       || openedStat.dev !== pathStat.dev
-      || openedStat.ino !== pathStat.ino) return false;
-    const config = JSON.parse(await handle.readFile('utf8'));
-    const entry = config?.mcpServers?.[NANOCLAW_MCP_NAME];
-    if (entry?.command !== 'npx' || !Array.isArray(entry.args)) return false;
-    if (!entry.args.includes(NANOCLAW_MCP_PACKAGE)) return false;
-    if (entry.env?.MIDBRAIN_CLIENT !== 'claude') return false;
-    return Boolean(entry.env?.MIDBRAIN_API_KEY)
-      && process.env.MIDBRAIN_CLIENT === entry.env.MIDBRAIN_CLIENT
-      && process.env.MIDBRAIN_API_KEY === entry.env.MIDBRAIN_API_KEY;
+      || openedStat.ino !== pathStat.ino) return null;
+    return JSON.parse(await handle.readFile('utf8'));
   } catch {
-    return false;
+    return null;
   } finally {
     if (handle) {
       try { await handle.close(); } catch { /* ownership probe is fail-open */ }
     }
   }
+}
+
+/** Positive ownership proof already present in pre-v0.4.8 NanoClaw groups. */
+async function isLegacyNanoClawProcess(configPath) {
+  const config = await readNanoClawContainerConfig(configPath);
+  const entry = config?.mcpServers?.[NANOCLAW_MCP_NAME];
+  if (entry?.command !== 'npx' || !Array.isArray(entry.args)) return false;
+  if (!entry.args.includes(NANOCLAW_MCP_PACKAGE)) return false;
+  if (entry.env?.MIDBRAIN_CLIENT !== 'claude') return false;
+  return Boolean(entry.env?.MIDBRAIN_API_KEY)
+    && process.env.MIDBRAIN_CLIENT === entry.env.MIDBRAIN_CLIENT
+    && process.env.MIDBRAIN_API_KEY === entry.env.MIDBRAIN_API_KEY;
+}
+
+/**
+ * Whether the group runs NanoClaw's Claude provider, read the way NanoClaw's
+ * agent runner reads it: container.json `provider`, `claude` when absent or
+ * unreadable. The Ollama provider is Claude Code pointed at Ollama and keeps
+ * `claude`. Other providers (codex, opencode, ...) have no Claude Code hooks
+ * (issue #104).
+ */
+async function runsNanoClawClaudeProvider(configPath) {
+  const provider = (await readNanoClawContainerConfig(configPath))?.provider;
+  if (typeof provider !== 'string' || !provider) return true;
+  return provider.toLowerCase() === 'claude';
 }
 
 async function ownsNanoClawCapture(configPath) {
@@ -575,6 +596,7 @@ export async function runSelfRepair({
   } catch {
     return { skipped: false, kind: 'unknown', blocked: true };
   }
+  if (prepared.otherNanoClawProvider) return { skipped: true, kind: prepared.kind };
   if (prepared.skipped) {
     console.error(
       `[midbrain] self-repair skipped: running from ${prepared.kind} (${prepared.path}); ` +
@@ -620,6 +642,14 @@ export async function prepareCaptureClientMigration({
 
   const owned = await ownsNanoClawCapture(nanoclawConfigPath);
   if (!owned) return { skipped: false, owned: false, kind: ctx.kind, path: ctx.path };
+  if (!(await runsNanoClawClaudeProvider(nanoclawConfigPath))) {
+    // The steps below prepare Claude Code's hooks; failing them would stop the
+    // server and take the memory tools away from the group. Self-repair is
+    // skipped too: it would install or rewrite other clients' capture in a
+    // container MidBrain did not set up for them.
+    console.error('[midbrain] NanoClaw group does not run the Claude provider: hook preparation and self-repair skipped');
+    return { skipped: true, otherNanoClawProvider: true, owned: false, kind: ctx.kind, path: ctx.path };
+  }
 
   try {
     const stateDir = activateNanoClawStateDir();

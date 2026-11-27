@@ -5,7 +5,7 @@ that are still open. The [README](../README.md) has the setup and
 troubleshooting details for each client. Update this page in the same change
 that adds or removes a client capability.
 
-Last reviewed: 2026-10-16 (v0.4.10, plus PR #98).
+Last reviewed: 2026-10-16 (v0.4.10, plus PR #98); NanoClaw rows 2026-11-25 (#104).
 
 ## Capability matrix
 
@@ -19,7 +19,7 @@ Last reviewed: 2026-10-16 (v0.4.10, plus PR #98).
 | OpenClaw | Yes | Yes (`agent_end`) | Yes (`agent_end`) | No | No | Yes: `appendSystemContext`, once per session | No | Yes: plugin file copy |
 | Prime Agent | Yes, from the Python REPL | Yes (skill watcher) | Yes (skill watcher) | Yes (skill watcher) | No | **No** (see [open gaps](#open-gaps)) | No | Yes: skill files and `prime-agent-hook` shim |
 | NanoClaw, Claude provider | Yes | Yes (Claude Code hooks) | Yes (Claude Code hooks) | No | No | Yes: `SessionStart` context | Yes | Yes |
-| NanoClaw, other providers | **No**: the MCP server fails to start (#104) | Through that provider's hooks, labeled with the provider's name | Same | Same | Same | Codex provider: yes, when the `SessionStart` hook is installed | — | **No** (#104) |
+| NanoClaw, other providers | Yes | Through that provider's hooks, labeled with the provider's name | Same | Same | Same | Codex provider: yes, when the `SessionStart` hook is installed | — | **No**: self-repair is skipped there, so it changes no provider's hooks (#104) |
 
 "PK injection" is the legacy procedural-knowledge injection. It is off unless
 `MIDBRAIN_ENABLE_PK_INJECTION=1` is set.
@@ -51,7 +51,7 @@ Last reviewed: 2026-10-16 (v0.4.10, plus PR #98).
 
 | Gap | Client | Blocked by | Tracking |
 |---|---|---|---|
-| MCP server fails to start in non-Claude provider groups; no self-repair there | NanoClaw | MidBrain | #104 |
+| Other providers than Claude: `/add-midbrain` sets up no capture, and capture is not labeled `nanoclaw` | NanoClaw | MidBrain | #104 |
 | Persona and profile are not added | Prime Agent | Upstream: no hook can add session context. The proposed `SessionStart` hook rejects context output | PrimeIntellect-ai/prime-agent#3642, discussion #3200 |
 | Capture uses a log watcher, not hooks | Prime Agent | Upstream: no lifecycle hooks in 0.10 | PrimeIntellect-ai/prime-agent#3642 |
 | PK injection is not available | Cursor, OpenClaw, Prime Agent | Client: no prompt-time context surface | — |

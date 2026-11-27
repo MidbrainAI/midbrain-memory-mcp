@@ -1226,11 +1226,15 @@ Troubleshooting:
 
 ### NanoClaw
 
-NanoClaw runs Claude Code inside Docker containers. MidBrain integrates via
-NanoClaw's skill system. The installer copies a `/add-midbrain` skill that
-handles group-scoped MCP and capture setup. It also synchronizes the proactive
-rules into NanoClaw's shared `container/CLAUDE.md` and every existing group's
-writable `CLAUDE.local.md`, without editing composed `CLAUDE.md` artifacts.
+NanoClaw runs an agent inside Docker containers: Claude Code by default (its
+`claude` provider, also used for Ollama), or another provider per group.
+`/add-midbrain` sets up capture for the Claude provider. In a group on another
+provider (Codex, OpenCode) the memory tools still work, but MidBrain does not
+set up capture there (#104). MidBrain integrates via NanoClaw's skill system.
+The installer copies a `/add-midbrain` skill that handles group-scoped MCP and
+capture setup. It also synchronizes the proactive rules into NanoClaw's shared
+`container/CLAUDE.md` and every existing group's writable `CLAUDE.local.md`,
+without editing composed `CLAUDE.md` artifacts.
 
 **Install the skill:**
 
