@@ -519,7 +519,7 @@ Prime Agent:
 ## History Import
 
 Interactive `install` offers history import per detected supported client after
-setup, reusing the import preview and upload confirmation. Non-interactive
+setup, collecting choices into one combined preview and upload confirmation. Non-interactive
 installation never prompts or imports. The standalone import command remains.
 
 `npx midbrain-memory-mcp@latest import` (issue #75) imports conversations from
@@ -552,6 +552,12 @@ index (`key >= 'prefix' AND key < 'prefix\uffff'`), never with `LIKE`. `node:sql
   it fails closed (an error, an unexpected response or more than 20 pages
   skips the session). Entries an earlier import stored are dropped, and a
   session is cut `CAPTURE_LAG_MS` before its first live capture.
+- Confirmed uploads run in a detached worker (`background.mjs`, `worker.mjs`)
+  with ignored terminal handles. Advanced IPC transfers the approved snapshot
+  (including import-id Sets), never raw credentials or saved history files.
+  The worker validates destination bindings, rechecks server dedupe under its
+  exclusive lock, and writes progress/status using the shared logger. The
+  installer never waits for uploads. `import --status` reports progress.
 - Imports merge all selected clients and sessions by original timestamp,
   preserving source order for ties, and await each POST before the next.
   Consolidation is always enabled; never send `X-Skip-Dream` on imports.
