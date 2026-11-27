@@ -9,12 +9,9 @@
 # MidBrain Memory MCP
 
 **Your agents remember what you worked on, across sessions and tools.**
-MidBrain saves your prompts and your agents' replies as you work, and any agent
-using the same memory can search them later.
-
-Persistent experience for long running agents. An MCP server that gives agents
-long-term memory through semantic search, episodic recall, and automatic capture
-that consolidates into procedural knowledge over time.
+MidBrain is an MCP server with automatic capture: it saves your prompts and your
+agents' replies as you work, any agent using the same memory can search them
+later, and captured memory can consolidate into procedural knowledge over time.
 
 Works with [OpenCode](https://opencode.ai),
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
@@ -35,6 +32,7 @@ Works with [OpenCode](https://opencode.ai),
 - [How It Works](#how-it-works)
 - [Memory Setup](#memory-setup)
 - [Troubleshooting](#troubleshooting)
+- [Stop Capture or Remove MidBrain](#stop-capture-or-remove-midbrain)
 
 Reference:
 
@@ -106,13 +104,13 @@ npx -y midbrain-memory-mcp@latest --version
 ## How It Works
 
 ```
-OpenCode / Claude Code / Codex / Cursor / OpenClaw / Prime Agent session
+Claude Code / Codex / Cursor / OpenCode / Hermes / OpenClaw / Prime Agent / NanoClaw
   |
-  |-- MCP stdio -----> index.js -------> memory.midbrain.ai
-  |                    (search, browse)    /api/v1/memories/search
+  |-- MCP stdio ------> index.js ----------> memory.midbrain.ai
+  |                     (search, browse)     /api/v1/memories/...
   |
-  |-- Hooks ----------> capture hooks --> memory.midbrain.ai
-                       (auto-capture)     /api/v1/memories/episodic
+  |-- capture --------> hooks, plugin, or -> memory.midbrain.ai
+                        log watcher          /api/v1/memories/episodic
 ```
 
 [docs/clients.md](docs/clients.md) lists what each client gets (search,
@@ -153,7 +151,9 @@ and its scope/source, credential scope and source category, credential
 shadowing, an optional live MCP auth probe, pending capture-cache counts for
 the current and other bindings, safe cache/log locations, and next steps. Pass
 `probe: false` when a network request is not appropriate. Capture remains
-fail-open: failures are cached and logged without blocking the client.
+fail-open: it never blocks the client. A failed upload is cached and sent the
+next time a MidBrain MCP server starts; a capture with no usable key is logged
+and not stored (NanoClaw keeps the prompt for later).
 
 The diagnostics response is safe to paste into an issue. It never includes
 credential contents, hashes, fingerprints, or last-four fragments, and it
@@ -448,6 +448,50 @@ chmod 600 /path/to/.midbrain-key   # Fix permissions
 
 ---
 
+## Stop Capture or Remove MidBrain
+
+There is no uninstall command: remove what the installer wrote. Memories
+already stored stay in your MidBrain account.
+
+**Stop capture, keep memory search.** Remove the client's MidBrain hooks and
+keep its MCP entry:
+
+| Client | Remove |
+|---|---|
+| Claude Code | Every hook in `~/.claude/settings.json` that calls `~/.midbrain/bin/claude-hook` (`SessionStart`, `UserPromptSubmit`, `Stop`) |
+| Codex | Every hook in `~/.codex/hooks.json` that calls `~/.midbrain/bin/codex-hook` |
+| Hermes | The `pre_llm_call` and `post_llm_call` hooks that call `~/.midbrain/bin/hermes-hook` in the active `config.yaml` |
+| Cursor | Every hook in `~/.cursor/hooks.json` that calls `~/.midbrain/bin/cursor-hook` |
+| OpenClaw | `plugins.load.paths` item and `plugins.entries.midbrain-memory` in `openclaw.json`, then `~/.config/openclaw/midbrain-plugin/` |
+| Prime Agent | `~/.prime/agent/skills/midbrain-memory/` (or set `MIDBRAIN_PRIME_CAPTURE=0`) |
+| NanoClaw | The capture hooks in the group's `.claude-shared/settings.json`; the `/add-midbrain` skill's "Removing MidBrain Memory" section has the steps |
+| OpenCode | No separate switch: the plugin does capture, and automatic repair copies it back (see below) |
+
+Remove all of a client's MidBrain hooks at once. Automatic repair leaves a
+client with none alone, but re-adds the full set when only some remain.
+
+OpenCode's plugin files (`midbrain-memory.ts`, `midbrain-shared.mjs` and
+`.midbrain-repo-root` in `~/.config/opencode/plugins/`) are copied back whenever
+a MidBrain MCP server starts on this machine, from any client, while OpenCode is
+installed. To stop OpenCode capture, remove MidBrain from every client.
+
+**Remove MidBrain.** For each client, also delete its `midbrain-memory` MCP
+entry (the files are listed in [MCP Config Examples](#mcp-config-examples);
+project setup writes the project-level ones) and the managed rules block,
+everything from `<!-- midbrain-memory-rules:start -->` to
+`<!-- midbrain-memory-rules:end -->`, in the files listed under
+[Global Memory](#global-memory) and in project instruction files. Then delete:
+
+- the hook shims in `~/.midbrain/bin/`;
+- keys and settings in `~/.config/midbrain/`, any client key file (such as
+  `~/.config/opencode/.midbrain-key`), and each project's `.midbrain/` folder;
+- pending captures in `~/.cache/midbrain/` and the logs (see [Logging](#logging)).
+
+Cursor, OpenClaw and Prime Agent have their own removal steps in
+[Client Notes](#client-notes).
+
+---
+
 ## Client Notes
 
 Setup details, what is captured, limitations, and troubleshooting for Cursor,
@@ -549,12 +593,12 @@ Troubleshooting:
 - Tools missing: restart Cursor or reload the window, then check that
   `midbrain-memory` is enabled in Cursor's MCP settings.
 - Nothing captured: confirm `~/.cursor/hooks.json` lists
-  `~/.midbrain/bin/cursor-hook` for the three events, and read
+  `~/.midbrain/bin/cursor-hook` for the four events, and read
   `midbrain-cursor.log` (see [Logging](#logging)).
 - Stale shim after an update: start any MidBrain MCP server; automatic repair
   reinstalls the shim and rewrites only MidBrain-owned hook entries.
 - To remove MidBrain from Cursor, delete the `midbrain-memory` entry from
-  `mcp.json` and the three `cursor-hook` entries from `hooks.json`.
+  `mcp.json` and every `cursor-hook` entry from `hooks.json`.
 
 ### OpenClaw
 
@@ -861,7 +905,7 @@ watcher that reads the session log and stores prompts, final replies, and
 bounded tool summaries (see [Prime Agent](#prime-agent)).
 
 **Procedural knowledge**: Automatic procedural-knowledge injection is disabled by default
-in v0.4.3 while the experience layer is redesigned. Hooks do not
+while the experience layer is redesigned. Hooks do not
 call `/api/v1/memories/search/procedural` or prepend procedural context unless
 `MIDBRAIN_ENABLE_PK_INJECTION=1` is explicitly set in the hook environment.
 There is no manual MCP tool for procedural knowledge; agents should use the
