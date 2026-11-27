@@ -18,6 +18,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 
 import { openclawStateDir } from "../../clients/openclaw.mjs";
+import { openclawTypedText } from "../../openclaw-text.mjs";
 import {
   databaseSource, isSymlink, loadSqlite, parseDatabaseSource, regularFiles, subdirectories, validTimestamp, withReadOnlyDatabase,
 } from "./common.mjs";
@@ -30,8 +31,6 @@ const SUBAGENT_KEY = /:(?:subagent|acp)(?::|$)/i;
 const HEARTBEAT_REPLY = "HEARTBEAT_OK";
 // The reply to a turn that needs no answer.
 const NO_REPLY = "NO_REPLY";
-// OpenClaw's inbound envelope: "[Mon 2026-10-05 09:00 ...] text".
-const TIMESTAMP_ENVELOPE = /^\[[^\]\n]*\d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]\n]*\]\s*/;
 
 /** Every agent's transcript database under the state dir. */
 export function listOpenClawDatabases(stateDir = openclawStateDir()) {
@@ -182,7 +181,7 @@ export async function readOpenClawSession(source) {
         // Every user message ends the turn, one with no text (an image) too:
         // what follows answers it, not the earlier prompt.
         closeTurn();
-        turn = { prompt: text.replace(TIMESTAMP_ENVELOPE, "").trim(), at, reply: "", replyAt: null };
+        turn = { prompt: openclawTypedText(text), at, reply: "", replyAt: null };
         if (!turn.prompt) turn = null;
       } else if (message?.role === "assistant" && text && turn) {
         if (text === HEARTBEAT_REPLY) {

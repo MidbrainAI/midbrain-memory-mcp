@@ -1060,7 +1060,10 @@ What is captured: the plugin listens on OpenClaw's typed `agent_end` hook.
 `agent_end` carries the whole session history, so the plugin stores only the
 newest user message and the final assistant text after it, once per session
 turn. It skips failed runs, empty histories (incognito), and cron/heartbeat
-triggers; it captures runs with trigger `user` or no trigger.
+triggers; it captures runs with trigger `user` or no trigger. The prompt is
+stored as typed: without the time envelope OpenClaw adds (`[Wed 2026-11-25
+17:00 GMT-3] ...`) and without its internal runtime context
+(`<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>` blocks), as the history import does.
 
 The same plugin also listens on `before_prompt_build`. On user-triggered runs
 it returns the persona and profile as `appendSystemContext`, so OpenClaw

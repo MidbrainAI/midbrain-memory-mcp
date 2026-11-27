@@ -30,7 +30,7 @@
 
 import {
   MidbrainApi, appendToCache, makeLogger, logFile, buildCaptureMetadata, getClient,
-  scrubInjectedPkContext, loadIdentityContext,
+  scrubInjectedPkContext, loadIdentityContext, openclawTypedText,
 } from "./midbrain-shared.mjs";
 
 export const CLIENT = "openclaw";
@@ -55,7 +55,10 @@ export function messageText(message) {
 /**
  * The current turn from an `agent_end` history: the last user message with
  * text, and the last assistant message with text after it (tool-call steps
- * in between carry no text). Returns null when there is no user prompt.
+ * in between carry no text). The prompt is stored as typed, without
+ * OpenClaw's time envelope and runtime context (#117). Returns null when
+ * there is no user prompt, or when the last one is only runtime context: what
+ * follows it does not answer an earlier prompt.
  */
 export function extractTurn(messages) {
   if (!Array.isArray(messages)) return null;
@@ -67,6 +70,8 @@ export function extractTurn(messages) {
     }
   }
   if (userIdx === -1) return null;
+  const prompt = openclawTypedText(messageText(messages[userIdx]));
+  if (!prompt) return null;
   const user = messages[userIdx];
   let assistant = "";
   for (let i = messages.length - 1; i > userIdx; i--) {
@@ -75,7 +80,7 @@ export function extractTurn(messages) {
     if (assistant) break;
   }
   return {
-    user: messageText(user),
+    user: prompt,
     assistant,
     key: `${user.timestamp ?? userIdx}:${messageText(user).length}`,
   };

@@ -19,3 +19,4 @@ export { getClient } from './clients/registry.mjs';
 export { hookProjectDir, logProjectFallback } from './project-dir.mjs';
 export { extractInjectedPkIds, formatPkContext, isPkInjectionEnabled, stripInjectedContext, scrubInjectedPkContext } from './pk-inject.mjs';
 export { loadIdentityContext } from './identity-context.mjs';
+export { openclawTypedText } from './openclaw-text.mjs';

@@ -49,6 +49,21 @@ describe("extractTurn", () => {
     expect(extractTurn([user("hi"), toolCall()])).toMatchObject({ user: "hi", assistant: "" });
   });
 
+  it("stores the prompt as typed, without OpenClaw's envelope and runtime context (#117)", () => {
+    const prompt = "[Wed 2026-11-25 17:03 GMT-3] Without tools: reply with just BRANCHONE.\n\n"
+      + "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n## Media Generation Tasks\n- tool=image_generate; none\n"
+      + "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>";
+    expect(extractTurn([user(prompt, 7), assistant("BRANCHONE")]))
+      .toMatchObject({ user: "Without tools: reply with just BRANCHONE.", assistant: "BRANCHONE" });
+  });
+
+  it("stores nothing when the last user message is only runtime context", () => {
+    const carrier = user("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nOpenClaw runtime event.\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>", 3);
+    // The reply after it does not answer the earlier prompt.
+    expect(extractTurn([user("real prompt", 2), carrier, assistant("answer")])).toBeNull();
+    expect(extractTurn([carrier, assistant("answer")])).toBeNull();
+  });
+
   it("returns null without a user prompt", () => {
     expect(extractTurn([])).toBeNull();
     expect(extractTurn([assistant("hello")])).toBeNull();
