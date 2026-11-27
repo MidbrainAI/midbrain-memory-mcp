@@ -16,6 +16,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 
 import { buildCaptureMetadata } from "../capture-metadata.mjs";
+import { cutEpisodicText } from "../midbrain-api.mjs";
 
 /**
  * The session shape every history reader returns (readers/).
@@ -59,8 +60,6 @@ import { buildCaptureMetadata } from "../capture-metadata.mjs";
  * read `source` as a semantic document path (see mcp.mjs).
  */
 export const IMPORT_ORIGIN = "import";
-export const MAX_TEXT_CHARS = 100_000;
-const TRUNCATED = "\n[truncated by MidBrain import]";
 /** A session file written this recently may still be in use. */
 export const ACTIVE_SESSION_MS = 10 * 60 * 1000;
 
@@ -89,8 +88,8 @@ const MIDBRAIN_BLOCKS = /<!-- mb:(ctx|identity)-start -->[\s\S]*?<!-- mb:\1-end 
 
 export function prepareText(text) {
   const trimmed = String(text ?? "").replace(MIDBRAIN_BLOCKS, "").trim();
-  if (trimmed.length <= MAX_TEXT_CHARS) return { text: trimmed, truncated: false };
-  return { text: trimmed.slice(0, MAX_TEXT_CHARS - TRUNCATED.length) + TRUNCATED, truncated: true };
+  const cut = cutEpisodicText(trimmed);
+  return { text: cut, truncated: cut !== trimmed };
 }
 
 /**

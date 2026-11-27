@@ -9,7 +9,6 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVE_SESSION_MS,
   IMPORT_ORIGIN,
-  MAX_TEXT_CHARS,
   importId,
   planImport,
   prepareText,
@@ -18,6 +17,7 @@ import {
   uploadImport,
 } from "../shared/history-import/plan.mjs";
 import { parseImportArgs, runImportCli } from "../shared/history-import/cli.mjs";
+import { MAX_EPISODIC_TEXT_CHARS } from "../shared/midbrain-api.mjs";
 
 function fakeReaders(sessions) {
   return {
@@ -366,9 +366,18 @@ describe("uploadImport serialization", () => {
 
 describe("prepareText", () => {
   it("caps length", () => {
-    const long = prepareText("x".repeat(MAX_TEXT_CHARS + 10));
+    const long = prepareText("x".repeat(MAX_EPISODIC_TEXT_CHARS + 10));
     expect(long.truncated).toBe(true);
-    expect(long.text.length).toBe(MAX_TEXT_CHARS);
+    expect(long.text.length).toBeLessThanOrEqual(MAX_EPISODIC_TEXT_CHARS);
+    expect(long.text).toMatch(/\[MidBrain cut the last [\d,]+ characters of this turn\]$/);
+  });
+
+  it("never splits an emoji when it caps length (#125)", () => {
+    for (const pad of [0, 1]) {
+      const long = prepareText("x".repeat(pad) + "😀".repeat(MAX_EPISODIC_TEXT_CHARS + 10));
+      expect(long.truncated).toBe(true);
+      expect(long.text).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/);
+    }
   });
 
   it("strips blocks MidBrain added to a prompt, whatever process signed them", () => {
