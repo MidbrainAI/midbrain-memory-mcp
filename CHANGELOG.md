@@ -1,3 +1,11 @@
+## [0.5.2](https://github.com/MidbrainAI/midbrain-memory-mcp/compare/npm-v0.5.1...npm-v0.5.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* run confirmed history imports in a detached worker ([b73d147](https://github.com/MidbrainAI/midbrain-memory-mcp/commit/b73d147e6b56e8aa12116fad29af6f1ef938e3e0))
+* serialize history imports with consolidation enabled ([5d56cc7](https://github.com/MidbrainAI/midbrain-memory-mcp/commit/5d56cc73d3788ce06c9a9a61de8d8577d858935c))
+
 ## [0.5.1](https://github.com/MidbrainAI/midbrain-memory-mcp/compare/npm-v0.5.0...npm-v0.5.1) (2026-11-16)
 
 
