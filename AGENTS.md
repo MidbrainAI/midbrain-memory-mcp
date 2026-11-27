@@ -552,6 +552,9 @@ index (`key >= 'prefix' AND key < 'prefix\uffff'`), never with `LIKE`. `node:sql
   it fails closed (an error, an unexpected response or more than 20 pages
   skips the session). Entries an earlier import stored are dropped, and a
   session is cut `CAPTURE_LAG_MS` before its first live capture.
+- Imports merge all selected clients and sessions by original timestamp,
+  preserving source order for ties, and await each POST before the next.
+  Consolidation is always enabled; never send `X-Skip-Dream` on imports.
 - `postImportedEpisodic` (v3) posts each entry once, never retried: a failed
   write may still have been stored, so any failure stops the upload and a
   re-run resumes after the check. An HTML 403 from the edge firewall never

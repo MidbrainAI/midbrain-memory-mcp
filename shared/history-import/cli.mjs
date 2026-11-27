@@ -12,7 +12,7 @@ import { parseArgs } from "node:util";
 import { allClients } from "../clients/registry.mjs";
 import { MidbrainApi } from "../midbrain-api.mjs";
 import { READERS } from "./readers/index.mjs";
-import { DEFAULT_CONCURRENCY, MAX_CONCURRENCY, planImport, summarize, trimAgainstServer, uploadImport } from "./plan.mjs";
+import { planImport, summarize, trimAgainstServer, uploadImport } from "./plan.mjs";
 
 const HELP = `Usage: npx midbrain-memory-mcp@latest import [options]
 
@@ -24,17 +24,14 @@ Options:
   --since <date>    Only turns on or after this date (YYYY-MM-DD)
   --apply           Upload after showing the preview
   --yes             With --apply: do not ask for confirmation
-  --dream           Let MidBrain run its per-memory processing on imported
-                    turns (off by default, as for any bulk load); uploads
-                    one entry at a time so they are processed in order
-  --concurrency <n> Uploads in flight, 1-${MAX_CONCURRENCY} (default: ${DEFAULT_CONCURRENCY})
   -h, --help        Show this help
 
 What is imported: your prompts and the reply that ended each turn, with
 their original time, labeled origin=import. Tool calls and output, injected
 context, subagent threads, sessions a program started, sessions active in
 the last 10 minutes, and turns MidBrain already captured live are left out.
-Each turn is stored with the key live capture would use for its directory.`;
+Each turn is stored with the key live capture would use for its directory.
+Entries are uploaded oldest first, one at a time, with consolidation enabled.`;
 
 /** Strict, so a typo never drops a filter and widens the import. */
 export function parseImportArgs(argv, readers = READERS) {
@@ -46,8 +43,6 @@ export function parseImportArgs(argv, readers = READERS) {
       since: { type: "string" },
       apply: { type: "boolean", default: false },
       yes: { type: "boolean", default: false },
-      dream: { type: "boolean", default: false },
-      concurrency: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   });
@@ -63,16 +58,7 @@ export function parseImportArgs(argv, readers = READERS) {
     }
     since = new Date(`${values.since}T00:00:00Z`).toISOString();
   }
-  let concurrency = DEFAULT_CONCURRENCY;
-  if (values.concurrency !== undefined) {
-    concurrency = Number(values.concurrency);
-    if (!/^\d+$/.test(values.concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY) {
-      throw new Error(`--concurrency must be a whole number from 1 to ${MAX_CONCURRENCY}`);
-    }
-  }
-  // Consolidation reads earlier memories, so dreamed turns must arrive in order.
-  if (values.dream) concurrency = 1;
-  return { help: values.help, clients, since, apply: values.apply, yes: values.yes, dream: values.dream, concurrency };
+  return { help: values.help, clients, since, apply: values.apply, yes: values.yes };
 }
 
 /**
@@ -223,13 +209,11 @@ export async function runImportCli(argv, {
   const started = Date.now();
   const totals = await uploadImport({
     sessions: pending,
-    concurrency: options.concurrency,
     wait,
     post: async (session, entry, metadata) => {
       const api = await apiFor({ client: session.client, cwd: entryCwd(session, entry) });
       return api.postImportedEpisodic(entry.text, entry.role, metadata, {
         occurredAt: entry.occurredAt,
-        skipDream: !options.dream,
       });
     },
     onProgress: (event) => {
